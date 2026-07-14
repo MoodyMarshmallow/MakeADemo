@@ -64,7 +64,7 @@ For runtime-code changes, always use the `tdd` skill if you have to it. If you d
 - Use `infra:` for deployment, CI, environment, sandbox, cloud, or operational tooling changes.
 - Use `generated:` for regenerated artifacts such as dependency graphs, schemas, lockfiles, or other machine-generated outputs when committed separately.
 - Prefer a specific subject that explains the exact change, such as `bugfix: preserve Daytona preview paths` rather than `bugfix: fix pipeline`.
-- Before committing, ask the user whether the work completes or relates to any Linear issues. If it does, ask them to open the relevant Linear issue and copy the issue text into their response so the commit can be tied to the correct issue context.
+- Before committing, ask the user whether the work completes or relates to any Linear issues. If it does, the Linear issue key is sufficient context; do not require the issue title or description.
 - When a commit or PR is about a Linear issue, include the relevant Linear issue key in the commit subject or PR title, for example `feature(OWL-22): add draft composite review`.
 - When a commit or PR should close a Linear issue, include a Linear closing magic word and issue key in the title/subject, not only in the body. Use a closing form such as `Closes OWL-22: add draft composite review` in the PR title, or `feature: closes OWL-22 add draft composite review` in a commit subject when committing directly to the default branch.
 - Use non-closing Linear words such as `Refs OWL-22` only when the work is related but should not move the issue to Done after merge.
