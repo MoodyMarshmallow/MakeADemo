@@ -11,16 +11,16 @@ type RestartPreparedDemoForFreshCapture =
 export function createDaytonaFreshCaptureStatePreparer(
   restart: RestartPreparedDemoForFreshCapture = restartPreparedDemoForFreshCapture,
 ): FreshCaptureStatePreparer {
-  return async ({ stage1 }) => {
-    if (stage1.preparationWorkspace === undefined) {
+  return async ({ preparedDemo }) => {
+    if (preparedDemo.preparationWorkspace === undefined) {
       throw new Error(
         "Fresh Footage Capture state requires the prepared workspace.",
       );
     }
 
     return await restart({
-      preparationManifest: stage1.preparationManifest,
-      preparationWorkspace: stage1.preparationWorkspace,
+      preparationManifest: preparedDemo.preparationManifest,
+      preparationWorkspace: preparedDemo.preparationWorkspace,
     });
   };
 }

@@ -4,25 +4,27 @@ import { formatFullPipelineFailure } from "./full-pipeline-failure-output";
 import { FullPipelineStageFailure } from "./full-pipeline-runner";
 
 describe("formatFullPipelineFailure", () => {
-  it("prints Stage 1 failure context for the terminal", () => {
-    const output = formatFullPipelineFailure(
-      new FullPipelineStageFailure({
-        failure: {
-          blockers: ["Repo Preparation agent timed out."],
-          suggestedChanges: [],
-        },
-        logPath: "/runs/failed/pipeline-log.jsonl",
-        rawOpenCodeLogPath: "/runs/failed/opencode-raw-output.jsonl",
-        resultPath: "/runs/failed/full-pipeline-result.json",
-        stage: "stage-1",
-        status: "preparation-failed",
-      }),
-    );
+  it("prints whole-pipeline failure context for the terminal", () => {
+    const error = new FullPipelineStageFailure({
+      failure: {
+        blockers: ["Repo Preparation agent timed out."],
+        suggestedChanges: [],
+      },
+      logPath: "/runs/failed/pipeline-log.jsonl",
+      rawOpenCodeLogPath: "/runs/failed/opencode-raw-output.jsonl",
+      resultPath: "/runs/failed/full-pipeline-result.json",
+      stage: "pipeline",
+      status: "preparation-failed",
+    });
+    const output = formatFullPipelineFailure(error);
 
+    expect(error.message).toBe(
+      "Pipeline failed with status preparation-failed",
+    );
     expect(output).toBe(
       [
         "Pipeline failed",
-        "Stage: stage-1",
+        "Stage: pipeline",
         "Status: preparation-failed",
         "Reason: Repo Preparation agent timed out.",
         "Result JSON: /runs/failed/full-pipeline-result.json",
@@ -46,7 +48,7 @@ describe("formatFullPipelineFailure", () => {
         logPath: "/runs/failed/pipeline-log.jsonl",
         rawOpenCodeLogPath: "/runs/failed/opencode-raw-output.jsonl",
         resultPath: "/runs/failed/full-pipeline-result.json",
-        stage: "stage-1",
+        stage: "pipeline",
         status: "capture-path-validation-failed",
       }),
     );
@@ -70,7 +72,7 @@ describe("formatFullPipelineFailure", () => {
         logPath: "/runs/failed/pipeline-log.jsonl",
         rawOpenCodeLogPath: undefined,
         resultPath: "/runs/failed/full-pipeline-result.json",
-        stage: "stage-1",
+        stage: "pipeline",
         status: "preparation-failed",
       }),
     );

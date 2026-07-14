@@ -1,14 +1,14 @@
-# MakeADemo Stage 1 PRD
+# MakeADemo Pipeline PRD
 
 ## Problem Statement
 
 Makers need a fast way to turn a JavaScript/TypeScript web app into the foundation of a demo video, but most repos are not immediately safe or deterministic enough for MakeADemo to run and capture. They may depend on secrets, hosted databases, external APIs, OAuth, remote assets, or manual setup. MakeADemo should automate as much repo preparation as possible without requesting write access to the maker's source repo or trusting agent-prepared output before deterministic validation.
 
-Makers also need a clear way to provide enough product context for a useful demo script without filling out a long production brief. For Stage 1, MakeADemo should let the maker submit a repo link, structured demo intent, and supporting documents, then screen the repo, prepare a deterministic demo runtime in an ephemeral workspace, validate that prepared workspace inside an isolated sandbox, and generate a read-only Video Script Package.
+Makers also need a clear way to provide enough product context for a useful demo without filling out a long production brief. MakeADemo should let the maker submit a repo link, structured demo intent, and Supporting Documents, then run the complete pipeline through repository screening, preparation, script generation, capture path validation, footage capture, compositing, and final delivery.
 
 ## Solution
 
-MakeADemo Stage 1 starts with Context Gathering. The maker submits a GitHub repo URL, structured demo intent, and Supporting Documents. Supporting Documents are broad document uploads that exclude videos and pictures in Stage 1, and the upload UI should support drag-and-drop document intake with UploadThing. Supporting Documents are normalized into text artifacts before Repo Preparation begins.
+The MakeADemo Pipeline starts with Context Gathering. The maker submits a GitHub repo URL, structured demo intent, and Supporting Documents. Supporting Documents are broad document uploads that exclude videos and pictures, and the upload UI should support drag-and-drop document intake with UploadThing. Supporting Documents are normalized into text artifacts before Repo Preparation begins.
 
 MakeADemo clones the repo and runs a fast static Repo Security Screen before any agent or runtime preparation work begins. Repos that pass the static screen move into Repo Preparation, where a preparation agent works in a locked-down ephemeral cloud workspace. The agent first looks for existing demo setup, then reuses, adapts, or creates the smallest deterministic demo runtime it can. Repo Preparation produces a durable Preparation Manifest with the prepared demo command, local URL, workspace changes, mocks, assumptions, risks, and script-generation context. If Repo Preparation fails, MakeADemo returns a targeted Preparation Fallback Prompt for the maker and the maker's coding agent, and Script Generation does not run.
 
@@ -16,12 +16,14 @@ Project Validation validates the prepared ephemeral workspace using the Preparat
 
 After Project Validation succeeds, MakeADemo generates a read-only Video Script Package organized into Script Sections and Scene Descriptions. Each Scene Description includes Browser Actions and records assumptions or capture risks for downstream capture and compositing.
 
+Capture Path Validation proves the exact generated browser flow against the prepared runtime under Runtime Network Lockdown. Footage Capture then starts from fresh deterministic state and records the accepted Demo Script. Compositing assembles the captured Scenes into a Draft Composite, runs bounded quality review and repair, and stores the accepted final video for delivery.
+
 ## User Stories
 
 1. As a maker, I want to submit a GitHub repo URL without preparing a demo command first, so that MakeADemo can do the setup work for me.
 2. As a maker, I want to provide structured demo intent, so that MakeADemo understands what product value the demo should communicate.
 3. As a maker, I want to upload Supporting Documents through drag-and-drop document intake, so that MakeADemo can use product docs, setup notes, and demo notes as context.
-4. As a maker, I want Stage 1 Supporting Documents to accept document-like files but not videos or pictures, so that the intake scope stays focused.
+4. As a maker, I want Supporting Documents to accept document-like files but not videos or pictures, so that the intake scope stays focused.
 5. As a maker, I want MakeADemo to statically screen my repo before agent work begins, so that obviously unsafe repos are rejected quickly.
 6. As a maker, I want MakeADemo to look for existing demo setup before creating anything new, so that useful repo conventions are reused.
 7. As a maker, I want MakeADemo to prepare a deterministic demo runtime in an ephemeral workspace, so that my source repo is not modified.
@@ -47,8 +49,8 @@ After Project Validation succeeds, MakeADemo generates a read-only Video Script 
 27. As a maker, I want each Scene Description to summarize one web-based scene, so that I understand what downstream footage capture should show.
 28. As a maker, I want each Scene Description to include Browser Actions, so that I can understand how MakeADemo intends to interact with the app.
 29. As a maker, I want each Browser Action to be readable, so that I can audit the intended clicks, typing, and waits.
-30. As a maker, I want Stage 1 script output to be read-only, so that the first buildout can avoid premature editing semantics.
-31. As a maker, I want later buildout to add script editing, footage capture, and compositing, so that Stage 1 can stay focused on repo preparation, validation, and script generation.
+30. As a maker, I want MakeADemo to capture the accepted Demo Script from fresh deterministic state, so that validation cannot pollute the recorded take.
+31. As a maker, I want MakeADemo to composite and review the captured Scenes before delivery, so that every successful Pipeline Job produces a usable final video.
 32. As a MakeADemo operator, I want submitted repos to be JavaScript/TypeScript web apps in V1, so that sandbox images, install inference, and validation behavior stay tractable.
 33. As a MakeADemo operator, I want the Demo Run Contract to forbid secrets and external services, so that validation and capture do not depend on user-specific infrastructure.
 34. As a MakeADemo operator, I want artifacts to be copied out after sandbox execution rather than fetched over the network during runtime, so that runtime isolation is preserved.
@@ -58,9 +60,9 @@ After Project Validation succeeds, MakeADemo generates a read-only Video Script 
 ## Implementation Decisions
 
 - Build product modules around the MakeADemo Pipeline stages rather than around infrastructure capabilities.
-- Stage 1 pipeline modules should be ordered as Context Gathering, Repo Security Screen, Repo Preparation, Project Validation, and Script Generation.
+- Pipeline modules should be ordered as Context Gathering, Repo Security Screen, Repo Preparation, Script Generation, Capture Path Validation, Footage Capture, Compositing, and final output.
 - Context Gathering collects the GitHub repo URL, structured demo intent, and Supporting Documents.
-- Supporting Documents are broad document uploads, excluding videos and pictures in Stage 1.
+- Supporting Documents are broad document uploads, excluding videos and pictures.
 - UploadThing should power drag-and-drop Supporting Document intake.
 - Supporting Documents should be normalized into text artifacts before Repo Preparation begins.
 - Repo Security Screen runs after repo clone and before any agent or runtime preparation work.
@@ -88,12 +90,13 @@ After Project Validation succeeds, MakeADemo generates a read-only Video Script 
 - Project Validation must confirm that the prepared local URL loads in a browser, is not blank, avoids obvious runtime/framework error screens, and is interactable enough for browser capture.
 - Project Validation validates the prepared ephemeral workspace using the Preparation Manifest.
 - Script Generation runs only after Project Validation succeeds.
-- The Video Script is read-only in Stage 1.
+- The Demo Script is an internal pipeline handoff rather than a terminal product result.
 - A Video Script contains Script Sections.
 - A Script Section contains Scene Descriptions.
-- Each Scene Description contains Browser Actions and is structured to map to exactly one downstream Scene in later footage capture.
-- Footage capture, compositing, script editing semantics, and production-ready transitions/effects are deferred to later buildout.
-- Deep modules to build include Project Intake, Supporting Document Intake, Supporting Document Normalizer, Repo Security Screen, Repo Preparation, Preparation Manifest, Preparation Fallback Prompt Generator, Install Plan inference, Sandbox Runner, Network Isolation Policy, Project Validation, Browser Validation, Artifact Store, Script Generator, and Pipeline Job Orchestrator.
+- Each Scene Description contains Browser Actions and is structured to map to exactly one Scene during Footage Capture.
+- Footage Capture starts from fresh deterministic app state and preserves state across Scenes in the accepted Demo Script.
+- Compositing produces a Draft Composite, runs bounded quality review, and stores the accepted final video.
+- Deep modules to build include Project Intake, Supporting Document Intake, Supporting Document Normalizer, Repo Security Screen, Repo Preparation, Preparation Manifest, Preparation Fallback Prompt Generator, Install Plan inference, Sandbox Runner, Network Isolation Policy, Capture Path Validation, Browser Validation, Artifact Store, Script Generator, Footage Capture, Compositing, and Pipeline Job Orchestrator.
 - Preparation Fallback Prompt Generator should expose a simple interface that returns a targeted prompt from preparation blockers, assumptions, and recommended changes.
 - Preparation Manifest should expose a validation boundary for reading and validating the prepared demo command and URL.
 - Install Plan inference should expose a simple repo-inspection interface that returns the install command and warnings.
@@ -108,7 +111,7 @@ After Project Validation succeeds, MakeADemo generates a read-only Video Script 
 
 - Tests should verify external behavior through public interfaces and real seams, not private implementation details.
 - Good tests should describe observable outcomes such as intake validation, Supporting Document normalization, Repo Security Screen rejects and warnings, Repo Preparation success/failure, Preparation Manifest validation, fallback prompts, validation failures, and produced script structures.
-- Supporting Document Intake should be tested for accepting document-like uploads while rejecting videos and pictures in Stage 1.
+- Supporting Document Intake should be tested for accepting document-like uploads while rejecting videos and pictures.
 - Supporting Document Normalizer should be tested for producing normalized text artifacts with source metadata.
 - Repo Security Screen should be tested for hard rejects on obviously unsafe repos and warnings for large repos, missing lockfiles, external-service SDKs, auth packages, native dependencies, postinstall scripts, shell scripts, and other non-fatal risks.
 - Repo Preparation should be tested with fake agent/workspace adapters that simulate existing demo reuse, existing demo adaptation, new demo creation, runtime network lockdown failures, successful retry after mocking, and structured preparation failure.
@@ -121,7 +124,7 @@ After Project Validation succeeds, MakeADemo generates a read-only Video Script 
 - Artifact Store should be tested through public artifact write/read/list behavior for normalized documents, preparation manifests, diffs, logs, screenshots, and Video Script Packages.
 - Script Generator should be tested for producing Video Script Packages organized into Script Sections and Scene Descriptions from structured demo intent, normalized Supporting Documents, Preparation Manifest context, and validated project context.
 - Pipeline Job Orchestrator should be tested through an integration-style happy path and representative failure paths, using fakes at external seams rather than mocking internal functions.
-- Stage 1 tests should follow the integration-through-public-interface style: verify observable pipeline outcomes through product seams rather than private implementation details.
+- Whole-pipeline tests should follow the integration-through-public-interface style and verify observable outcomes through product seams rather than private implementation details.
 
 ## Out of Scope
 
@@ -135,8 +138,7 @@ After Project Validation succeeds, MakeADemo generates a read-only Video Script 
 - Script editing by the user.
 - Fine-grained user control over Playwright Capture Scripts.
 - Multiple autonomous capture sub-agents.
-- Bare-bones final video compositing.
-- Production-ready compositing with polished text, transitions, effects, and timeline editing.
+- Fine-grained timeline editing by the user.
 - Supporting arbitrary package manager or language runtime installation beyond standard JavaScript/TypeScript package manager inference.
 
 ## Further Notes
@@ -146,5 +148,5 @@ After Project Validation succeeds, MakeADemo generates a read-only Video Script 
 - The agent-prepared ephemeral workspace flow is central: MakeADemo should automate repo preparation without modifying the maker's source repo.
 - Repo Security Screen is a fast static pre-agent filter, not a full security verifier.
 - Project Validation is the non-agent trust gate before Script Generation output is trusted.
-- The durable Preparation Manifest replaces MakeADemo Config as the Stage 1 source of truth for prepared demo command and local URL.
-- Future buildout can add script editing semantics, footage capture, and compositing once Stage 1 proves repo preparation, validation, and script generation.
+- The durable Preparation Manifest replaces MakeADemo Config as the source of truth for prepared demo command and local URL.
+- A successful Pipeline Job produces a reviewed final video rather than stopping at an intermediate script or capture artifact.

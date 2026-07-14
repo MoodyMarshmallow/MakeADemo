@@ -27,7 +27,7 @@ import type {
   PipelineOrchestratorOptions,
 } from "./pipeline-orchestrator";
 
-type SucceededStage1 = Extract<
+type PreparedDemoResult = Extract<
   Awaited<ReturnType<typeof runPipelineJob>>,
   { status: "succeeded" }
 >;
@@ -55,12 +55,12 @@ type DraftCompositeReviewLoopOptions = PipelineOrchestratorOptions & {
   inspectDraftCompositeEvidence?: (input: {
     captureManifest: CaptureManifest;
     draftComposite: CompositedVideoManifest;
-    scriptPackage: SucceededStage1["demoScriptPackage"];
+    scriptPackage: PreparedDemoResult["demoScriptPackage"];
   }) => Promise<DraftCompositeEvidence>;
   prepareFreshCaptureState?: (input: {
     attempt: number;
     browserUrl: string;
-    stage1: SucceededStage1;
+    preparedDemo: PreparedDemoResult;
   }) => Promise<{ browserUrl?: string }>;
   reviewDraftComposite?: DraftCompositeReviewer;
 };
@@ -74,11 +74,11 @@ export type DraftCompositeReviewLoopInput = {
   ) => Promise<void>;
   options: DraftCompositeReviewLoopOptions;
   persistScript: (
-    scriptPackage: SucceededStage1["demoScriptPackage"],
+    scriptPackage: PreparedDemoResult["demoScriptPackage"],
   ) => Promise<ScriptPersistence>;
   runDirectory: string;
   scriptPersistence: ScriptPersistence;
-  stage1: SucceededStage1;
+  preparedDemo: PreparedDemoResult;
 };
 
 export type DraftCompositeReviewLoopResult = {
@@ -86,14 +86,14 @@ export type DraftCompositeReviewLoopResult = {
   finalVideo: CompositedVideoManifest;
   reviewSummary: DraftCompositeReviewSummary;
   scriptPersistence: ScriptPersistence;
-  stage1: SucceededStage1;
+  preparedDemo: PreparedDemoResult;
 };
 
 type ValidDraftCheckpoint = {
   captureManifest: CaptureManifest;
   finalVideo: CompositedVideoManifest;
   scriptPersistence: ScriptPersistence;
-  stage1: SucceededStage1;
+  preparedDemo: PreparedDemoResult;
 };
 
 export async function runDraftCompositeReviewLoop(
@@ -101,7 +101,7 @@ export async function runDraftCompositeReviewLoop(
 ): Promise<DraftCompositeReviewLoopResult> {
   const reviewRepairLimit = readDraftCompositeReviewAttemptLimit();
   const reviewer = input.options.reviewDraftComposite ?? defaultDraftReview;
-  let stage1 = input.stage1;
+  let preparedDemo = input.preparedDemo;
   let browserUrl = input.browserUrl;
   let scriptPersistence = input.scriptPersistence;
   let candidateNeedsPersistence = false;
@@ -129,13 +129,13 @@ export async function runDraftCompositeReviewLoop(
       const freshState = await input.options.prepareFreshCaptureState?.({
         attempt,
         browserUrl,
-        stage1,
+        preparedDemo,
       });
       browserUrl = freshState?.browserUrl ?? browserUrl;
       const captureBaseUrl =
-        stage1.preparationWorkspace === undefined
+        preparedDemo.preparationWorkspace === undefined
           ? browserUrl
-          : stage1.preparationManifest.url;
+          : preparedDemo.preparationManifest.url;
       await input.log({
         attempt,
         baseUrl: captureBaseUrl,
@@ -155,13 +155,13 @@ export async function runDraftCompositeReviewLoop(
           keepTemp: true,
           log: input.log,
           runId: `capture-${runSuffix}`,
-          scriptPackage: stage1.demoScriptPackage,
+          scriptPackage: preparedDemo.demoScriptPackage,
           ...(scriptPersistence.scriptPath === undefined
             ? {}
             : { scriptPath: scriptPersistence.scriptPath }),
-          ...(stage1.preparationWorkspace === undefined
+          ...(preparedDemo.preparationWorkspace === undefined
             ? {}
-            : { preparationWorkspace: stage1.preparationWorkspace }),
+            : { preparationWorkspace: preparedDemo.preparationWorkspace }),
           tempRoot: join(input.runDirectory, "capture"),
         });
       } catch (error) {
@@ -214,7 +214,7 @@ export async function runDraftCompositeReviewLoop(
           outputRoot: join(input.runDirectory, "composite"),
           runId: `composite-${runSuffix}`,
           scriptDirectory: input.runDirectory,
-          scriptPackage: stage1.demoScriptPackage,
+          scriptPackage: preparedDemo.demoScriptPackage,
           ...(scriptPersistence.scriptPath === undefined
             ? {}
             : { scriptPath: scriptPersistence.scriptPath }),
@@ -233,14 +233,16 @@ export async function runDraftCompositeReviewLoop(
       latestFinalVideo = finalVideo;
 
       if (candidateNeedsPersistence) {
-        scriptPersistence = await input.persistScript(stage1.demoScriptPackage);
+        scriptPersistence = await input.persistScript(
+          preparedDemo.demoScriptPackage,
+        );
         candidateNeedsPersistence = false;
       }
       validDraftCheckpoint = {
         captureManifest,
         finalVideo,
         scriptPersistence,
-        stage1,
+        preparedDemo,
       };
       await input.log({
         attempt,
@@ -282,7 +284,7 @@ export async function runDraftCompositeReviewLoop(
           captureManifest,
           finalVideo,
           options: input.options,
-          scriptPackage: stage1.demoScriptPackage,
+          scriptPackage: preparedDemo.demoScriptPackage,
         });
       } catch (error) {
         await input.log({
@@ -317,7 +319,7 @@ export async function runDraftCompositeReviewLoop(
         captureManifest,
         draftEvidence,
         finalVideo,
-        scriptPackage: stage1.demoScriptPackage,
+        scriptPackage: preparedDemo.demoScriptPackage,
       });
 
       phase = "reviewer";
@@ -360,13 +362,13 @@ export async function runDraftCompositeReviewLoop(
             sampledFramePaths: draftEvidence.sampledFramePaths,
           },
           draftComposite: finalVideo,
-          ...(stage1.opencodeSessionID === undefined
+          ...(preparedDemo.opencodeSessionID === undefined
             ? {}
-            : { opencodeSessionID: stage1.opencodeSessionID }),
-          ...(stage1.preparationWorkspace === undefined
+            : { opencodeSessionID: preparedDemo.opencodeSessionID }),
+          ...(preparedDemo.preparationWorkspace === undefined
             ? {}
-            : { preparationWorkspace: stage1.preparationWorkspace }),
-          scriptPackage: stage1.demoScriptPackage,
+            : { preparationWorkspace: preparedDemo.preparationWorkspace }),
+          scriptPackage: preparedDemo.demoScriptPackage,
         });
       } catch (error) {
         await input.log({
@@ -418,7 +420,7 @@ export async function runDraftCompositeReviewLoop(
             warnings: [],
           },
           scriptPersistence,
-          stage1,
+          preparedDemo,
         };
       }
 
@@ -429,18 +431,19 @@ export async function runDraftCompositeReviewLoop(
 
       phase = "repair";
       if (decision.repairScope === "workspace") {
-        const repairedStage1 = await runPipelineJob(
+        const repairedPreparedDemo = await runPipelineJob(
           input.input,
           input.dependencies,
           input.options,
         );
-        if (repairedStage1.status !== "succeeded") {
+        if (repairedPreparedDemo.status !== "succeeded") {
           throw new Error(
-            `Workspace repair rerun failed with status ${repairedStage1.status}`,
+            `Workspace repair rerun failed with status ${repairedPreparedDemo.status}`,
           );
         }
-        stage1 = repairedStage1;
-        browserUrl = stage1.capturePathValidation.browserUrl ?? browserUrl;
+        preparedDemo = repairedPreparedDemo;
+        browserUrl =
+          preparedDemo.capturePathValidation.browserUrl ?? browserUrl;
         candidateNeedsPersistence = true;
       } else if (input.dependencies.repairCapturePathFailure !== undefined) {
         const repair = await input.dependencies.repairCapturePathFailure({
@@ -452,23 +455,23 @@ export async function runDraftCompositeReviewLoop(
             status: "failed",
             warnings: [],
           },
-          ...(stage1.preparationWorkspace === undefined
+          ...(preparedDemo.preparationWorkspace === undefined
             ? {}
-            : { preparationWorkspace: stage1.preparationWorkspace }),
-          ...(stage1.opencodeSessionID === undefined
+            : { preparationWorkspace: preparedDemo.preparationWorkspace }),
+          ...(preparedDemo.opencodeSessionID === undefined
             ? {}
-            : { opencodeSessionID: stage1.opencodeSessionID }),
-          preparationManifest: stage1.preparationManifest,
+            : { opencodeSessionID: preparedDemo.opencodeSessionID }),
+          preparationManifest: preparedDemo.preparationManifest,
           repoUrl: input.input.repoUrl,
-          demoScriptPackage: stage1.demoScriptPackage,
+          demoScriptPackage: preparedDemo.demoScriptPackage,
         });
         phase = "repair-revalidation";
         const capturePathValidation =
           await input.dependencies.validateCapturePath({
             preparationManifest: repair.preparationManifest,
-            ...(stage1.preparationWorkspace === undefined
+            ...(preparedDemo.preparationWorkspace === undefined
               ? {}
-              : { preparationWorkspace: stage1.preparationWorkspace }),
+              : { preparationWorkspace: preparedDemo.preparationWorkspace }),
             demoScriptCandidate: repair.demoScriptPackage,
             demoScriptPackage: repair.demoScriptPackage,
           });
@@ -477,8 +480,8 @@ export async function runDraftCompositeReviewLoop(
             `Demo Script repair failed Capture Path Validation: ${capturePathValidation.failureReason ?? capturePathValidation.errorMessage ?? "unknown failure"}`,
           );
         }
-        stage1 = {
-          ...stage1,
+        preparedDemo = {
+          ...preparedDemo,
           capturePathValidation,
           preparationManifest: repair.preparationManifest,
           demoScriptPackage: repair.demoScriptPackage,
@@ -497,7 +500,7 @@ export async function runDraftCompositeReviewLoop(
       };
       latestCaptureManifest = validDraftCheckpoint.captureManifest;
       latestFinalVideo = validDraftCheckpoint.finalVideo;
-      stage1 = validDraftCheckpoint.stage1;
+      preparedDemo = validDraftCheckpoint.preparedDemo;
       scriptPersistence = validDraftCheckpoint.scriptPersistence;
       break;
     }
@@ -553,7 +556,7 @@ export async function runDraftCompositeReviewLoop(
       warnings,
     },
     scriptPersistence,
-    stage1,
+    preparedDemo,
   };
 }
 
@@ -561,7 +564,7 @@ async function readDraftCompositeEvidence(input: {
   captureManifest: CaptureManifest;
   finalVideo: CompositedVideoManifest;
   options: DraftCompositeReviewLoopOptions;
-  scriptPackage: SucceededStage1["demoScriptPackage"];
+  scriptPackage: PreparedDemoResult["demoScriptPackage"];
 }): Promise<DraftCompositeEvidence> {
   const evidence = await input.options.inspectDraftCompositeEvidence?.({
     captureManifest: input.captureManifest,

@@ -17,7 +17,7 @@ describe("createDaytonaFreshCaptureStatePreparer", () => {
       prepareFreshCaptureState({
         attempt: 1,
         browserUrl: "https://preview.example.test/",
-        stage1: succeededStage1(preparationWorkspace),
+        preparedDemo: succeededPreparedDemo(preparationWorkspace),
       }),
     ).resolves.toEqual({ browserUrl: "https://fresh-preview.example.test/" });
 
@@ -36,7 +36,7 @@ describe("createDaytonaFreshCaptureStatePreparer", () => {
       prepareFreshCaptureState({
         attempt: 1,
         browserUrl: "https://preview.example.test/",
-        stage1: succeededStage1(),
+        preparedDemo: succeededPreparedDemo(),
       }),
     ).rejects.toThrow(
       "Fresh Footage Capture state requires the prepared workspace.",
@@ -44,7 +44,9 @@ describe("createDaytonaFreshCaptureStatePreparer", () => {
   });
 });
 
-function succeededStage1(preparationWorkspace?: PreparationWorkspaceHandle) {
+function succeededPreparedDemo(
+  preparationWorkspace?: PreparationWorkspaceHandle,
+) {
   const acceptedDemoScript = {
     assumptions: [],
     demoPlan: { featureOrder: [], narrative: "Demo.", risks: [] },

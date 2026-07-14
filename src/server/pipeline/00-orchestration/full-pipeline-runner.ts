@@ -38,7 +38,7 @@ export type FullPipelineResult = {
   resultPath: string;
   sandboxLogPath?: string;
   scriptPath?: string;
-  stage1: Extract<
+  preparedDemo: Extract<
     Awaited<ReturnType<typeof runPipelineJob>>,
     { status: "succeeded" }
   >;
@@ -46,11 +46,11 @@ export type FullPipelineResult = {
 };
 
 export type FullPipelineFailureContext = {
-  failure: ReturnType<typeof readStage1Failure>;
+  failure: ReturnType<typeof readPipelineFailure>;
   logPath: string;
   rawOpenCodeLogPath: string | undefined;
   resultPath: string;
-  stage: "stage-1";
+  stage: "pipeline";
   status: Exclude<
     Awaited<ReturnType<typeof runPipelineJob>>,
     { status: "succeeded" }
@@ -62,11 +62,11 @@ export class FullPipelineStageFailure extends Error {
   readonly logPath: string;
   readonly rawOpenCodeLogPath: string | undefined;
   readonly resultPath: string;
-  readonly stage: "stage-1";
+  readonly stage: "pipeline";
   readonly status: FullPipelineFailureContext["status"];
 
   constructor(context: FullPipelineFailureContext) {
-    super(`Stage 1 failed with status ${context.status}`);
+    super(`Pipeline failed with status ${context.status}`);
     this.name = "FullPipelineStageFailure";
     this.failure = context.failure;
     this.logPath = context.logPath;
@@ -77,7 +77,7 @@ export class FullPipelineStageFailure extends Error {
   }
 }
 
-type SucceededStage1 = Extract<
+type PreparedDemoResult = Extract<
   Awaited<ReturnType<typeof runPipelineJob>>,
   { status: "succeeded" }
 >;
@@ -136,12 +136,12 @@ export type FullPipelineRunnerOptions = PipelineOrchestratorOptions & {
   inspectDraftCompositeEvidence?: (input: {
     captureManifest: CaptureManifest;
     draftComposite: CompositedVideoManifest;
-    scriptPackage: SucceededStage1["demoScriptPackage"];
+    scriptPackage: PreparedDemoResult["demoScriptPackage"];
   }) => Promise<DraftCompositeEvidence>;
   prepareFreshCaptureState?: (input: {
     attempt: number;
     browserUrl: string;
-    stage1: SucceededStage1;
+    preparedDemo: PreparedDemoResult;
   }) => Promise<{ browserUrl?: string }>;
   runId?: string;
   sandboxLogPath?: string;
@@ -164,7 +164,7 @@ export async function runFullPipelineJob(
     onLog: options.onLog,
   });
   const preparationWorkspaces = new Set<
-    NonNullable<SucceededStage1["preparationWorkspace"]>
+    NonNullable<PreparedDemoResult["preparationWorkspace"]>
   >();
   const orchestratorDependencies: PipelineOrchestratorDependencies = {
     ...dependencies,
@@ -188,34 +188,38 @@ export async function runFullPipelineJob(
   });
 
   let scriptGenerationResumePath: string | undefined;
-  const initialStage1 = await runPipelineJob(input, orchestratorDependencies, {
-    ...options,
-    onScriptGenerationReady: async (event) => {
-      await options.onScriptGenerationReady?.(event);
-      scriptGenerationResumePath = await writeScriptGenerationResumeFile({
-        event,
-        input,
-        runDirectory,
-      });
-      if (scriptGenerationResumePath !== undefined) {
-        await log({
-          event: "script-generation-resume-written",
-          message: "Script Generation resume artifact written.",
-          resumePath: scriptGenerationResumePath,
+  const initialPreparedDemo = await runPipelineJob(
+    input,
+    orchestratorDependencies,
+    {
+      ...options,
+      onScriptGenerationReady: async (event) => {
+        await options.onScriptGenerationReady?.(event);
+        scriptGenerationResumePath = await writeScriptGenerationResumeFile({
+          event,
+          input,
+          runDirectory,
         });
-      }
+        if (scriptGenerationResumePath !== undefined) {
+          await log({
+            event: "script-generation-resume-written",
+            message: "Script Generation resume artifact written.",
+            resumePath: scriptGenerationResumePath,
+          });
+        }
+      },
+      onProgress: async (event) => {
+        await options.onProgress?.(event);
+        await log({
+          event: "stage-progress",
+          message: `${event.stage} ${event.status}.`,
+          stage: event.stage,
+          status: event.status,
+        });
+      },
     },
-    onProgress: async (event) => {
-      await options.onProgress?.(event);
-      await log({
-        event: "stage-progress",
-        message: `${event.stage} ${event.status}.`,
-        stage: event.stage,
-        status: event.status,
-      });
-    },
-  });
-  if (initialStage1.status !== "succeeded") {
+  );
+  if (initialPreparedDemo.status !== "succeeded") {
     const resultPath = join(runDirectory, "full-pipeline-result.json");
     const failureSummary = createFailureSummary({
       logPath,
@@ -225,12 +229,12 @@ export async function runFullPipelineJob(
       sandboxLogPath,
       scriptGenerationRawOpenCodeLogPath:
         options.scriptGenerationRawOpenCodeLogPath,
-      stage1: initialStage1,
+      preparedDemo: initialPreparedDemo,
     });
     await log({
       event: "pipeline-failed",
-      message: `Stage 1 failed with status ${initialStage1.status}.`,
-      status: initialStage1.status,
+      message: `Pipeline failed with status ${initialPreparedDemo.status}.`,
+      status: initialPreparedDemo.status,
     });
     await writeFile(resultPath, `${JSON.stringify(failureSummary, null, 2)}\n`);
     await log({
@@ -243,14 +247,14 @@ export async function runFullPipelineJob(
       logPath,
       rawOpenCodeLogPath: options.rawOpenCodeLogPath,
       resultPath,
-      stage: "stage-1",
-      status: initialStage1.status,
+      stage: "pipeline",
+      status: initialPreparedDemo.status,
     });
   }
 
-  let stage1: SucceededStage1 = initialStage1;
+  let preparedDemo: PreparedDemoResult = initialPreparedDemo;
 
-  const browserUrl = stage1.capturePathValidation.browserUrl;
+  const browserUrl = preparedDemo.capturePathValidation.browserUrl;
   if (browserUrl === undefined || browserUrl.trim().length === 0) {
     await log({
       event: "pipeline-failed",
@@ -259,12 +263,12 @@ export async function runFullPipelineJob(
     throw new Error("Capture Path Validation did not return a browser URL.");
   }
 
-  let scriptSummary = summarizeScriptPackage(stage1.demoScriptPackage);
+  let scriptSummary = summarizeScriptPackage(preparedDemo.demoScriptPackage);
   let scriptPersistence = await persistGeneratedScript({
     demoRequestId: options.context?.demoRequestId,
     log,
     runDirectory,
-    scriptPackage: stage1.demoScriptPackage,
+    scriptPackage: preparedDemo.demoScriptPackage,
     scriptStore: options.demoRequestScriptStore,
     scriptSummary,
   });
@@ -286,10 +290,10 @@ export async function runFullPipelineJob(
         scriptSummary: summarizeScriptPackage(scriptPackage),
       }),
     scriptPersistence,
-    stage1,
+    preparedDemo,
   });
-  stage1 = reviewResult.stage1;
-  scriptSummary = summarizeScriptPackage(stage1.demoScriptPackage);
+  preparedDemo = reviewResult.preparedDemo;
+  scriptSummary = summarizeScriptPackage(preparedDemo.demoScriptPackage);
   scriptPersistence = reviewResult.scriptPersistence;
   const { captureManifest, finalVideo, reviewSummary } = reviewResult;
   await writeDraftCompositeReviewMetadata({
@@ -335,8 +339,8 @@ export async function runFullPipelineJob(
     runId,
     script: {
       sceneCount: scriptSummary.sceneCount,
-      scriptId: stage1.demoScriptPackage.scriptId,
-      title: stage1.demoScriptPackage.title,
+      scriptId: preparedDemo.demoScriptPackage.scriptId,
+      title: preparedDemo.demoScriptPackage.title,
     },
     status: "succeeded",
   };
@@ -361,13 +365,13 @@ export async function runFullPipelineJob(
     ...(scriptPersistence.scriptPath === undefined
       ? {}
       : { scriptPath: scriptPersistence.scriptPath }),
-    stage1,
+    preparedDemo,
     status: "succeeded",
   };
 }
 
 async function cleanupPreparationWorkspaces(input: {
-  handles: Iterable<NonNullable<SucceededStage1["preparationWorkspace"]>>;
+  handles: Iterable<NonNullable<PreparedDemoResult["preparationWorkspace"]>>;
   log: (entry: FullPipelineLogInput) => Promise<void>;
 }) {
   for (const handle of input.handles) {
@@ -558,7 +562,7 @@ function createFailureSummary(input: {
   runId: string;
   sandboxLogPath: string | undefined;
   scriptGenerationRawOpenCodeLogPath: string | undefined;
-  stage1: Exclude<
+  preparedDemo: Exclude<
     Awaited<ReturnType<typeof runPipelineJob>>,
     { status: "succeeded" }
   >;
@@ -579,28 +583,28 @@ function createFailureSummary(input: {
         ? {}
         : { sandboxLogPath: input.sandboxLogPath }),
     },
-    failure: readStage1Failure(input.stage1),
+    failure: readPipelineFailure(input.preparedDemo),
     runDirectory: input.runDirectory,
     runId: input.runId,
-    status: input.stage1.status,
+    status: input.preparedDemo.status,
   };
 }
 
-function readStage1Failure(
-  stage1: Exclude<
+function readPipelineFailure(
+  preparedDemo: Exclude<
     Awaited<ReturnType<typeof runPipelineJob>>,
     { status: "succeeded" }
   >,
 ) {
-  if (stage1.status === "preparation-failed") {
+  if (preparedDemo.status === "preparation-failed") {
     return {
-      blockers: [stage1.fallbackPrompt],
+      blockers: [preparedDemo.fallbackPrompt],
       suggestedChanges: [],
     };
   }
 
-  if (stage1.status === "capture-path-validation-failed") {
-    const capturePathValidation = stage1.capturePathValidation;
+  if (preparedDemo.status === "capture-path-validation-failed") {
+    const capturePathValidation = preparedDemo.capturePathValidation;
     return {
       blockers: [
         "Capture Path Validation failed. Please report this issue to MakeADemo.",
@@ -622,13 +626,13 @@ function readStage1Failure(
         stderrPath: capturePathValidation.stderrPath,
         stdoutPath: capturePathValidation.stdoutPath,
       }),
-      suggestedChanges: stage1.capturePathValidation.warnings,
+      suggestedChanges: preparedDemo.capturePathValidation.warnings,
     };
   }
 
   return {
-    blockers: stage1.security.rejections,
-    suggestedChanges: stage1.security.warnings,
+    blockers: preparedDemo.security.rejections,
+    suggestedChanges: preparedDemo.security.warnings,
   };
 }
 

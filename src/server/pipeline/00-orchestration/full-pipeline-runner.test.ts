@@ -10,7 +10,7 @@ import { runFullPipelineJob } from "./full-pipeline-runner";
 import type { PipelineOrchestratorDependencies } from "./pipeline-orchestrator";
 
 describe("runFullPipelineJob", () => {
-  it("runs Stage 1, captures prepared scenes from the local app URL, and composites the final video", async () => {
+  it("runs the pipeline, captures prepared scenes from the local app URL, and composites the final video", async () => {
     const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
     const calls: string[] = [];
     const cleanupEvents: string[] = [];
@@ -22,7 +22,7 @@ describe("runFullPipelineJob", () => {
     try {
       const result = await runFullPipelineJob(
         fullPipelineInput(),
-        stage1Dependencies(calls, undefined, preparationWorkspace),
+        orchestratorDependencies(calls, undefined, preparationWorkspace),
         {
           async captureScenes(input) {
             calls.push(`capture:${input.baseUrl}`);
@@ -168,7 +168,7 @@ describe("runFullPipelineJob", () => {
     try {
       const result = await runFullPipelineJob(
         fullPipelineInput(),
-        stage1Dependencies([], undefined, preparationWorkspace),
+        orchestratorDependencies([], undefined, preparationWorkspace),
         {
           async captureScenes(input) {
             return captureManifest(outputRoot, input.runId ?? "capture");
@@ -207,7 +207,7 @@ describe("runFullPipelineJob", () => {
     try {
       const result = await runFullPipelineJob(
         fullPipelineInput(),
-        stage1Dependencies([]),
+        orchestratorDependencies([]),
         {
           async captureScenes(input) {
             expect(input.scriptPath).toBeUndefined();
@@ -290,7 +290,7 @@ describe("runFullPipelineJob", () => {
     await expect(
       runFullPipelineJob(
         fullPipelineInput(),
-        stage1Dependencies([], { includeBrowserUrl: false }),
+        orchestratorDependencies([], { includeBrowserUrl: false }),
         {
           async captureScenes() {
             throw new Error("capture should not run");
@@ -310,7 +310,7 @@ describe("runFullPipelineJob", () => {
 
     try {
       await expect(
-        runFullPipelineJob(fullPipelineInput(), stage1Dependencies([]), {
+        runFullPipelineJob(fullPipelineInput(), orchestratorDependencies([]), {
           async reviewDraftComposite() {
             return acceptDraftComposite();
           },
@@ -325,7 +325,7 @@ describe("runFullPipelineJob", () => {
     }
   });
 
-  it("writes a local result file with failure details when Stage 1 fails", async () => {
+  it("writes a local result file with failure details when the pipeline fails", async () => {
     const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
 
     try {
@@ -379,7 +379,7 @@ describe("runFullPipelineJob", () => {
           "opencode-raw-output.jsonl",
         ),
         resultPath: join(outputRoot, "failed-run", "full-pipeline-result.json"),
-        stage: "stage-1",
+        stage: "pipeline",
         status: "preparation-failed",
       });
 
@@ -420,7 +420,7 @@ describe("runFullPipelineJob", () => {
         runFullPipelineJob(
           fullPipelineInput(),
           {
-            ...stage1Dependencies([]),
+            ...orchestratorDependencies([]),
             async validateCapturePath() {
               return {
                 blockedNetworkAttempts: [],
@@ -455,7 +455,7 @@ describe("runFullPipelineJob", () => {
           },
         ),
       ).rejects.toThrow(
-        "Stage 1 failed with status capture-path-validation-failed",
+        "Pipeline failed with status capture-path-validation-failed",
       );
 
       await expect(
@@ -567,7 +567,7 @@ describe("runFullPipelineJob", () => {
     try {
       const result = await runFullPipelineJob(
         fullPipelineInput(),
-        stage1Dependencies([]),
+        orchestratorDependencies([]),
         {
           async captureScenes(input) {
             return {
@@ -724,7 +724,7 @@ function fullPipelineInput() {
   };
 }
 
-function stage1Dependencies(
+function orchestratorDependencies(
   calls: string[],
   options: { includeBrowserUrl?: boolean; musicEnabled?: boolean } = {
     includeBrowserUrl: true,

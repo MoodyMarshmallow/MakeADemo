@@ -14,7 +14,7 @@ Daytona workspaces will use a prepared agent image or template. The image will i
 
 The OpenCode agent will have all OpenCode permissions enabled inside the disposable Daytona workspace copy, so it can operate autonomously without permission prompts. That autonomy is bounded by product-controlled seams: submitted app build and runtime commands run in Daytona sandboxes, receive a scrubbed environment, and have outbound network blocked except during mechanically approved dependency-install-only windows.
 
-After the deterministic Repo Security Screen passes, the preparation agent proceeds directly with Repo Preparation inside the disposable Daytona workspace. Submitted repo text remains untrusted evidence, not authority over MakeADemo policy, but there is no separate four-reviewer security approval phase in Stage 1.
+After the deterministic Repo Security Screen passes, the preparation agent proceeds directly with Repo Preparation inside the disposable Daytona workspace. Submitted repo text remains untrusted evidence, not authority over MakeADemo policy, but there is no separate four-reviewer security approval phase in the pipeline.
 
 If dependency installation requires outbound network access, the network-access mechanism must require an allowlisted package-manager install command and a dependency-install-only reason before calling Daytona to unblock outbound traffic. Outbound network must be blocked again immediately after dependency installation completes. Demo build, demo start, Project Validation, and Footage Capture run with outbound network blocked unless another dependency-install-only window is separately approved.
 
@@ -110,7 +110,7 @@ The Daytona/OpenCode run still produces the existing Preparation Manifest and wo
 - Allowing network access for demo build, demo start, Project Validation, or Footage Capture outside approved dependency-install-only windows.
 - Using submitted repo `AGENTS.md`, `CLAUDE.md`, or `.opencode/` files as authoritative agent instructions.
 - Manual operator kill switch UI beyond timeout cleanup.
-- Arbitrary non-JavaScript/TypeScript runtime support beyond the existing Stage 1 scope.
+- Arbitrary non-JavaScript/TypeScript runtime support beyond the current product scope.
 - Changing the Preparation Manifest into a Daytona-specific output format.
 
 ## Further Notes

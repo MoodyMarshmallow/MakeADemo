@@ -14,7 +14,7 @@
 - **Preparation Fallback Prompt**: A targeted prompt generated when Repo Preparation fails, giving the maker and the maker's coding agent the blockers and context needed to prepare the demo manually.
 - **Demo Runtime Preflight**: The project-level checks inside Capture Path Validation that verify the prepared app can start, load in a browser, remain basically interactable, and satisfy Runtime Network Lockdown before generated Browser Actions or Capture Scripts run.
 - **Demo Run Contract**: The requirement that the prepared app can start a deterministic browser-accessible demo inside an isolated sandbox, with no inbound or outbound network communication across the sandbox boundary after dependency installation.
-- **MakeADemo Config**: A legacy-compatible `makeademo.config.json` file that may describe a demo command and local URL, but is no longer the primary Stage 1 source of truth once Repo Preparation produces a Preparation Manifest.
+- **MakeADemo Config**: A legacy-compatible `makeademo.config.json` file that may describe a demo command and local URL, but is no longer the primary source of truth once Repo Preparation produces a Preparation Manifest.
 - **Preparation Manifest**: The durable internal pipeline artifact produced by Repo Preparation that records the prepared demo command, local URL, existing demo evidence, workspace changes, mocks, assumptions, risks, and context for later script and capture stages.
 - **Runtime Network Lockdown**: The pipeline boundary where the prepared app runtime is sealed from external network access after setup, and any attempted inbound or outbound sandbox-boundary communication is reported as a failure.
 - **Sandbox**: The isolated execution environment that runs the submitted app, browser validation, capture path validation, and Playwright capture with the network boundary sealed after dependency installation.
@@ -41,7 +41,7 @@
 ## Relationships
 
 - The **MakeADemo Pipeline** runs linearly from **Context Gathering** to **Repo Security Screen**, **Repo Preparation**, **Script Generation**, **Capture Path Validation**, **Footage Capture**, **Compositing**, and final output.
-- **Context Gathering** accepts the repo URL, structured demo intent, and broad document uploads for **Supporting Documents**, but excludes videos and pictures in Stage 1.
+- **Context Gathering** accepts the repo URL, structured demo intent, and broad document uploads for **Supporting Documents**, but excludes videos and pictures.
 - **Supporting Documents** are normalized into text artifacts before **Repo Preparation** begins.
 - **Repo Security Screen** runs before **Repo Preparation** and does not use an agent.
 - **Repo Security Screen** does not install dependencies or execute submitted repo code.

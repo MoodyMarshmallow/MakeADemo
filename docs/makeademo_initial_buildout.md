@@ -68,110 +68,70 @@ Execution capabilities:
 - React  
 - UploadThing
 
-# Buildout Roadmap
+# Whole Pipeline Buildout
 
-This document is the overall planning roadmap. The fine-grained Stage 1 PRD lives in `docs/prd/makeademo_stage1_prd.md`.
+The product has one linear workflow. The detailed contract lives in
+`docs/prd/makeademo_pipeline_prd.md`.
 
-## Stage 1: Prepare, Validate, and Generate the Video Script Package
+Goal: accept a JavaScript/TypeScript web app and demo intent, prepare and
+validate a deterministic runtime, generate a Demo Script, capture the required
+Scenes, and composite a polished final video in one Pipeline Job.
 
-Goal: prove that MakeADemo can take a prepared JavaScript/TypeScript web app, validate that it satisfies the Demo Run Contract, and generate a read-only Video Script Package.
+## Modules to build or extend
 
-Stage 1 intentionally stops before footage capture, final compositing, and user editing semantics.
+- Project Intake: captures the GitHub repo URL, Supporting Documents, and key product features to demo.
+- Repo Security Screen: rejects obvious repository risks before agent or runtime work begins.
+- Repo Preparation: prepares a deterministic demo runtime in an ephemeral workspace without modifying the maker's repo.
+- Preparation Fallback Prompt Generator: explains blockers when the repo cannot be prepared automatically.
+- Sandbox Runner: clones the repo, installs dependencies, seals the runtime network boundary, runs the demo command, and extracts artifacts.
+- Capture Path Validation: proves the prepared app and generated Demo Script can complete the intended browser flow under Runtime Network Lockdown.
+- Script Generator: produces the Demo Script from product intent and prepared repo context.
+- Footage Capture: records presentation-ready Scene footage from a fresh deterministic app state.
+- Draft Composite Reviewer: checks narrative, timing, presentation, and capture quality before final acceptance.
+- Compositor: assembles Scenes, display text, transitions, effects, and background music into the final video.
+- Artifact Store: stores logs, validation evidence, scripts, captured footage, render plans, and final video artifacts.
+- Pipeline Job Orchestrator: coordinates the complete linear flow without owning each module's internal behavior.
 
-### Modules to build
+## User flow
 
-- Preparation Prompt Generator: produces the copy-paste prompt the maker gives to their coding agent.
-- Project Intake: captures the GitHub repo URL and key product features to demo.
-- MakeADemo Config Loader: reads and validates the tiny `makeademo.config.json` from the submitted repo.
-- Install Plan Inference: chooses the dependency install command from standard JavaScript lockfiles.
-- Sandbox Runner: clones the repo, installs dependencies, seals the sandbox network boundary, runs the demo command, and extracts artifacts.
-- Project Validation: verifies that the repo satisfies the Demo Run Contract before any LLM script generation.
-- Browser Validation: runs Playwright inside the sandbox to load the configured local URL, detect obvious broken states, and capture screenshot proof.
-- Script Generator: generates the read-only Video Script from key product features and validated repo context.
-- Video Script Package Builder: packages the Video Script, Script Sections, Scene Descriptions, Browser Actions, and validation context for handoff to footage capture.
-- Artifact Store: stores logs, screenshots, validation artifacts, and generated Video Script Packages.
-- Pipeline Job Orchestrator: coordinates the linear Stage 1 flow without owning each module's internal logic.
+### 1. Gather Context
 
-### Stage 1 user flow
+- The maker provides a GitHub repo URL, Supporting Documents, and the product features the demo should communicate.
+- MakeADemo normalizes those inputs into Project Intake.
 
-#### 1. Prepare Demo Command
-- MakeADemo gives the user a copy-paste prompt for their coding agent.
-- The prompt asks the user's coding agent to add a demo run command, such as `npm run demo`, that satisfies the Demo Run Contract.
-- The prompt asks the user's coding agent to add `makeademo.config.json` with the demo command and local URL.
-- The user applies the change in their own repo and pushes it before submitting repo details to MakeADemo.
+### 2. Screen and Prepare the Repository
 
-#### 2. Gather Context
-- The user provides a GitHub repo URL.
-- The user lists the key product features the demo should show.
-- MakeADemo reads the demo command and local URL from `makeademo.config.json` in the submitted repo.
+- MakeADemo runs the deterministic Repo Security Screen.
+- Repo Preparation reuses or creates the smallest deterministic demo runtime in an ephemeral workspace.
+- If preparation fails, MakeADemo returns a targeted Preparation Fallback Prompt and stops the Pipeline Job.
 
-#### 3. Validate Repo Runnability
-- MakeADemo programmatically checks whether the repo can be installed and started with the demo run command.
-- MakeADemo infers the dependency install command from standard lockfiles and installs dependencies with network access allowed.
-- MakeADemo runs the demo command in a backend Daytona sandbox without LLM API calls.
-- Any inbound or outbound network communication across the sandbox boundary after dependency installation fails validation.
-- MakeADemo runs Playwright inside the same isolated sandbox and opens the running app locally inside that sandbox.
-- Validation succeeds when the app is responsive, interactable, and capturable in a browser.
-- Validation should capture proof, such as a screenshot, and report clear failure reasons when the repo cannot be run.
-- If the repo is not ready, MakeADemo gives the user a preparation prompt to paste into their own coding agent.
+### 3. Generate and Validate the Demo Script
 
-#### 4. Generate the Video Script Package
-- MakeADemo generates a read-only Video Script from the key product features and validated repo context.
-- The Video Script is organized into Script Sections containing Scene Descriptions.
-- Each Scene Description has user-readable Browser Actions.
-- MakeADemo packages the Video Script, validation context, assumptions, and capture risks for handoff.
+- MakeADemo generates a Demo Script grounded in the prepared runtime and requested features.
+- Capture Path Validation runs the exact browser flow under Runtime Network Lockdown.
+- Repair attempts may update the prepared workspace or Demo Script, but the full validation gate reruns before capture.
 
-## Stage 2: Editable Script and Bare-Bones Compositing
+### 4. Capture Footage
 
-Goal: turn the Stage 1 Video Script Package into raw Scene footage and then into a basic final video, while introducing the first version of user editing semantics.
+- MakeADemo resets the prepared app to a fresh deterministic state.
+- Footage Capture records the accepted Demo Script as one continuous flow with explicit Scene boundaries.
 
-Stage 2 should not try to make the video beautiful. It should prove that approved Scene footage can be assembled into a coherent text-led demo video.
+### 5. Composite and Review
 
-### Modules to build or extend
+- MakeADemo assembles the captured Scenes into a text-led demo with transitions, effects, and background music.
+- Draft Composite review checks the complete video and may trigger bounded repair and recapture work.
 
-- Script Editor: lets the user rename/reorder Script Sections, revise Scene Descriptions, and adjust Browser Actions through a structured UI.
-- Script Revision Flow: regenerates affected Capture Scripts and Scenes when the user changes a Scene Description or Browser Actions.
-- Capture Script Generator: creates one Playwright Capture Script for each Scene Description.
-- Scene Recorder: runs each Capture Script in the sandbox and produces one raw Scene per Scene Description.
-- Scene Approval: lets the user accept a Companion Video or request regeneration for that Scene.
-- Bare-Bones Timeline Builder: orders approved Scenes into a linear demo timeline.
-- Basic Compositor: stitches raw Scenes together, trims obvious dead time, and adds simple text overlays from the Video Script.
-- Render Job Runner: runs the basic composition job and produces a downloadable video artifact.
-- Revision Tracking: records which Script Sections, Scene Descriptions, Capture Scripts, and Scenes belong to a given generated output.
-### Stage 2 rough flow
+### 6. Deliver the Final Video
 
-- The user reviews the generated Video Script Package.
-- The user edits high-level script content through the structured script UI.
-- MakeADemo regenerates only the affected Capture Scripts and Scenes.
-- The user approves the Scenes to include in the final video.
-- MakeADemo assembles the approved Scenes into a bare-bones timeline.
-- MakeADemo renders a simple text-led demo video with basic cuts and captions.
-- The user downloads the rendered video.
+- MakeADemo stores the final video and supporting artifacts.
+- The maker receives a view or download URL for the completed demo.
 
-## Stage 3: Production-Ready Compositing
+## Future Enhancements
 
-Goal: make the final demo video feel polished enough to ship publicly.
-
-Stage 3 should improve presentation quality without changing the core repo validation and capture contract.
-
-### Modules to build or extend
-
-- Timeline Editor: gives the user lightweight control over scene order, trims, captions, and timing.
-- Text and Caption System: applies consistent typography, hierarchy, positioning, and pacing for display text.
-- Transition System: adds tasteful transitions between Scenes.
-- Visual Effects System: adds polished effects such as zooms, highlights, cursor emphasis, callouts, and motion.
-- Music Bed: adds generic background music with simple volume balancing.
-- Theme Presets: provides a small set of visual styles for different demo tones.
-- Render Quality Profiles: supports different export settings for quick previews and final renders.
-- Render Preview Flow: lets the user preview before final export.
-
-### Stage 3 rough flow
-
-- The user starts from the bare-bones composited video.
-- MakeADemo applies a default production-ready theme.
-- The user can make lightweight timeline and caption adjustments.
-- MakeADemo renders preview versions quickly.
-- The user exports the final polished demo video.
+- Timeline editing for scene order, trims, captions, and timing.
+- Additional transition, effect, music, and theme presets.
+- Faster render previews and multiple export quality profiles.
+- Selective regeneration of affected Scenes after user edits.
 
 ## Later Possibilities
 

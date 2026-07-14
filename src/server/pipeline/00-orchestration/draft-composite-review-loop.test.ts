@@ -85,14 +85,14 @@ describe("runDraftCompositeReviewLoop", () => {
         "capture:capture-2",
         "composite:composite-2",
       ]);
-      expect(result.stage1.demoScriptPackage.scriptId).toBe("repaired");
+      expect(result.preparedDemo.demoScriptPackage.scriptId).toBe("repaired");
       expect(persisted).toBe(1);
     } finally {
       await rm(root, { force: true, recursive: true });
     }
   });
 
-  it("reruns Stage 1 for workspace repair and persists the repaired script after compositing", async () => {
+  it("reruns pipeline preparation for workspace repair and persists the repaired script after compositing", async () => {
     const root = await mkdtemp(join(tmpdir(), "makeademo-review-"));
     const calls: string[] = [];
     let stageRuns = 0;
@@ -207,7 +207,8 @@ function loopInput(
   return {
     browserUrl: "https://preview.example.test/",
     dependencies:
-      overrides.dependencies ?? loopDependencies([], () => succeededStage1()),
+      overrides.dependencies ??
+      loopDependencies([], () => succeededPreparedDemo()),
     input: {
       demoBrief: { keyProductFeatures: ["article feed"] },
       normalizedSupportingDocuments: [],
@@ -225,7 +226,7 @@ function loopInput(
       (async () => ({ scriptPath: join(root, "demo-script.json") })),
     runDirectory: root,
     scriptPersistence: { scriptPath: join(root, "demo-script.json") },
-    stage1: succeededStage1(),
+    preparedDemo: succeededPreparedDemo(),
   };
 }
 
@@ -234,11 +235,12 @@ function loopDependencies(
   onPrepare: () => void,
 ): PipelineOrchestratorDependencies {
   return {
-    generateScriptPackage: async () => succeededStage1().demoScriptPackage,
+    generateScriptPackage: async () =>
+      succeededPreparedDemo().demoScriptPackage,
     prepareRepo: async () => {
       onPrepare();
       return {
-        manifest: succeededStage1().preparationManifest,
+        manifest: succeededPreparedDemo().preparationManifest,
         opencodeSessionID: "session_prepare_123",
         status: "succeeded",
       };
@@ -256,13 +258,13 @@ function loopDependencies(
       warnings: [],
     }),
     repairCapturePathFailure: async () => ({
-      preparationManifest: succeededStage1().preparationManifest,
-      demoScriptPackage: succeededStage1().demoScriptPackage,
+      preparationManifest: succeededPreparedDemo().preparationManifest,
+      demoScriptPackage: succeededPreparedDemo().demoScriptPackage,
     }),
   };
 }
 
-function succeededStage1(): DraftCompositeReviewLoopInput["stage1"] {
+function succeededPreparedDemo(): DraftCompositeReviewLoopInput["preparedDemo"] {
   return {
     acceptedDemoScript: {
       assumptions: [],

@@ -166,4 +166,4 @@ If Capture Path Validation fails, the backend returns structured failure feedbac
 - Capture Path Validation should reduce flake by proving the exact browser path before final recording.
 - Capture Path Validation should stay fast enough to support repair loops.
 - Footage Capture remains responsible for creating the final raw Scene videos with presentation quality.
-- The current Stage 1 PRD and Daytona Repo Preparation PRD still contain older standalone Project Validation language; this PRD records the newer direction for script-driven validation.
+- The MakeADemo Pipeline PRD and Daytona Repo Preparation PRD should use Capture Path Validation as the script-driven validation gate rather than the older standalone Project Validation model.

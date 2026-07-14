@@ -10,7 +10,7 @@ import { runPipelineJob } from "./pipeline-orchestrator";
 import { createPreCapturePipelineDependencies } from "./pre-capture-pipeline";
 
 describe("createPreCapturePipelineDependencies", () => {
-  it("wires the runnable Stage 1 flow through Script Generation", async () => {
+  it("wires the runnable pipeline through Script Generation", async () => {
     const repoPreparationAgent: RepoPreparationAgent = {
       async prepare() {
         return {

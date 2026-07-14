@@ -180,10 +180,10 @@ The primary local pipeline command runs from repository intake through final vid
 1. Context Gathering
 2. Repo Security Screen
 3. Repo Preparation with OpenCode
-4. Project Validation
-5. Video Script Package generation with the same OpenCode session
+4. Script Generation with the same OpenCode session
+5. Capture Path Validation
 6. Footage Capture
-7. Compositing
+7. Compositing and final output
 
 Interactive run:
 
@@ -208,9 +208,9 @@ Optional flags:
 --doc ./optional-notes.md
 ```
 
-Full pipeline runs require `DAYTONA_API_KEY` and `OPENAI_API_KEY`. Repo Security Screen, Repo Preparation, Project Validation, and Script Generation run through Daytona-backed sandboxes using the backend Daytona seam. Repo Preparation runs OpenCode inside Daytona with provider credentials supplied by Daytona sandbox secrets and streams concise progress to the terminal. After backend validation passes, Script Generation resumes the same OpenCode session with a new read-only prompt so the agent keeps the repo context it discovered during preparation while emitting only the capture-ready script artifact.
+Pipeline runs require `DAYTONA_API_KEY` and `OPENAI_API_KEY`. Repo Security Screen, Repo Preparation, Script Generation, and Capture Path Validation run through Daytona-backed sandboxes using the backend Daytona seam. Repo Preparation runs OpenCode inside Daytona with provider credentials supplied by Daytona sandbox secrets and streams concise progress to the terminal. After preparation succeeds, Script Generation resumes the same OpenCode session so the agent keeps the repo context it discovered while emitting only the capture-ready script artifact.
 
-Each full run writes a local run directory under `--output-root`:
+Each run writes a local run directory under `--output-root`:
 
 ```text
 .makeademo-full-pipeline-runs/full-pipeline-<timestamp>/
@@ -241,7 +241,7 @@ Result JSON: <path-to-full-pipeline-result.json>
 
 `pipeline-log.jsonl` is the structured high-level pipeline event log. `opencode-raw-output.jsonl` is intentionally more verbose than terminal output: it records raw OpenCode stdout/stderr lines with timestamps and parsed tool metadata when available. `script-generation-opencode-raw-output.jsonl` contains the Script Generation OpenCode turn separately for debugging script quality and repair loops.
 
-After validated Repo Preparation, full runs also write `script-generation-resume.json`. Use it to rerun only Script Generation against the retained Daytona workspace and existing OpenCode session without rebuilding the demo:
+After validated Repo Preparation, runs also write `script-generation-resume.json`. Use it to rerun only Script Generation against the retained Daytona workspace and existing OpenCode session without rebuilding the demo:
 
 ```bash
 bun run scriptgen:run -- \
@@ -251,17 +251,6 @@ bun run scriptgen:run -- \
 The resume command writes a fresh `video-script-package.json` and `script-generation-opencode-raw-output.jsonl` in the same run directory.
 
 If the pipeline fails, `full-pipeline-result.json` is still written with failure status, failure details, and available log paths.
-
-The pre-capture pipeline can still be run by itself for debugging through Script Generation:
-
-```bash
-bun run pre-capture:run -- \
-  --repo https://github.com/OWNER/REPO \
-  --feature "Feature one" \
-  --feature "Feature two"
-```
-
-The pre-capture pipeline emits the same capture-ready Video Script Package shape used by Footage Capture.
 
 ## Demo Tooling
 
@@ -293,7 +282,7 @@ Install Chromium if Playwright browsers are missing:
 bunx playwright install chromium
 ```
 
-Footage Capture and Compositing are now driven by `bun run pipeline:run`; the previous standalone Stage 2 CLIs are no longer public package scripts.
+Footage Capture and Compositing are driven by the same `bun run pipeline:run` command as the rest of the pipeline; standalone capture and compositing CLIs are not public package scripts.
 
 ## Quality Checks
 

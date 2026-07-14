@@ -1,6 +1,6 @@
 # Do Not Run Agentic Security Review During Repo Preparation
 
-After the deterministic Repo Security Screen passes, Repo Preparation proceeds directly to the autonomous preparation agent. We chose this over adding a second agentic security-review phase because Stage 1 should keep the safety model simple and deterministic: obvious repository risk is handled by the non-agent Repo Security Screen, and prepared output is still gated by non-agent Project Validation and Runtime Network Lockdown before downstream stages trust it.
+After the deterministic Repo Security Screen passes, Repo Preparation proceeds directly to the autonomous preparation agent. We chose this over adding a second agentic security-review phase because the pipeline should keep the safety model simple and deterministic: obvious repository risk is handled by the non-agent Repo Security Screen, and prepared output is still gated by non-agent Project Validation and Runtime Network Lockdown before downstream stages trust it.
 
 Repo Preparation may inspect repo files and dependency manifests as part of ordinary setup work, but there is no separate advisory approval gate. Dependency installation network access is controlled by backend command/reason policy and short-lived Daytona network settings.
 

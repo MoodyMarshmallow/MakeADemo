@@ -22,7 +22,6 @@
     "preview": "vite preview",
     "pipeline:run": "bun src/server/pipeline/00-orchestration/full-pipeline-cli.mts",
     "scriptgen:run": "bun src/server/pipeline/00-orchestration/script-generation-resume-cli.mts",
-    "pre-capture:run": "bun src/server/pipeline/00-orchestration/pre-capture-cli.mts",
     "start": "bun src/server/api/server.mts",
     "worker:demo-generation": "bun src/server/pipeline/00-orchestration/project-demo-generation-worker.mts",
     "test": "vitest run",
