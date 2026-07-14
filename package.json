@@ -4,7 +4,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "arch:deps": "depcruise src --config .dependency-cruiser.cjs --include-only \"^src\"",
     "benchmark": "bun scripts/run-benchmark.mts",
     "benchmark:summarize": "bun scripts/summarize-benchmark.mts",
     "build": "tsc --noEmit -p tsconfig.json && vite build",
@@ -52,7 +51,6 @@
     "autoprefixer": "^10.4.20",
     "bun-types": "^1.2.5",
     "concurrently": "^10.0.3",
-    "dependency-cruiser": "^17.4.2",
     "drizzle-kit": "^0.31.10",
     "knip": "^6.3.1",
     "postcss": "^8.4.49",
