@@ -49,7 +49,7 @@ For runtime-code changes, always use the `tdd` skill if you have to it. If you d
 - Prefer tests through public interfaces and real seams rather than implementation details.
 - Add regression tests for bugs before fixing them when a correct seam exists.
 - When exporting a new interface, add a docstring that explains what implementations should do and the invariants they must uphold.
-- Run `bun run lint`, `bun run typecheck`, `bun run test`, `bun run knip`, and `bun run graph:deps` before considering code changes complete.
+- Run `bun run lint`, `bun run typecheck`, `bun run test`, and `bun run knip` before considering code changes complete.
 
 ### Commit
 
@@ -62,7 +62,7 @@ For runtime-code changes, always use the `tdd` skill if you have to it. If you d
 - Use `docs:` for documentation-only changes, including agent instructions, ADRs, PRDs, and README updates.
 - Use `chore:` for routine maintenance that does not affect runtime behavior, such as package metadata, config cleanup, or repository housekeeping.
 - Use `infra:` for deployment, CI, environment, sandbox, cloud, or operational tooling changes.
-- Use `generated:` for regenerated artifacts such as dependency graphs, schemas, lockfiles, or other machine-generated outputs when committed separately.
+- Use `generated:` for regenerated artifacts such as schemas, lockfiles, or other machine-generated outputs when committed separately.
 - Prefer a specific subject that explains the exact change, such as `bugfix: preserve Daytona preview paths` rather than `bugfix: fix pipeline`.
 - Before committing, ask the user whether the work completes or relates to any Linear issues. If it does, the Linear issue key is sufficient context; do not require the issue title or description.
 - When a commit or PR is about a Linear issue, include the relevant Linear issue key in the commit subject or PR title, for example `feature(OWL-22): add draft composite review`.

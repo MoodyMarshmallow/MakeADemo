@@ -15,7 +15,6 @@
     "dev:api": "bun --watch src/server/api/server.mts",
     "dev:web": "vite",
     "fmt": "biome format --write .",
-    "graph:deps": "bun scripts/regenerate-dependency-graphs.mts",
     "knip": "knip",
     "lint": "biome check .",
     "lsp:typescript": "typescript-language-server --stdio",

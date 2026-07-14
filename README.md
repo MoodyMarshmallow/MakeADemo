@@ -293,5 +293,4 @@ bun run lint
 bun run typecheck
 bun run test
 bun run knip
-bun run graph:deps
 ```
