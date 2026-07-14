@@ -1,0 +1,202 @@
+import {
+  buildBenchmarkPipelineArgs,
+  readBenchmarkManifest,
+} from "./benchmark-manifest";
+
+export const benchmarkSuite = readBenchmarkManifest({
+  defaults: {
+    provider: "openai",
+    repetitions: 1,
+  },
+  repos: [
+    {
+      categories: [
+        "payments",
+        "fullstack",
+        "react",
+        "vite",
+        "express",
+        "seeded-demo",
+      ],
+      commitSha: "bdf6169232b919d9618ec29032addbd865f986cd",
+      expectedLevel: "L5",
+      features: [
+        "Sign in with a seeded user and show the account balance and transaction feed",
+        "Pay or request money from another user and show the resulting transaction",
+        "Search or filter the personal transaction history",
+      ],
+      id: "cypress-realworld-app",
+      repoUrl: "https://github.com/cypress-io/cypress-realworld-app",
+    },
+    {
+      categories: [
+        "notes",
+        "fullstack",
+        "react-router",
+        "vite",
+        "sqlite",
+        "auth",
+      ],
+      commitSha: "faaa21779c66002ba4c50890828b1b917cadbef2",
+      expectedLevel: "L5",
+      features: [
+        "Create an account or sign in and open the authenticated notes workspace",
+        "Create a note with text and an image, then show it in the notes list",
+        "Edit profile preferences such as display name or color scheme",
+      ],
+      id: "epic-stack",
+      repoUrl: "https://github.com/epicweb-dev/epic-stack",
+    },
+    {
+      categories: [
+        "scheduling",
+        "fullstack",
+        "nextjs",
+        "monorepo",
+        "database",
+        "auth",
+        "external-services",
+      ],
+      commitSha: "f00434927386c9ecdcbd7e6c5f82d22044a245bc",
+      expectedLevel: "L5",
+      features: [
+        "Show the event type dashboard and open a public scheduling link",
+        "Choose an available time and complete a booking with attendee details",
+        "Configure weekly availability for an event type",
+      ],
+      id: "cal-diy",
+      repoUrl: "https://github.com/calcom/cal.diy",
+    },
+    {
+      categories: ["cms", "fullstack", "vue", "monorepo", "database", "auth"],
+      commitSha: "9f2f73aee7d8647d3f187dac43f724fe617763f5",
+      expectedLevel: "L5",
+      features: [
+        "Create a collection with text and status fields in the data model",
+        "Add and edit an item through the visual content studio",
+        "Show how collection permissions or API access are configured",
+      ],
+      id: "directus",
+      repoUrl: "https://github.com/directus/directus",
+    },
+    {
+      categories: [
+        "finance",
+        "fullstack",
+        "angular",
+        "nestjs",
+        "monorepo",
+        "database",
+        "external-services",
+      ],
+      commitSha: "4636e0ae6fd0cd7dd03eac5edc2fb2c214528728",
+      expectedLevel: "L5",
+      features: [
+        "Show the portfolio overview with current value, performance, and allocation charts",
+        "Add or import an investment transaction into an account",
+        "Inspect portfolio analysis such as holdings, allocation, or risk insights",
+      ],
+      id: "ghostfolio",
+      repoUrl: "https://github.com/ghostfolio/ghostfolio",
+    },
+    {
+      categories: [
+        "movies",
+        "frontend",
+        "nuxt",
+        "vue",
+        "typescript",
+        "external-services",
+      ],
+      commitSha: "c6abcdcd7efff8ed9fdef364b1ffb347c3c8022f",
+      expectedLevel: "L5",
+      features: [
+        "Browse popular or trending movies and move between result pages",
+        "Search for a movie by title and open its detail page",
+        "Show movie metadata, imagery, cast, or related recommendations",
+      ],
+      id: "nuxt-movies",
+      repoUrl: "https://github.com/nuxt/movies",
+    },
+    {
+      categories: [
+        "publishing",
+        "fullstack",
+        "sveltekit",
+        "javascript",
+        "auth",
+      ],
+      commitSha: "ec8552fee0d0b7e8ad3c6a6818f3fe9ee7d861f5",
+      expectedLevel: "L5",
+      features: [
+        "Browse the global article feed and filter it by a popular tag",
+        "Open an article and show its author, content, favorites, and comments",
+        "Sign in and create or edit an article with tags",
+      ],
+      id: "svelte-realworld",
+      repoUrl: "https://github.com/sveltejs/realworld",
+    },
+    {
+      categories: [
+        "publishing",
+        "frontend",
+        "astro",
+        "typescript",
+        "static-site",
+      ],
+      commitSha: "4fe3aca0e09ed8404ec2e716ac4f3b57ccc252eb",
+      expectedLevel: "L5",
+      features: [
+        "Browse paginated blog posts and open a post with its table of contents",
+        "Search the static post index for a topic and open a matching result",
+        "Browse posts by tag and switch between light and dark themes",
+      ],
+      id: "astro-paper",
+      repoUrl: "https://github.com/satnaing/astro-paper",
+    },
+    {
+      categories: [
+        "crm",
+        "fullstack",
+        "react",
+        "nestjs",
+        "monorepo",
+        "database",
+        "auth",
+        "large",
+      ],
+      commitSha: "f13bde1e035b0c4c9376b07cdbe88b81edb11707",
+      expectedLevel: "L5",
+      features: [
+        "Browse companies and people, then inspect a CRM record and its activity timeline",
+        "Create an opportunity and move it through a pipeline or kanban view",
+        "Customize an object view by filtering, sorting, or selecting visible fields",
+      ],
+      id: "twenty",
+      repoUrl: "https://github.com/twentyhq/twenty",
+    },
+    {
+      categories: [
+        "whiteboard",
+        "frontend",
+        "react",
+        "typescript",
+        "canvas",
+        "local-first",
+      ],
+      commitSha: "e9c856d262a14c12bd0bdc3f4ac55c7a86a71577",
+      expectedLevel: "L5",
+      features: [
+        "Draw and label several shapes, then connect them with arrows to make a diagram",
+        "Select and rearrange diagram elements while demonstrating undo and redo",
+        "Switch the canvas theme and export the finished drawing as an image",
+      ],
+      id: "excalidraw",
+      repoUrl: "https://github.com/excalidraw/excalidraw",
+    },
+  ],
+  version: 1,
+});
+
+export const benchmarkRepos = benchmarkSuite.repos;
+export { buildBenchmarkPipelineArgs };

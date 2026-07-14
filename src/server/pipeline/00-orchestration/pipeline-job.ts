@@ -13,6 +13,7 @@ import type {
 import type { CapturePathValidationResult } from "../05-capture-path-validation/capture-path-validator.interface";
 
 export type PipelineJobInput = {
+  commitSha?: string;
   demoBrief: DemoBrief;
   normalizedSupportingDocuments: NormalizedSupportingDocument[];
   repoSecurity: RepoSecurityInput;

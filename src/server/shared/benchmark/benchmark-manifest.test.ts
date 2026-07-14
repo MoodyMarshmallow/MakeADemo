@@ -9,18 +9,16 @@ describe("readBenchmarkManifest", () => {
   it("reads benchmark defaults and repo entries with repo-specific overrides", () => {
     const manifest = readBenchmarkManifest({
       defaults: {
-        mode: "stage1",
-        model: "gpt-5.5",
         provider: "openai",
         repetitions: 2,
       },
       repos: [
         {
           categories: ["realworld", "frontend"],
+          commitSha: "0123456789abcdef0123456789abcdef01234567",
           expectedLevel: "L2",
           features: ["Show the article feed"],
           id: "conduit",
-          mode: "full",
           repoUrl: "https://github.com/TonyMckes/conduit-realworld-example-app",
         },
       ],
@@ -28,12 +26,38 @@ describe("readBenchmarkManifest", () => {
     });
 
     expect(manifest.repos[0]).toMatchObject({
-      effectiveMode: "full",
-      effectiveModel: "gpt-5.5",
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       effectiveProvider: "openai",
       effectiveRepetitions: 2,
       id: "conduit",
     });
+  });
+
+  it("rejects pipeline modes because every benchmark runs the whole pipeline", () => {
+    expect(() =>
+      readBenchmarkManifest({
+        defaults: { mode: "partial" },
+        repos: [],
+        version: 1,
+      }),
+    ).toThrow("defaults.mode is not supported");
+  });
+
+  it("requires an immutable commit SHA for every benchmark repository", () => {
+    expect(() =>
+      readBenchmarkManifest({
+        repos: [
+          {
+            categories: ["frontend"],
+            expectedLevel: "L5",
+            features: ["Show the app"],
+            id: "floating-repo",
+            repoUrl: "https://github.com/example/app",
+          },
+        ],
+        version: 1,
+      }),
+    ).toThrow("repos[0].commitSha must be a full 40-character Git SHA");
   });
 
   it("rejects duplicate repo ids because results use ids as stable keys", () => {
@@ -42,6 +66,7 @@ describe("readBenchmarkManifest", () => {
         repos: [
           {
             categories: [],
+            commitSha: "0123456789abcdef0123456789abcdef01234567",
             expectedLevel: "L1",
             features: ["Show the app"],
             id: "same",
@@ -49,6 +74,7 @@ describe("readBenchmarkManifest", () => {
           },
           {
             categories: [],
+            commitSha: "89abcdef0123456789abcdef0123456789abcdef",
             expectedLevel: "L1",
             features: ["Show the app"],
             id: "same",
@@ -59,21 +85,41 @@ describe("readBenchmarkManifest", () => {
       }),
     ).toThrow("Duplicate benchmark repo id: same");
   });
+
+  it("rejects output-quality levels because the benchmark stops at output existence", () => {
+    expect(() =>
+      readBenchmarkManifest({
+        repos: [
+          {
+            categories: [],
+            commitSha: "0123456789abcdef0123456789abcdef01234567",
+            expectedLevel: "quality",
+            features: ["Show the app"],
+            id: "quality-scored",
+            repoUrl: "https://github.com/example/app",
+          },
+        ],
+        version: 1,
+      }),
+    ).toThrow(
+      "repos[0].expectedLevel must be one of L0, L1, L2, L3, L4, or L5",
+    );
+  });
 });
 
 describe("buildBenchmarkPipelineArgs", () => {
   it("builds full-pipeline CLI args from a repo benchmark entry", () => {
     const manifest = readBenchmarkManifest({
-      defaults: { model: "gpt-5.5", provider: "openai" },
+      defaults: { provider: "openai" },
       repos: [
         {
           categories: ["fullstack"],
+          commitSha: "0123456789abcdef0123456789abcdef01234567",
           daytonaSnapshot: "snapshot-id",
           docs: ["docs/setup.md"],
           expectedLevel: "L5",
           features: ["Show scheduling"],
           id: "calendar",
-          mode: "full",
           repoUrl: "https://github.com/example/calendar",
           workspaceId: "workspace-calendar",
         },
@@ -96,6 +142,10 @@ describe("buildBenchmarkPipelineArgs", () => {
       ".makeademo-benchmark-runs/run-1",
       "--repo",
       "https://github.com/example/calendar",
+      "--commit",
+      "0123456789abcdef0123456789abcdef01234567",
+      "--provider",
+      "openai",
       "--feature",
       "Show scheduling",
       "--doc",

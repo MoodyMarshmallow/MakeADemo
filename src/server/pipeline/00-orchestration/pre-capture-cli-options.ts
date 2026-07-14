@@ -1,6 +1,7 @@
 import { defaultOpenCodeModel } from "../../shared/integrations/agents/opencode-model-defaults";
 
 export type PreCaptureCliOptions = {
+  commitSha?: string;
   docs: string[];
   features: string[];
   modelID: string;
@@ -12,6 +13,7 @@ export type PreCaptureCliOptions = {
 export function parsePreCaptureCliArgs(args: string[]): PreCaptureCliOptions {
   const docs: string[] = [];
   const features: string[] = [];
+  let commitSha: string | undefined;
   let modelID: string = defaultOpenCodeModel.modelID;
   let providerID: string = defaultOpenCodeModel.providerID;
   let repoUrl: string | undefined;
@@ -21,6 +23,10 @@ export function parsePreCaptureCliArgs(args: string[]): PreCaptureCliOptions {
     const arg = args[index];
 
     switch (arg) {
+      case "--commit":
+        commitSha = readCommitSha(readValue(args, index, arg));
+        index += 1;
+        break;
       case "--doc":
         docs.push(readValue(args, index, arg));
         index += 1;
@@ -59,6 +65,7 @@ export function parsePreCaptureCliArgs(args: string[]): PreCaptureCliOptions {
   }
 
   return {
+    ...(commitSha === undefined ? {} : { commitSha }),
     docs,
     features,
     modelID,
@@ -66,6 +73,14 @@ export function parsePreCaptureCliArgs(args: string[]): PreCaptureCliOptions {
     repoUrl,
     workspaceId: workspaceId ?? createWorkspaceId(repoUrl),
   };
+}
+
+function readCommitSha(value: string): string {
+  if (!/^[0-9a-f]{40}$/i.test(value)) {
+    throw new Error("--commit must be a full 40-character Git SHA");
+  }
+
+  return value.toLowerCase();
 }
 
 function readValue(args: string[], index: number, flag: string): string {

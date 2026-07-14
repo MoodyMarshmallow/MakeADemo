@@ -1,4 +1,4 @@
-import type { BenchmarkMode, BenchmarkStatusLevel } from "./benchmark-manifest";
+import type { BenchmarkStatusLevel } from "./benchmark-manifest";
 
 type BenchmarkTokenUsage = {
   completionTokens: number;
@@ -8,6 +8,7 @@ type BenchmarkTokenUsage = {
 
 export type BenchmarkResult = {
   benchmarkRunId: string;
+  commitSha: string;
   command?: string[];
   durationMs: number;
   endedAt: string;
@@ -16,7 +17,6 @@ export type BenchmarkResult = {
   failureMessage?: string;
   failureStage?: string;
   logPath?: string;
-  mode: BenchmarkMode;
   repoId: string;
   repoUrl: string;
   resultPath?: string;
@@ -30,8 +30,6 @@ export type BenchmarkResult = {
 };
 
 export type BenchmarkStatusInferenceInput = {
-  exitCode?: number | null;
-  mode?: BenchmarkMode;
   pipelineStatus?: string;
   succeededEvents?: string[];
 };
@@ -64,13 +62,9 @@ export function inferBenchmarkStatusLevel(
   if (succeededEvents.has("capture-succeeded")) {
     return "L4";
   }
-  if (input.mode === "stage1" && input.exitCode === 0) {
-    return "L3";
-  }
-
   switch (input.pipelineStatus) {
     case "succeeded":
-      return "L3";
+      return "L5";
     case "validation-failed":
       return "L1";
     default:

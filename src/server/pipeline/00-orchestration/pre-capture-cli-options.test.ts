@@ -19,6 +19,8 @@ describe("parsePreCaptureCliArgs", () => {
       parsePreCaptureCliArgs([
         "--repo",
         "https://github.com/example/app",
+        "--commit",
+        "0123456789abcdef0123456789abcdef01234567",
         "--feature",
         "validation dashboard",
         "--feature",
@@ -33,6 +35,7 @@ describe("parsePreCaptureCliArgs", () => {
         "workspace_test",
       ]),
     ).toEqual({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       docs: ["./brief.md"],
       features: ["validation dashboard", "script package"],
       modelID: "gpt-5.5",
@@ -40,6 +43,19 @@ describe("parsePreCaptureCliArgs", () => {
       repoUrl: "https://github.com/example/app",
       workspaceId: "workspace_test",
     });
+  });
+
+  it("rejects abbreviated commit SHAs", () => {
+    expect(() =>
+      parsePreCaptureCliArgs([
+        "--repo",
+        "https://github.com/example/app",
+        "--commit",
+        "abc123",
+        "--feature",
+        "validation dashboard",
+      ]),
+    ).toThrowError("--commit must be a full 40-character Git SHA");
   });
 
   it("rejects the legacy local workspace root option", () => {

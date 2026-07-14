@@ -26,6 +26,7 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -45,7 +46,7 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
         },
         {
           execute: expect.stringContaining(
-            "git clone --depth 1 'https://github.com/example/app' '/workspace'",
+            "checkout --detach '0123456789abcdef0123456789abcdef01234567'",
           ),
         },
         { network: false },
@@ -97,6 +98,9 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
       )
       .map((event) => event.execute);
     expect(cloneCommands).toHaveLength(1);
+    expect(cloneCommands[0]).toContain(
+      `test "$(git -C '/workspace' rev-parse HEAD)" = '0123456789abcdef0123456789abcdef01234567'`,
+    );
     expect(cloneCommands[0]).toContain("/etc/ssl/certs/ca-certificates.crt");
     expect(cloneCommands[0]).toContain("/etc/pki/tls/certs/ca-bundle.crt");
     expect(cloneCommands[0]).toContain("/etc/openshell-tls/ca-bundle.pem");
@@ -1824,6 +1828,7 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
     });
 
     await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -1839,7 +1844,7 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
         },
         {
           submittedCodeExecute: expect.stringContaining(
-            "git clone --depth 1 'https://github.com/example/app' '/workspace'",
+            "checkout --detach '0123456789abcdef0123456789abcdef01234567'",
           ),
         },
       ]),
@@ -1853,6 +1858,9 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
         event.submittedCodeExecute.includes("git clone"),
     )?.submittedCodeExecute;
     expect(submittedCodeClone).toContain("/etc/ssl/certs/ca-certificates.crt");
+    expect(submittedCodeClone).toContain(
+      `test "$(git -C '/workspace' rev-parse HEAD)" = '0123456789abcdef0123456789abcdef01234567'`,
+    );
     expect(submittedCodeClone).toContain("/etc/pki/tls/certs/ca-bundle.crt");
     expect(submittedCodeClone).toContain("/etc/openshell-tls/ca-bundle.pem");
     expect(submittedCodeClone).toMatch(/export GIT_SSL_CAINFO=.*git clone/s);

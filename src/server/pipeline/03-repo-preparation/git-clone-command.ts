@@ -15,17 +15,36 @@ const caBundleCandidates = [
 /**
  * Builds the native git clone command used inside Daytona workspaces.
  * Implementations must keep repo URL and path arguments shell-quoted, discover a
- * readable CA bundle before cloning, and must never disable TLS verification.
+ * readable CA bundle before cloning, must never disable TLS verification, and
+ * must verify HEAD when an immutable commit is requested.
  */
 export function createGitCloneCommand(input: {
+  commitSha?: string;
   destinationPath: string;
   repoUrl: string;
   resetCommand: string;
 }): string {
+  if (
+    input.commitSha !== undefined &&
+    !/^[0-9a-f]{40}$/i.test(input.commitSha)
+  ) {
+    throw new Error("commitSha must be a full 40-character Git SHA");
+  }
+
+  const destinationPath = shellQuote(input.destinationPath);
+  const commitSha =
+    input.commitSha === undefined ? undefined : shellQuote(input.commitSha);
   return [
     input.resetCommand,
     createCaBundleDiscoveryCommand(),
-    `git clone --depth 1 ${shellQuote(input.repoUrl)} ${shellQuote(input.destinationPath)}`,
+    `git clone --depth 1${commitSha === undefined ? "" : " --no-checkout"} ${shellQuote(input.repoUrl)} ${destinationPath}`,
+    ...(commitSha === undefined
+      ? []
+      : [
+          `git -C ${destinationPath} fetch --depth 1 origin ${commitSha}`,
+          `git -C ${destinationPath} checkout --detach ${commitSha}`,
+          `test "$(git -C ${destinationPath} rev-parse HEAD)" = ${commitSha}`,
+        ]),
   ].join(" && ");
 }
 

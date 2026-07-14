@@ -81,7 +81,12 @@ const cliLogger = createPipelineEventLogger({
 const repoSecurity = await readRepoSecurityInput(
   sandboxProvider,
   options.repoUrl,
-  { logger: cliLogger.child({ component: "repo-security-screen" }) },
+  {
+    ...(options.commitSha === undefined
+      ? {}
+      : { commitSha: options.commitSha }),
+    logger: cliLogger.child({ component: "repo-security-screen" }),
+  },
 );
 const normalizedSupportingDocuments = await Promise.all(
   options.docs.map(async (docPath) => {
@@ -147,6 +152,9 @@ const scriptGenerationAgent = new DaytonaOpenCodeScriptGeneration({
 
 const result = await runFullPipelineJob(
   {
+    ...(options.commitSha === undefined
+      ? {}
+      : { commitSha: options.commitSha }),
     demoBrief: readDemoBrief({ keyProductFeatures: options.features }),
     normalizedSupportingDocuments,
     repoSecurity,

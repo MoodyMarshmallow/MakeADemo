@@ -6,7 +6,7 @@ import {
 } from "./benchmark-results";
 
 describe("inferBenchmarkStatusLevel", () => {
-  it("maps stage and full-pipeline outcomes to benchmark status levels", () => {
+  it("maps whole-pipeline outcomes to benchmark status levels", () => {
     expect(
       inferBenchmarkStatusLevel({ pipelineStatus: "security-rejected" }),
     ).toBe("L0");
@@ -17,14 +17,8 @@ describe("inferBenchmarkStatusLevel", () => {
       inferBenchmarkStatusLevel({ pipelineStatus: "validation-failed" }),
     ).toBe("L1");
     expect(inferBenchmarkStatusLevel({ pipelineStatus: "succeeded" })).toBe(
-      "L3",
+      "L5",
     );
-    expect(
-      inferBenchmarkStatusLevel({
-        exitCode: 0,
-        mode: "stage1",
-      }),
-    ).toBe("L3");
     expect(
       inferBenchmarkStatusLevel({
         pipelineStatus: "succeeded",
@@ -46,11 +40,11 @@ describe("summarizeBenchmarkResults", () => {
       summarizeBenchmarkResults([
         {
           benchmarkRunId: "run-1",
+          commitSha: "0123456789abcdef0123456789abcdef01234567",
           durationMs: 1000,
           endedAt: "2026-06-15T00:00:01.000Z",
           expectedLevel: "L5",
           exitCode: 0,
-          mode: "full",
           repoId: "one",
           repoUrl: "https://github.com/example/one",
           startedAt: "2026-06-15T00:00:00.000Z",
@@ -64,12 +58,12 @@ describe("summarizeBenchmarkResults", () => {
         },
         {
           benchmarkRunId: "run-1",
+          commitSha: "89abcdef0123456789abcdef0123456789abcdef",
           durationMs: 3000,
           endedAt: "2026-06-15T00:00:04.000Z",
           expectedLevel: "L5",
           exitCode: 1,
           failureStage: "repo-preparation",
-          mode: "full",
           repoId: "two",
           repoUrl: "https://github.com/example/two",
           startedAt: "2026-06-15T00:00:01.000Z",

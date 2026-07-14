@@ -7,6 +7,39 @@ import { describe, expect, it } from "vitest";
 import { createGitCloneCommand } from "./git-clone-command";
 
 describe("createGitCloneCommand", () => {
+  it("checks out and verifies an immutable commit when one is requested", () => {
+    const command = createGitCloneCommand({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
+      destinationPath: "/workspace/submitted code",
+      repoUrl: "https://github.com/example/app",
+      resetCommand: "rm -rf '/workspace/submitted code'",
+    });
+
+    expect(command).toContain(
+      "git clone --depth 1 --no-checkout 'https://github.com/example/app' '/workspace/submitted code'",
+    );
+    expect(command).toContain(
+      "git -C '/workspace/submitted code' fetch --depth 1 origin '0123456789abcdef0123456789abcdef01234567'",
+    );
+    expect(command).toContain(
+      "git -C '/workspace/submitted code' checkout --detach '0123456789abcdef0123456789abcdef01234567'",
+    );
+    expect(command).toContain(
+      `test "$(git -C '/workspace/submitted code' rev-parse HEAD)" = '0123456789abcdef0123456789abcdef01234567'`,
+    );
+  });
+
+  it("rejects abbreviated commit SHAs at the clone boundary", () => {
+    expect(() =>
+      createGitCloneCommand({
+        commitSha: "abc123",
+        destinationPath: "/workspace",
+        repoUrl: "https://github.com/example/app",
+        resetCommand: "rm -rf '/workspace'",
+      }),
+    ).toThrow("commitSha must be a full 40-character Git SHA");
+  });
+
   it("prefers readable absolute CA env paths before hardcoded CA bundles", () => {
     const command = createGitCloneCommand({
       destinationPath: "/workspace/submitted code",

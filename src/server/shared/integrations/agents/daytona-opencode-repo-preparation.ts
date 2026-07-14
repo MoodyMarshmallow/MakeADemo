@@ -227,6 +227,7 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
     input: RepoPreparationInput,
   ): Promise<PreparationSetupResult> {
     const bootstrap = await bootstrapRepoPreparationWorkspace({
+      ...(input.commitSha === undefined ? {} : { commitSha: input.commitSha }),
       ...(this.cloneFailureDiagnosticsContext === undefined
         ? {}
         : {

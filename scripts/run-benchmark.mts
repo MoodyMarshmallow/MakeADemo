@@ -4,36 +4,28 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { finished } from "node:stream/promises";
 
-import {
-  type BenchmarkRepo,
-  buildBenchmarkPipelineArgs,
-  readBenchmarkManifest,
-} from "../src/server/shared/benchmark/benchmark-manifest";
+import type { BenchmarkRepo } from "../src/server/shared/benchmark/benchmark-manifest";
 import { redactBenchmarkOutput } from "../src/server/shared/benchmark/benchmark-output-redaction";
 import {
   type BenchmarkResult,
   inferBenchmarkStatusLevel,
+  summarizeBenchmarkResults,
 } from "../src/server/shared/benchmark/benchmark-results";
 import { runBenchmarkJobs } from "../src/server/shared/benchmark/benchmark-runner";
+import {
+  benchmarkRepos,
+  benchmarkSuite,
+  buildBenchmarkPipelineArgs,
+} from "../src/server/shared/benchmark/benchmark-suite";
 
-const manifestPath = process.argv[2];
-if (manifestPath === undefined) {
-  throw new Error("Usage: bun scripts/run-benchmark.mts <manifest.json>");
-}
-
-const manifest = readBenchmarkManifest(
-  JSON.parse(await readFile(manifestPath, "utf8")),
-);
 const benchmarkRunId = createRunId();
-const outputRoot =
-  manifest.defaults.outputRoot ??
-  join(".makeademo-benchmark-runs", benchmarkRunId);
+const outputRoot = join(".makeademo-benchmark-runs", benchmarkRunId);
 const resultsPath = join(outputRoot, "benchmark-results.jsonl");
 
 await mkdir(outputRoot, { recursive: true });
 await writeFile(
   join(outputRoot, "benchmark-manifest.snapshot.json"),
-  `${JSON.stringify(manifest, null, 2)}\n`,
+  `${JSON.stringify(benchmarkSuite, null, 2)}\n`,
 );
 
 process.stdout.write(`Benchmark run: ${benchmarkRunId}\n`);
@@ -41,8 +33,8 @@ process.stdout.write(`Output root: ${outputRoot}\n`);
 process.stdout.write(`Results: ${resultsPath}\n`);
 
 let pendingResultWrite = Promise.resolve();
-await runBenchmarkJobs({
-  repos: manifest.repos,
+const results = await runBenchmarkJobs({
+  repos: benchmarkRepos,
   run: async ({ repo, repetitionIndex }) => {
     const result = await runRepoBenchmark({
       benchmarkRunId,
@@ -59,9 +51,7 @@ await runBenchmarkJobs({
 });
 
 process.stdout.write("\nBenchmark complete.\n");
-process.stdout.write(
-  `Summarize with: bun scripts/summarize-benchmark.mts ${resultsPath}\n`,
-);
+printSummary(results);
 
 async function runRepoBenchmark(input: {
   benchmarkRunId: string;
@@ -83,7 +73,7 @@ async function runRepoBenchmark(input: {
   const command = ["bun", ...args];
   const startedAt = new Date();
   process.stdout.write(
-    `\n[${input.repo.id}] run ${input.repetitionIndex + 1}/${input.repo.effectiveRepetitions}: ${input.repo.effectiveMode}\n`,
+    `\n[${input.repo.id}] run ${input.repetitionIndex + 1}/${input.repo.effectiveRepetitions}\n`,
   );
   process.stdout.write(`$ ${command.join(" ")}\n`);
 
@@ -101,13 +91,9 @@ async function runRepoBenchmark(input: {
   const statusLevel = inferBenchmarkStatusLevel(
     fullPipelineResult?.status === undefined
       ? {
-          exitCode,
-          mode: input.repo.effectiveMode,
           succeededEvents: fullPipelineLog.succeededEvents,
         }
       : {
-          exitCode,
-          mode: input.repo.effectiveMode,
           pipelineStatus: fullPipelineResult.status,
           succeededEvents: fullPipelineLog.succeededEvents,
         },
@@ -115,6 +101,7 @@ async function runRepoBenchmark(input: {
 
   const result: BenchmarkResult = {
     benchmarkRunId: input.benchmarkRunId,
+    commitSha: input.repo.commitSha,
     command,
     durationMs: endedAt.getTime() - startedAt.getTime(),
     endedAt: endedAt.toISOString(),
@@ -129,7 +116,6 @@ async function runRepoBenchmark(input: {
     ...(fullPipelineResult?.artifacts?.logPath === undefined
       ? {}
       : { logPath: fullPipelineResult.artifacts.logPath }),
-    mode: input.repo.effectiveMode,
     repoId: input.repo.id,
     repoUrl: input.repo.repoUrl,
     ...(fullPipelineResult?.resultPath === undefined
@@ -255,4 +241,27 @@ function createRunId() {
 
 function formatDuration(durationMs: number) {
   return `${Math.round(durationMs / 1000)}s`;
+}
+
+function printSummary(results: BenchmarkResult[]) {
+  const summary = summarizeBenchmarkResults(results);
+  process.stdout.write("Individual durations:\n");
+  for (const run of summary.runDurations) {
+    process.stdout.write(
+      `  ${run.repoId}: ${formatDuration(run.durationMs)}\n`,
+    );
+  }
+  process.stdout.write(
+    `Average duration: ${formatOptionalDuration(summary.averageDurationMs)}\n`,
+  );
+  process.stdout.write(
+    `Median duration: ${formatOptionalDuration(summary.medianDurationMs)}\n`,
+  );
+  process.stdout.write(
+    `Max duration: ${formatOptionalDuration(summary.maxDurationMs)}\n`,
+  );
+}
+
+function formatOptionalDuration(durationMs: number | null) {
+  return durationMs === null ? "n/a" : formatDuration(durationMs);
 }

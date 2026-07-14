@@ -140,6 +140,7 @@ export async function runPipelineJob(
   let preparation: RepoPreparationResult;
   try {
     preparation = await dependencies.prepareRepo({
+      ...(input.commitSha === undefined ? {} : { commitSha: input.commitSha }),
       normalizedSupportingDocuments: input.normalizedSupportingDocuments,
       repoUrl: input.repoUrl,
       structuredDemoIntent: input.demoBrief,

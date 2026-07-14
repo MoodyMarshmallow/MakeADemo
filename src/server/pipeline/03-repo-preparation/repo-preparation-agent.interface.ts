@@ -5,6 +5,7 @@ import type { PreparationManifest } from "./preparation-manifest";
 import type { PreparationWorkspaceHandle } from "./preparation-workspace-runner";
 
 export type RepoPreparationInput = {
+  commitSha?: string;
   normalizedSupportingDocuments: NormalizedSupportingDocument[];
   repoUrl: string;
   structuredDemoIntent: DemoBrief;
@@ -29,7 +30,8 @@ type RepoPreparationAgentResult =
 /**
  * Prepares an ephemeral cloned workspace for deterministic demo validation.
  * Implementations may edit and execute only that workspace, should check for
- * existing demos before creating new setup, and must not modify the source repo.
+ * existing demos before creating new setup, must check out commitSha when one is
+ * supplied, and must not modify the source repo.
  */
 export interface RepoPreparationAgent {
   prepare(input: RepoPreparationInput): Promise<RepoPreparationAgentResult>;

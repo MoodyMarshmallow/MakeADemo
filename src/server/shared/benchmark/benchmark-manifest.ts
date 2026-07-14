@@ -1,18 +1,7 @@
-export type BenchmarkMode = "full" | "stage1";
-
-export type BenchmarkStatusLevel =
-  | "L0"
-  | "L1"
-  | "L2"
-  | "L3"
-  | "L4"
-  | "L5"
-  | "L6";
+export type BenchmarkStatusLevel = "L0" | "L1" | "L2" | "L3" | "L4" | "L5";
 
 type BenchmarkManifestDefaults = {
   daytonaSnapshot?: string;
-  mode?: BenchmarkMode;
-  model?: string;
   outputRoot?: string;
   provider?: string;
   repetitions?: number;
@@ -20,14 +9,12 @@ type BenchmarkManifestDefaults = {
 
 type BenchmarkRepoSpec = {
   categories: string[];
-  commitSha?: string;
+  commitSha: string;
   daytonaSnapshot?: string;
   docs?: string[];
   expectedLevel: BenchmarkStatusLevel;
   features: string[];
   id: string;
-  mode?: BenchmarkMode;
-  model?: string;
   provider?: string;
   repoUrl: string;
   repetitions?: number;
@@ -43,8 +30,6 @@ export type BenchmarkManifest = {
 export type BenchmarkRepo = BenchmarkRepoSpec & {
   docs: string[];
   effectiveDaytonaSnapshot?: string;
-  effectiveMode: BenchmarkMode;
-  effectiveModel: string;
   effectiveProvider: string;
   effectiveRepetitions: number;
 };
@@ -71,17 +56,20 @@ export function readBenchmarkManifest(value: unknown): BenchmarkManifest {
 }
 
 export function buildBenchmarkPipelineArgs(input: BenchmarkPipelineArgsInput) {
-  const cliPath =
-    input.repo.effectiveMode === "stage1"
-      ? "src/server/pipeline/00-orchestration/pre-capture-cli.mts"
-      : "src/server/pipeline/00-orchestration/full-pipeline-cli.mts";
-  const args = [cliPath];
+  const args = [
+    "src/server/pipeline/00-orchestration/full-pipeline-cli.mts",
+    "--output-root",
+    input.outputRoot,
+  ];
 
-  if (input.repo.effectiveMode === "full") {
-    args.push("--output-root", input.outputRoot);
-  }
-
-  args.push("--repo", input.repo.repoUrl);
+  args.push(
+    "--repo",
+    input.repo.repoUrl,
+    "--commit",
+    input.repo.commitSha,
+    "--provider",
+    input.repo.effectiveProvider,
+  );
   for (const feature of input.repo.features) {
     args.push("--feature", feature);
   }
@@ -98,13 +86,12 @@ function readDefaults(value: unknown): BenchmarkManifestDefaults {
   }
 
   const record = readRecord(value, "defaults");
+  assertUnsupportedPipelineMode(record.mode, "defaults.mode");
   return omitUndefined({
     daytonaSnapshot: readOptionalString(
       record.daytonaSnapshot,
       "defaults.daytonaSnapshot",
     ),
-    mode: readOptionalMode(record.mode, "defaults.mode"),
-    model: readOptionalString(record.model, "defaults.model"),
     outputRoot: readOptionalString(record.outputRoot, "defaults.outputRoot"),
     provider: readOptionalString(record.provider, "defaults.provider"),
     repetitions: readOptionalPositiveInteger(
@@ -120,12 +107,7 @@ function readRepo(
   path: string,
 ): BenchmarkRepo {
   const record = readRecord(value, path);
-  const mode =
-    readOptionalMode(record.mode, `${path}.mode`) ?? defaults.mode ?? "stage1";
-  const model =
-    readOptionalString(record.model, `${path}.model`) ??
-    defaults.model ??
-    "gpt-5.5";
+  assertUnsupportedPipelineMode(record.mode, `${path}.mode`);
   const provider =
     readOptionalString(record.provider, `${path}.provider`) ??
     defaults.provider ??
@@ -140,15 +122,13 @@ function readRepo(
 
   return omitUndefined({
     categories: readStringArray(record.categories, `${path}.categories`),
-    commitSha: readOptionalString(record.commitSha, `${path}.commitSha`),
+    commitSha: readCommitSha(record.commitSha, `${path}.commitSha`),
     daytonaSnapshot: readOptionalString(
       record.daytonaSnapshot,
       `${path}.daytonaSnapshot`,
     ),
     docs: readOptionalStringArray(record.docs, `${path}.docs`) ?? [],
     effectiveDaytonaSnapshot: daytonaSnapshot,
-    effectiveMode: mode,
-    effectiveModel: model,
     effectiveProvider: provider,
     effectiveRepetitions: repetitions,
     expectedLevel: readStatusLevel(
@@ -157,8 +137,6 @@ function readRepo(
     ),
     features: readStringArray(record.features, `${path}.features`),
     id: readString(record.id, `${path}.id`),
-    mode: readOptionalMode(record.mode, `${path}.mode`),
-    model: readOptionalString(record.model, `${path}.model`),
     provider: readOptionalString(record.provider, `${path}.provider`),
     repoUrl: readString(record.repoUrl, `${path}.repoUrl`),
     repetitions: readOptionalPositiveInteger(
@@ -219,6 +197,14 @@ function readNumber(value: unknown, path: string): number {
   return value;
 }
 
+function readCommitSha(value: unknown, path: string): string {
+  if (typeof value !== "string" || !/^[0-9a-f]{40}$/i.test(value)) {
+    throw new Error(`${path} must be a full 40-character Git SHA`);
+  }
+
+  return value.toLowerCase();
+}
+
 function readOptionalPositiveInteger(
   value: unknown,
   path: string,
@@ -251,19 +237,12 @@ function readOptionalStringArray(
   return readStringArray(value, path);
 }
 
-function readOptionalMode(
-  value: unknown,
-  path: string,
-): BenchmarkMode | undefined {
-  if (value === undefined) {
-    return undefined;
+function assertUnsupportedPipelineMode(value: unknown, path: string) {
+  if (value !== undefined) {
+    throw new Error(
+      `${path} is not supported because benchmarks always run the whole pipeline`,
+    );
   }
-
-  if (value !== "full" && value !== "stage1") {
-    throw new Error(`${path} must be "full" or "stage1"`);
-  }
-
-  return value;
 }
 
 function readStatusLevel(value: unknown, path: string): BenchmarkStatusLevel {
@@ -273,10 +252,9 @@ function readStatusLevel(value: unknown, path: string): BenchmarkStatusLevel {
     value !== "L2" &&
     value !== "L3" &&
     value !== "L4" &&
-    value !== "L5" &&
-    value !== "L6"
+    value !== "L5"
   ) {
-    throw new Error(`${path} must be one of L0, L1, L2, L3, L4, L5, or L6`);
+    throw new Error(`${path} must be one of L0, L1, L2, L3, L4, or L5`);
   }
 
   return value;

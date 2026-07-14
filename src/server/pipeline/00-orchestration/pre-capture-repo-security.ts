@@ -22,6 +22,7 @@ export async function readRepoSecurityInput(
   repoUrl: string,
   options: {
     cloneWorkspaceRetryDelaysMs?: number[];
+    commitSha?: string;
     destroyTimeoutMs?: number;
     logger?: PipelineEventLogger;
   } = {},
@@ -39,6 +40,7 @@ export async function readRepoSecurityInput(
       const cloneResult = await cloneWithNetworkAccess(
         handle.workspace,
         repoUrl,
+        options.commitSha,
       );
       if (cloneResult.exitCode !== 0) {
         const error = new Error(
@@ -178,12 +180,14 @@ async function runDestroyWithTimeout(
 async function cloneWithNetworkAccess(
   workspace: PreparationWorkspace,
   repoUrl: string,
+  commitSha: string | undefined,
 ) {
   try {
     return await runGitCloneWithTransientRetry({
       clone: () =>
         workspace.execute(
           createGitCloneCommand({
+            ...(commitSha === undefined ? {} : { commitSha }),
             destinationPath: daytonaWorkspaceDirectory,
             repoUrl,
             resetCommand: createDaytonaWorkspaceResetCommand(),

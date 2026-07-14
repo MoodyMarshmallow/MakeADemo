@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "arch:deps": "depcruise src --config .dependency-cruiser.cjs --include-only \"^src\"",
-    "benchmark:run": "bun scripts/run-benchmark.mts",
+    "benchmark": "bun scripts/run-benchmark.mts",
     "benchmark:summarize": "bun scripts/summarize-benchmark.mts",
     "build": "tsc --noEmit -p tsconfig.json && vite build",
     "demo": "vite demo --host 127.0.0.1 --port 3000",

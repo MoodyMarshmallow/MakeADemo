@@ -6,9 +6,11 @@ import { runPipelineJob } from "./pipeline-orchestrator";
 describe("runPipelineJob", () => {
   it("runs security screen, repo preparation, script generation, and capture path validation in order", async () => {
     const calls: string[] = [];
+    const commitSha = "0123456789abcdef0123456789abcdef01234567";
 
     const result = await runPipelineJob(
       {
+        commitSha,
         demoBrief: { keyProductFeatures: ["validation"] },
         normalizedSupportingDocuments: [],
         repoSecurity: {
@@ -25,8 +27,9 @@ describe("runPipelineJob", () => {
             assumptions: preparationManifest.assumptions,
           });
         },
-        async prepareRepo() {
+        async prepareRepo(input) {
           calls.push("repo-preparation");
+          expect(input.commitSha).toBe(commitSha);
           return {
             manifest: manifest(),
             status: "succeeded",

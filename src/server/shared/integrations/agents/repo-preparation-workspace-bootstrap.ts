@@ -23,13 +23,18 @@ export type RepoPreparationCloneDiagnosticsContext = {
 /** Clones both workspace views, reseals their networks, captures clone diagnostics, and installs OpenCode policy. */
 export async function bootstrapRepoPreparationWorkspace(input: {
   cloneFailureDiagnosticsContext?: RepoPreparationCloneDiagnosticsContext;
+  commitSha?: string;
   logger: PipelineEventLogger;
   repoUrl: string;
   workspace: PreparationWorkspace;
 }): Promise<{ failure?: ReturnType<typeof createRepoCloneFailure> }> {
   await writeLog(input, { event: "clone-started" });
   await input.workspace.setOutboundNetworkAccess(true);
-  const parentClone = await cloneParent(input.workspace, input.repoUrl);
+  const parentClone = await cloneParent(
+    input.workspace,
+    input.repoUrl,
+    input.commitSha,
+  );
   await writeLog(input, cloneEvent("clone-finished", parentClone));
   if (parentClone.exitCode !== 0) {
     await writeDiagnostics(
@@ -45,6 +50,7 @@ export async function bootstrapRepoPreparationWorkspace(input: {
   const submittedClone = await cloneSubmittedCode(
     input.workspace,
     input.repoUrl,
+    input.commitSha,
   );
   if (submittedClone !== undefined) {
     await writeLog(
@@ -97,11 +103,17 @@ export function createRepoPreparationOpenCodeEnv(): Record<string, string> {
   return { OPENCODE_CONFIG_DIR: configDirectory, OPENCODE_ENABLE_EXA: "1" };
 }
 
-async function cloneParent(workspace: PreparationWorkspace, repoUrl: string) {
+async function cloneParent(
+  workspace: PreparationWorkspace,
+  repoUrl: string,
+  commitSha?: string,
+) {
   try {
     return await runGitCloneWithTransientRetry({
       clone: () =>
-        workspace.execute(createCloneCommand(repoUrl), { timeoutMs: 120_000 }),
+        workspace.execute(createCloneCommand(repoUrl, commitSha), {
+          timeoutMs: 120_000,
+        }),
     });
   } finally {
     await workspace.setOutboundNetworkAccess(false);
@@ -111,6 +123,7 @@ async function cloneParent(workspace: PreparationWorkspace, repoUrl: string) {
 async function cloneSubmittedCode(
   workspace: PreparationWorkspace,
   repoUrl: string,
+  commitSha?: string,
 ) {
   const executeSubmittedCode = workspace.executeSubmittedCode;
   if (executeSubmittedCode === undefined) return undefined;
@@ -118,15 +131,19 @@ async function cloneSubmittedCode(
   try {
     return await runGitCloneWithTransientRetry({
       clone: () =>
-        executeSubmittedCode.call(workspace, createCloneCommand(repoUrl)),
+        executeSubmittedCode.call(
+          workspace,
+          createCloneCommand(repoUrl, commitSha),
+        ),
     });
   } finally {
     await workspace.setSubmittedCodeNetworkAccess?.(false);
   }
 }
 
-function createCloneCommand(repoUrl: string): string {
+function createCloneCommand(repoUrl: string, commitSha?: string): string {
   return createGitCloneCommand({
+    ...(commitSha === undefined ? {} : { commitSha }),
     destinationPath: daytonaWorkspaceDirectory,
     repoUrl,
     resetCommand: createDaytonaWorkspaceResetCommand(),

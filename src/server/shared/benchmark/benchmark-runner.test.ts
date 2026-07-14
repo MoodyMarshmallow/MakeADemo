@@ -39,16 +39,16 @@ describe("runBenchmarkJobs", () => {
 function resultFor(repoId: string): BenchmarkResult {
   return {
     benchmarkRunId: "run-1",
+    commitSha: "0123456789abcdef0123456789abcdef01234567",
     durationMs: 1000,
     endedAt: "2026-07-13T00:00:01.000Z",
-    expectedLevel: "L3",
+    expectedLevel: "L5",
     exitCode: 0,
-    mode: "stage1",
     repoId,
     repoUrl: `https://github.com/example/${repoId}`,
     startedAt: "2026-07-13T00:00:00.000Z",
     status: "succeeded",
-    statusLevel: "L3",
+    statusLevel: "L5",
     tokenUsage: null,
   };
 }

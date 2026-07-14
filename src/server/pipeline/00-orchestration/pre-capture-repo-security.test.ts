@@ -12,6 +12,23 @@ import type {
 import { readRepoSecurityInput } from "./pre-capture-repo-security";
 
 describe("readRepoSecurityInput", () => {
+  it("screens the exact requested repository commit", async () => {
+    const commands: string[] = [];
+
+    await readRepoSecurityInput(
+      new FakePreparationWorkspaceProvider(commands),
+      "https://github.com/example/app",
+      { commitSha: "0123456789abcdef0123456789abcdef01234567" },
+    );
+
+    expect(commands[0]).toContain(
+      "checkout --detach '0123456789abcdef0123456789abcdef01234567'",
+    );
+    expect(commands[0]).toContain(
+      `test "$(git -C '/workspace' rev-parse HEAD)" = '0123456789abcdef0123456789abcdef01234567'`,
+    );
+  });
+
   it("retries transient Daytona clone failures before reading repo security input", async () => {
     const workspace = new FakePreparationWorkspace({
       cloneResults: [
