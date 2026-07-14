@@ -2,6 +2,10 @@
 
 Use this benchmark to measure how far submitted repos get through the MakeADemo Pipeline, how long each run takes, and which repos fail early versus late.
 
+The runner starts every repo and repetition in the manifest concurrently. Each
+completed run is recorded independently, and the summarizer reports every run's
+duration together with the arithmetic mean, median, and maximum duration.
+
 ## First Pass
 
 Start with the example manifest:
@@ -59,25 +63,20 @@ Use categories to make failures explainable. The example manifest includes:
 
 ## Current Suggested Bank
 
-The example manifest starts with the six requested repos and adds nine more:
+The example manifest contains ten repos ordered by benchmark importance:
 
 | Repo | Classification | Expected first-pass result |
 | --- | --- | --- |
-| `TonyMckes/conduit-realworld-example-app` | RealWorld full-stack React/Express/Postgres app | `L3` |
+| `cypress-io/cypress-realworld-app` | Seeded React/Vite/Express payment app and deterministic baseline | `L3` |
+| `epicweb-dev/epic-stack` | React Router full-stack notes app with local persistence and auth | `L3` |
 | `calcom/cal.diy` | Scheduling SaaS, monorepo, auth/external-service pressure | `L3` |
-| `dubinc/dub` | Link analytics SaaS, monorepo, database/external services | `L3` |
+| `directus/directus` | Vue/Node content studio, SQL database, auth, and monorepo setup | `L3` |
+| `ghostfolio/ghostfolio` | Angular/NestJS finance app with database, cache, and market-data pressure | `L3` |
+| `nuxt/movies` | Compact Nuxt/Vue app that requires deterministic TMDB data and images | `L3` |
+| `sveltejs/realworld` | SvelteKit publishing app with CRUD, auth, routing, and pagination | `L3` |
+| `satnaing/astro-paper` | Astro content site and low-complexity static baseline | `L3` |
 | `twentyhq/twenty` | Large CRM, database/auth-heavy monorepo | `L3` |
-| `typehero/typehero` | TypeScript education platform, Next.js monorepo | `L3` |
-| `midday-ai/midday` | Finance SaaS, monorepo, auth/database/external services | `L3` |
-| `alan2207/bulletproof-react` | Medium React architecture sample | `L3` |
-| `gothinkster/react-redux-realworld-example-app` | Legacy frontend RealWorld app | `L3` |
-| `oldboyxx/jira_clone` | Full-stack seeded project-management app | `L3` |
-| `formbricks/formbricks` | Survey SaaS, Next.js monorepo | `L3` |
-| `documenso/documenso` | Document workflow SaaS, auth/database/file flow | `L3` |
-| `openstatusHQ/openstatus` | Monitoring/status-page app, external-service pressure | `L3` |
-| `boxyhq/saas-starter-kit` | Enterprise SaaS starter, auth/database setup | `L3` |
-| `medusajs/nextjs-starter-medusa` | Commerce frontend that expects a Medusa backend | `L1` |
-| `bluesky-social/social-app` | Large React Native/web app, intentionally hard | `L1` |
+| `excalidraw/excalidraw` | Canvas-heavy local-first whiteboard and capture-path stretch case | `L3` |
 
 Adjust `expectedLevel` after the first run. The expected level is not a claim that the repo definitely works; it is the benchmark's current hypothesis.
 
@@ -97,6 +96,11 @@ Each run writes:
 ```
 
 `benchmark-results.jsonl` is the durable result table. Token usage is currently recorded as `null`; wire structured model usage into the agent/model seam before using the benchmark for cost conclusions.
+
+Child pipeline output is written to each run's `stdout.log` and `stderr.log`
+instead of being echoed to the terminal. The runner redacts authorization header
+values and standalone bearer credentials from those logs before recording the
+run result.
 
 ## Next Instrumentation
 

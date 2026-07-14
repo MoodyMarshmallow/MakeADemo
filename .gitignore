@@ -10,6 +10,7 @@ dist/
 .makeademo-benchmark-runs/
 .makeademo-full-pipeline-runs/
 .makeademo-goal-runs/
+.makeademo-pre-capture-runs/
 .playwright-cli/
 artifacts/
 demo/artifacts/

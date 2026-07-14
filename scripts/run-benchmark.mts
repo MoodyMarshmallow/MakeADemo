@@ -2,16 +2,19 @@ import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { finished } from "node:stream/promises";
 
 import {
   type BenchmarkRepo,
   buildBenchmarkPipelineArgs,
   readBenchmarkManifest,
 } from "../src/server/shared/benchmark/benchmark-manifest";
+import { redactBenchmarkOutput } from "../src/server/shared/benchmark/benchmark-output-redaction";
 import {
   type BenchmarkResult,
   inferBenchmarkStatusLevel,
 } from "../src/server/shared/benchmark/benchmark-results";
+import { runBenchmarkJobs } from "../src/server/shared/benchmark/benchmark-runner";
 
 const manifestPath = process.argv[2];
 if (manifestPath === undefined) {
@@ -37,21 +40,23 @@ process.stdout.write(`Benchmark run: ${benchmarkRunId}\n`);
 process.stdout.write(`Output root: ${outputRoot}\n`);
 process.stdout.write(`Results: ${resultsPath}\n`);
 
-for (const repo of manifest.repos) {
-  for (
-    let repetitionIndex = 0;
-    repetitionIndex < repo.effectiveRepetitions;
-    repetitionIndex += 1
-  ) {
+let pendingResultWrite = Promise.resolve();
+await runBenchmarkJobs({
+  repos: manifest.repos,
+  run: async ({ repo, repetitionIndex }) => {
     const result = await runRepoBenchmark({
       benchmarkRunId,
       outputRoot,
       repo,
       repetitionIndex,
     });
-    await appendJsonLine(resultsPath, result);
-  }
-}
+    pendingResultWrite = pendingResultWrite.then(() =>
+      appendJsonLine(resultsPath, result),
+    );
+    await pendingResultWrite;
+    return result;
+  },
+});
 
 process.stdout.write("\nBenchmark complete.\n");
 process.stdout.write(
@@ -150,7 +155,7 @@ function runCommand(input: {
   stderrPath: string;
   stdoutPath: string;
 }): Promise<number | null> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const child = spawn("bun", input.args, {
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -160,15 +165,29 @@ function runCommand(input: {
 
     child.stdout.pipe(stdout);
     child.stderr.pipe(stderr);
-    child.stdout.on("data", (chunk) => process.stdout.write(chunk));
-    child.stderr.on("data", (chunk) => process.stderr.write(chunk));
 
-    child.on("close", (code) => {
-      stdout.end();
-      stderr.end();
-      resolve(code);
+    child.on("error", reject);
+    child.on("close", async (code) => {
+      try {
+        await Promise.all([finished(stdout), finished(stderr)]);
+        await Promise.all([
+          redactBenchmarkLog(input.stdoutPath),
+          redactBenchmarkLog(input.stderrPath),
+        ]);
+        resolve(code);
+      } catch (error) {
+        reject(error);
+      }
     });
   });
+}
+
+async function redactBenchmarkLog(path: string) {
+  const output = await readFile(path, "utf8");
+  const redacted = redactBenchmarkOutput(output);
+  if (redacted !== output) {
+    await writeFile(path, redacted);
+  }
 }
 
 async function readFullPipelineResult(stdoutPath: string): Promise<

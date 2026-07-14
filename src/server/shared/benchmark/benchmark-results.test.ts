@@ -79,10 +79,15 @@ describe("summarizeBenchmarkResults", () => {
         },
       ]),
     ).toMatchObject({
+      averageDurationMs: 2000,
       failureStageCounts: { "repo-preparation": 1 },
       levelCounts: { L0: 1, L5: 1 },
       medianDurationMs: 2000,
       repoCount: 2,
+      runDurations: [
+        { durationMs: 1000, repoId: "one" },
+        { durationMs: 3000, repoId: "two" },
+      ],
       successCount: 1,
       tokenUsage: {
         measuredRunCount: 1,

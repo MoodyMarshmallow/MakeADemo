@@ -21,6 +21,13 @@ const summary = summarizeBenchmarkResults(results);
 process.stdout.write(`Benchmark results: ${resultsPath}\n`);
 process.stdout.write(`Runs: ${summary.repoCount}\n`);
 process.stdout.write(`Succeeded: ${summary.successCount}\n`);
+process.stdout.write("Individual durations:\n");
+for (const run of summary.runDurations) {
+  process.stdout.write(`  ${run.repoId}: ${formatDuration(run.durationMs)}\n`);
+}
+process.stdout.write(
+  `Average duration: ${formatDuration(summary.averageDurationMs)}\n`,
+);
 process.stdout.write(
   `Median duration: ${formatDuration(summary.medianDurationMs)}\n`,
 );

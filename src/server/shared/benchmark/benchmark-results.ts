@@ -37,11 +37,13 @@ export type BenchmarkStatusInferenceInput = {
 };
 
 export type BenchmarkSummary = {
+  averageDurationMs: number | null;
   failureStageCounts: Record<string, number>;
   levelCounts: Partial<Record<BenchmarkStatusLevel, number>>;
   maxDurationMs: number | null;
   medianDurationMs: number | null;
   repoCount: number;
+  runDurations: Array<{ durationMs: number; repoId: string }>;
   successCount: number;
   tokenUsage: {
     measuredRunCount: number;
@@ -88,6 +90,7 @@ export function summarizeBenchmarkResults(
   );
 
   return {
+    averageDurationMs: average(durations),
     failureStageCounts: countBy(
       results
         .filter((result) => result.status === "failed")
@@ -97,6 +100,10 @@ export function summarizeBenchmarkResults(
     maxDurationMs: durations.at(-1) ?? null,
     medianDurationMs: median(durations),
     repoCount: results.length,
+    runDurations: results.map(({ durationMs, repoId }) => ({
+      durationMs,
+      repoId,
+    })),
     successCount: results.filter((result) => result.status === "succeeded")
       .length,
     tokenUsage: {
@@ -115,6 +122,14 @@ export function summarizeBenchmarkResults(
       ),
     },
   };
+}
+
+function average(values: number[]): number | null {
+  if (values.length === 0) {
+    return null;
+  }
+
+  return values.reduce((total, value) => total + value, 0) / values.length;
 }
 
 function countBy<T extends string>(values: T[]): Record<T, number> {
