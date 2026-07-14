@@ -3,7 +3,6 @@
   "ignoreDependencies": ["@railway/cli"],
   "ignore": [
     ".dependency-cruiser.graph.cjs",
-    "docs/codebase-guide/**",
     "scripts/filter-type-only-dot.mts",
     "src/server/shared/integrations/remotion/makeademo-video.tsx",
     "src/server/shared/integrations/remotion/remotion-entry.tsx"
