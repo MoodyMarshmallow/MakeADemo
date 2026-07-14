@@ -143,10 +143,6 @@ window.MAKEADEMO_FILE_INVENTORY = {
       description: "PNG image asset used by UI/docs/demo material.",
     },
     {
-      path: "benchmarks/repos.example.json",
-      description: "JSON configuration, manifest, or example data.",
-    },
-    {
       path: "biome.json",
       description: "Formatting and linting configuration.",
     },
@@ -340,7 +336,7 @@ window.MAKEADEMO_FILE_INVENTORY = {
       description: "Markdown documentation or planning record.",
     },
     {
-      path: "docs/prd/makeademo_stage1_prd.md",
+      path: "docs/prd/makeademo_pipeline_prd.md",
       description: "Markdown documentation or planning record.",
     },
     {
@@ -575,11 +571,6 @@ window.MAKEADEMO_FILE_INVENTORY = {
       path: "src/server/pipeline/00-orchestration/pre-capture-cli-options.ts",
       description:
         "Pipeline module implementing a stage contract, helper, or handoff type.",
-    },
-    {
-      path: "src/server/pipeline/00-orchestration/pre-capture-cli.mts",
-      description:
-        "Executable TypeScript module, usually a CLI or server entrypoint.",
     },
     {
       path: "src/server/pipeline/00-orchestration/pre-capture-pipeline.test.ts",
@@ -1620,16 +1611,6 @@ window.MAKEADEMO_FILE_INVENTORY = {
           },
         },
       },
-      benchmarks: {
-        files: [
-          {
-            name: "repos.example.json",
-            path: "benchmarks/repos.example.json",
-            description: "JSON configuration, manifest, or example data.",
-          },
-        ],
-        dirs: {},
-      },
       demo: {
         files: [
           {
@@ -1909,8 +1890,8 @@ window.MAKEADEMO_FILE_INVENTORY = {
                 description: "Markdown documentation or planning record.",
               },
               {
-                name: "makeademo_stage1_prd.md",
-                path: "docs/prd/makeademo_stage1_prd.md",
+                name: "makeademo_pipeline_prd.md",
+                path: "docs/prd/makeademo_pipeline_prd.md",
                 description: "Markdown documentation or planning record.",
               },
             ],
@@ -2237,12 +2218,6 @@ window.MAKEADEMO_FILE_INVENTORY = {
                         path: "src/server/pipeline/00-orchestration/pre-capture-cli-options.ts",
                         description:
                           "Pipeline module implementing a stage contract, helper, or handoff type.",
-                      },
-                      {
-                        name: "pre-capture-cli.mts",
-                        path: "src/server/pipeline/00-orchestration/pre-capture-cli.mts",
-                        description:
-                          "Executable TypeScript module, usually a CLI or server entrypoint.",
                       },
                       {
                         name: "pre-capture-pipeline.test.ts",
