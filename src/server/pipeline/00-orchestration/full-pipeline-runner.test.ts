@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -122,28 +122,12 @@ describe("runFullPipelineJob", () => {
             "full-run",
             "opencode-raw-output.jsonl",
           ),
-          scriptGenerationResumePath: join(
-            outputRoot,
-            "full-run",
-            "script-generation-resume.json",
-          ),
         },
         status: "succeeded",
       });
       expect(result.sandboxLogPath).toBeUndefined();
       await expect(readJsonFile(result.resultPath)).resolves.not.toMatchObject({
         artifacts: { sandboxLogPath: expect.any(String) },
-      });
-      await expect(
-        readJsonFile(
-          join(outputRoot, "full-run", "script-generation-resume.json"),
-        ),
-      ).resolves.toMatchObject({
-        demoBrief: { keyProductFeatures: ["article feed"] },
-        opencodeSessionID: "session_prepare_123",
-        preparationWorkspaceId: "daytona_workspace",
-        repoUrl: "https://github.com/example/app",
-        runDirectory: join(outputRoot, "full-run"),
       });
       expect(result.logPath).toBe(
         join(outputRoot, "full-run", "pipeline-log.jsonl"),
@@ -500,7 +484,7 @@ describe("runFullPipelineJob", () => {
     }
   });
 
-  it("writes the Script Generation resume artifact before running Script Generation", async () => {
+  it("does not expose partial-pipeline artifacts when Script Generation fails", async () => {
     const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
 
     try {
@@ -548,13 +532,8 @@ describe("runFullPipelineJob", () => {
       ).rejects.toThrow("ScriptGen stalled before artifact output");
 
       await expect(
-        readJsonFile(
-          join(outputRoot, "scriptgen-fails", "script-generation-resume.json"),
-        ),
-      ).resolves.toMatchObject({
-        opencodeSessionID: "session_prepare_123",
-        preparationWorkspaceId: "daytona_workspace",
-      });
+        readdir(join(outputRoot, "scriptgen-fails")),
+      ).resolves.toEqual(["pipeline-log.jsonl"]);
     } finally {
       await rm(outputRoot, { force: true, recursive: true });
     }

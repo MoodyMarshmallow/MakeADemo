@@ -27,7 +27,6 @@ import { runPipelineJob } from "./pipeline-orchestrator";
 import type {
   PipelineOrchestratorDependencies,
   PipelineOrchestratorOptions,
-  ScriptGenerationReadyEvent,
 } from "./pipeline-orchestrator";
 
 export type FullPipelineResult = {
@@ -91,7 +90,6 @@ type FullPipelineArtifactSummary = {
     generatedScriptPath?: string;
     logPath: string;
     renderPlanPath: string;
-    scriptGenerationResumePath?: string;
     scriptGenerationRawOpenCodeLogPath?: string;
     sandboxLogPath?: string;
     viewUrl: string;
@@ -187,27 +185,11 @@ export async function runFullPipelineJob(
     workspaceId: input.workspaceId,
   });
 
-  let scriptGenerationResumePath: string | undefined;
   const initialPreparedDemo = await runPipelineJob(
     input,
     orchestratorDependencies,
     {
       ...options,
-      onScriptGenerationReady: async (event) => {
-        await options.onScriptGenerationReady?.(event);
-        scriptGenerationResumePath = await writeScriptGenerationResumeFile({
-          event,
-          input,
-          runDirectory,
-        });
-        if (scriptGenerationResumePath !== undefined) {
-          await log({
-            event: "script-generation-resume-written",
-            message: "Script Generation resume artifact written.",
-            resumePath: scriptGenerationResumePath,
-          });
-        }
-      },
       onProgress: async (event) => {
         await options.onProgress?.(event);
         await log({
@@ -323,9 +305,6 @@ export async function runFullPipelineJob(
         : { rawOpenCodeLogPath: options.rawOpenCodeLogPath }),
       renderPlanPath: finalVideo.renderPlanPath,
       ...(sandboxLogPath === undefined ? {} : { sandboxLogPath }),
-      ...(scriptGenerationResumePath === undefined
-        ? {}
-        : { scriptGenerationResumePath }),
       ...(options.scriptGenerationRawOpenCodeLogPath === undefined
         ? {}
         : {
@@ -479,40 +458,6 @@ function scriptGeneratedMessage(
   scriptSummary: ReturnType<typeof summarizeScriptPackage>,
 ) {
   return `Accepted Demo Script ready: ${scriptSummary.sceneCount} scene(s).`;
-}
-
-async function writeScriptGenerationResumeFile(input: {
-  event: ScriptGenerationReadyEvent;
-  input: PipelineJobInput;
-  runDirectory: string;
-}): Promise<string | undefined> {
-  if (
-    input.event.opencodeSessionID === undefined ||
-    input.event.preparationWorkspace === undefined
-  ) {
-    return undefined;
-  }
-
-  const resumePath = join(input.runDirectory, "script-generation-resume.json");
-  await writeFile(
-    resumePath,
-    `${JSON.stringify(
-      {
-        demoBrief: input.input.demoBrief,
-        normalizedSupportingDocuments:
-          input.input.normalizedSupportingDocuments,
-        opencodeSessionID: input.event.opencodeSessionID,
-        preparationManifest: input.event.preparationManifest,
-        preparationWorkspaceId: input.event.preparationWorkspace.id,
-        repoUrl: input.input.repoUrl,
-        runDirectory: input.runDirectory,
-      },
-      null,
-      2,
-    )}\n`,
-  );
-
-  return resumePath;
 }
 
 function createPipelineLogger(

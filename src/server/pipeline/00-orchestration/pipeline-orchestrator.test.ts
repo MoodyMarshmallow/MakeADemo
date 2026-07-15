@@ -459,13 +459,6 @@ describe("runPipelineJob", () => {
           };
         },
       },
-      {
-        onScriptGenerationReady(event) {
-          calls.push("script-generation-ready");
-          expect(event.opencodeSessionID).toBe("session_prepare_123");
-          expect(event.preparationWorkspace?.id).toBe("daytona_workspace");
-        },
-      },
     );
 
     expect(result.status).toBe("succeeded");
@@ -475,7 +468,6 @@ describe("runPipelineJob", () => {
     expect(calls).toEqual([
       "repo-security-screen",
       "repo-preparation",
-      "script-generation-ready",
       "script-generation",
       "capture-path-validation",
     ]);

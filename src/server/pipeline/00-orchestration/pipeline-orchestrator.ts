@@ -44,15 +44,10 @@ type PipelineProgressEvent = {
   status: "failed" | "started" | "succeeded";
 };
 
-export type ScriptGenerationReadyEvent = ScriptGenerationInput;
-
 export type PipelineOrchestratorOptions = {
   context?: Omit<PipelineObservationContext, "workspaceId">;
   now?: () => number;
   observer?: PipelineObserver;
-  onScriptGenerationReady?: (
-    event: ScriptGenerationReadyEvent,
-  ) => Promise<unknown> | unknown;
   onProgress?: (event: PipelineProgressEvent) => Promise<unknown> | unknown;
 };
 
@@ -221,7 +216,6 @@ export async function runPipelineJob(
   } satisfies ScriptGenerationInput;
   let preparationManifest = preparation.manifest;
   try {
-    await options.onScriptGenerationReady?.(scriptGenerationInput);
     demoScriptCandidate = await dependencies.generateScriptPackage(
       scriptGenerationInput,
     );
