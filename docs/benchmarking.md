@@ -4,7 +4,8 @@ Use this benchmark to measure how far submitted repos get through the MakeADemo 
 
 The runner starts every repo in the fixed benchmark suite concurrently. Each
 completed run is recorded independently, and the summarizer reports every run's
-duration together with the arithmetic mean, median, and maximum duration.
+duration together with the arithmetic mean, median, maximum duration, and
+external Codex verification outcome.
 
 ## First Pass
 
@@ -27,6 +28,10 @@ Required environment:
 DAYTONA_API_KEY=...
 OPENAI_API_KEY=...
 ```
+
+The `codex` CLI must also be installed and authenticated. It runs a fresh,
+ephemeral evaluator session for each final video; it does not resume or trust
+the OpenCode session that generated the demo.
 
 MakeADemo creates or updates a Daytona secret from `OPENAI_API_KEY` before
 creating Repo Preparation sandboxes. The benchmarked OpenCode process receives a
@@ -54,6 +59,18 @@ The suite snapshot and each durable result retain the SHA used for the run.
 | `L3` | Script Generation produced a Video Script Package. |
 | `L4` | Footage Capture produced Scene artifacts. |
 | `L5` | Compositing produced the final video artifact. |
+| `L6` | An independent external Codex evaluator verified that final-video frames depict the submitted application at its pinned commit, contain no obvious broken visual artifacts, and pair overlay text with relevant footage. |
+
+L6 is machine-verified, not human-verified. The evaluator receives contact
+sheets and sampled final-video frames, independently fetches the exact pinned
+repository, and compares the frames with source-controlled UI components,
+routes, styles, assets, tests, stories, and documentation screenshots. It also
+checks for obvious blank/black frames, corrupt rendering, clipping, flicker,
+overlap, unreadable text, broken transitions, frozen footage, and irrelevant
+overlay/footage pairings. It ignores repository-provided agent rules and does
+not execute submitted code on the benchmark host. A `rejected`, `incoherent`,
+`inconclusive`, or evaluator `error` verdict is recorded in the result and
+leaves the run at L5.
 
 ## Repo Classes
 
@@ -77,16 +94,16 @@ The fixed suite contains ten repos ordered by benchmark importance:
 
 | Repo | Classification | Expected first-pass result |
 | --- | --- | --- |
-| `cypress-io/cypress-realworld-app` | Seeded React/Vite/Express payment app and deterministic baseline | `L5` |
-| `epicweb-dev/epic-stack` | React Router full-stack notes app with local persistence and auth | `L5` |
-| `calcom/cal.diy` | Scheduling SaaS, monorepo, auth/external-service pressure | `L5` |
-| `directus/directus` | Vue/Node content studio, SQL database, auth, and monorepo setup | `L5` |
-| `ghostfolio/ghostfolio` | Angular/NestJS finance app with database, cache, and market-data pressure | `L5` |
-| `nuxt/movies` | Compact Nuxt/Vue app that requires deterministic TMDB data and images | `L5` |
-| `sveltejs/realworld` | SvelteKit publishing app with CRUD, auth, routing, and pagination | `L5` |
-| `satnaing/astro-paper` | Astro content site and low-complexity static baseline | `L5` |
-| `twentyhq/twenty` | Large CRM, database/auth-heavy monorepo | `L5` |
-| `excalidraw/excalidraw` | Canvas-heavy local-first whiteboard and capture-path stretch case | `L5` |
+| `cypress-io/cypress-realworld-app` | Seeded React/Vite/Express payment app and deterministic baseline | `L6` |
+| `epicweb-dev/epic-stack` | React Router full-stack notes app with local persistence and auth | `L6` |
+| `calcom/cal.diy` | Scheduling SaaS, monorepo, auth/external-service pressure | `L6` |
+| `directus/directus` | Vue/Node content studio, SQL database, auth, and monorepo setup | `L6` |
+| `ghostfolio/ghostfolio` | Angular/NestJS finance app with database, cache, and market-data pressure | `L6` |
+| `nuxt/movies` | Compact Nuxt/Vue app that requires deterministic TMDB data and images | `L6` |
+| `sveltejs/realworld` | SvelteKit publishing app with CRUD, auth, routing, and pagination | `L6` |
+| `satnaing/astro-paper` | Astro content site and low-complexity static baseline | `L6` |
+| `twentyhq/twenty` | Large CRM, database/auth-heavy monorepo | `L6` |
+| `excalidraw/excalidraw` | Canvas-heavy local-first whiteboard and capture-path stretch case | `L6` |
 
 Adjust `expectedLevel` in `benchmark-suite.ts` when the benchmark hypothesis
 changes. The expected level is not a claim that the repo definitely works.
@@ -103,10 +120,15 @@ Each run writes:
     <repo-id>-r1/
       stdout.log
       stderr.log
+      external-verification/
+        codex-verdict.json
       pipeline/
 ```
 
-`benchmark-results.jsonl` is the durable result table. Token usage is currently recorded as `null`; wire structured model usage into the agent/model seam before using the benchmark for cost conclusions.
+`benchmark-results.jsonl` is the durable result table. L5 runs include their
+structured external verification verdict and artifact path. Token usage is
+currently recorded as `null`; wire structured model usage into the agent/model
+seam before using the benchmark for cost conclusions.
 
 Child pipeline output is written to each run's `stdout.log` and `stderr.log`
 instead of being echoed to the terminal. The runner redacts authorization header

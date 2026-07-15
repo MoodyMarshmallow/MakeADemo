@@ -31,6 +31,20 @@ describe("inferBenchmarkStatusLevel", () => {
         succeededEvents: ["capture-succeeded", "compositing-succeeded"],
       }),
     ).toBe("L5");
+    expect(
+      inferBenchmarkStatusLevel({
+        externalVerificationStatus: "verified",
+        pipelineStatus: "succeeded",
+        succeededEvents: ["capture-succeeded", "compositing-succeeded"],
+      }),
+    ).toBe("L6");
+    expect(
+      inferBenchmarkStatusLevel({
+        externalVerificationStatus: "rejected",
+        pipelineStatus: "succeeded",
+        succeededEvents: ["capture-succeeded", "compositing-succeeded"],
+      }),
+    ).toBe("L5");
   });
 });
 
@@ -54,6 +68,14 @@ describe("summarizeBenchmarkResults", () => {
             completionTokens: 30,
             promptTokens: 70,
             totalTokens: 100,
+          },
+          verification: {
+            artifactPath: "/runs/one/external-verification/codex-verdict.json",
+            comparisons: [],
+            mismatches: [],
+            reason: "The evidence was insufficient.",
+            status: "inconclusive",
+            verifier: "external-codex",
           },
         },
         {
@@ -87,6 +109,7 @@ describe("summarizeBenchmarkResults", () => {
         measuredRunCount: 1,
         totalTokens: 100,
       },
+      verificationStatusCounts: { inconclusive: 1 },
     });
   });
 });

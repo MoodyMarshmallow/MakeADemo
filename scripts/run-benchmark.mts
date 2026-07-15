@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { finished } from "node:stream/promises";
 
+import { verifyCompletedBenchmarkDemo } from "../src/server/shared/benchmark/benchmark-demo-verification";
 import type { BenchmarkRepo } from "../src/server/shared/benchmark/benchmark-manifest";
 import { redactBenchmarkOutput } from "../src/server/shared/benchmark/benchmark-output-redaction";
 import {
@@ -17,6 +18,7 @@ import {
   benchmarkSuite,
   buildBenchmarkPipelineArgs,
 } from "../src/server/shared/benchmark/benchmark-suite";
+import { verifyBenchmarkDemoWithCodex } from "../src/server/shared/benchmark/external-codex-benchmark-demo-verifier";
 
 const benchmarkRunId = createRunId();
 const outputRoot = join(".makeademo-benchmark-runs", benchmarkRunId);
@@ -82,18 +84,30 @@ async function runRepoBenchmark(input: {
     stderrPath,
     stdoutPath,
   });
-  const endedAt = new Date();
   const fullPipelineResult = await readFullPipelineResult(stdoutPath);
   const fullPipelineLog = await readFullPipelineLog(
     fullPipelineResult?.artifacts?.logPath,
   );
   const status = exitCode === 0 ? "succeeded" : "failed";
+  const verification = await runExternalVerification({
+    fullPipelineResult,
+    repo: input.repo,
+    runDirectory,
+    status,
+  });
+  const endedAt = new Date();
   const statusLevel = inferBenchmarkStatusLevel(
     fullPipelineResult?.status === undefined
       ? {
+          ...(verification === undefined
+            ? {}
+            : { externalVerificationStatus: verification.status }),
           succeededEvents: fullPipelineLog.succeededEvents,
         }
       : {
+          ...(verification === undefined
+            ? {}
+            : { externalVerificationStatus: verification.status }),
           pipelineStatus: fullPipelineResult.status,
           succeededEvents: fullPipelineLog.succeededEvents,
         },
@@ -128,12 +142,53 @@ async function runRepoBenchmark(input: {
     stderrPath,
     stdoutPath,
     tokenUsage: null,
+    ...(verification === undefined ? {} : { verification }),
   };
 
   process.stdout.write(
     `[${input.repo.id}] ${status} ${statusLevel} in ${formatDuration(result.durationMs)}\n`,
   );
   return result;
+}
+
+async function runExternalVerification(input: {
+  fullPipelineResult:
+    | {
+        artifacts?: {
+          compositeManifestPath?: string;
+          finalVideoPath?: string;
+        };
+        status?: string;
+      }
+    | undefined;
+  repo: BenchmarkRepo;
+  runDirectory: string;
+  status: "failed" | "succeeded";
+}) {
+  if (
+    input.status !== "succeeded" ||
+    input.fullPipelineResult?.status !== "succeeded" ||
+    input.fullPipelineResult.artifacts?.compositeManifestPath === undefined ||
+    input.fullPipelineResult.artifacts.finalVideoPath === undefined
+  ) {
+    return undefined;
+  }
+
+  process.stdout.write(
+    `[${input.repo.id}] external Codex verification starting\n`,
+  );
+  const verification = await verifyCompletedBenchmarkDemo({
+    compositeManifestPath:
+      input.fullPipelineResult.artifacts.compositeManifestPath,
+    finalVideoPath: input.fullPipelineResult.artifacts.finalVideoPath,
+    repo: input.repo,
+    runDirectory: input.runDirectory,
+    verifier: verifyBenchmarkDemoWithCodex,
+  });
+  process.stdout.write(
+    `[${input.repo.id}] external Codex verification ${verification.status}: ${verification.reason}\n`,
+  );
+  return verification;
 }
 
 function runCommand(input: {
@@ -178,7 +233,11 @@ async function redactBenchmarkLog(path: string) {
 
 async function readFullPipelineResult(stdoutPath: string): Promise<
   | {
-      artifacts?: { logPath?: string };
+      artifacts?: {
+        compositeManifestPath?: string;
+        finalVideoPath?: string;
+        logPath?: string;
+      };
       failure?: { blockers?: string[] };
       resultPath?: string;
       status?: string;
@@ -196,7 +255,11 @@ async function readFullPipelineResult(stdoutPath: string): Promise<
   }
 
   const result = JSON.parse(await readFile(resultPath, "utf8")) as {
-    artifacts?: { logPath?: string };
+    artifacts?: {
+      compositeManifestPath?: string;
+      finalVideoPath?: string;
+      logPath?: string;
+    };
     failure?: { blockers?: string[] };
     status?: string;
   };

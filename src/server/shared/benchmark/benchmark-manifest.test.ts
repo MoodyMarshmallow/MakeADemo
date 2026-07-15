@@ -86,7 +86,25 @@ describe("readBenchmarkManifest", () => {
     ).toThrow("Duplicate benchmark repo id: same");
   });
 
-  it("rejects output-quality levels because the benchmark stops at output existence", () => {
+  it("accepts L6 as independently verified demo output", () => {
+    const manifest = readBenchmarkManifest({
+      repos: [
+        {
+          categories: [],
+          commitSha: "0123456789abcdef0123456789abcdef01234567",
+          expectedLevel: "L6",
+          features: ["Show the app"],
+          id: "externally-verified",
+          repoUrl: "https://github.com/example/app",
+        },
+      ],
+      version: 1,
+    });
+
+    expect(manifest.repos[0]?.expectedLevel).toBe("L6");
+  });
+
+  it("rejects unknown benchmark levels", () => {
     expect(() =>
       readBenchmarkManifest({
         repos: [
@@ -102,7 +120,7 @@ describe("readBenchmarkManifest", () => {
         version: 1,
       }),
     ).toThrow(
-      "repos[0].expectedLevel must be one of L0, L1, L2, L3, L4, or L5",
+      "repos[0].expectedLevel must be one of L0, L1, L2, L3, L4, L5, or L6",
     );
   });
 });

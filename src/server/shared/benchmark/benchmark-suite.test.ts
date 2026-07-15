@@ -20,7 +20,9 @@ describe("benchmarkRepos", () => {
     expect(
       benchmarkRepos.every(
         (repo) =>
-          /^[0-9a-f]{40}$/.test(repo.commitSha) && repo.features.length > 0,
+          /^[0-9a-f]{40}$/.test(repo.commitSha) &&
+          repo.features.length > 0 &&
+          repo.expectedLevel === "L6",
       ),
     ).toBe(true);
   });

@@ -1,4 +1,11 @@
-export type BenchmarkStatusLevel = "L0" | "L1" | "L2" | "L3" | "L4" | "L5";
+export type BenchmarkStatusLevel =
+  | "L0"
+  | "L1"
+  | "L2"
+  | "L3"
+  | "L4"
+  | "L5"
+  | "L6";
 
 type BenchmarkManifestDefaults = {
   daytonaSnapshot?: string;
@@ -252,9 +259,10 @@ function readStatusLevel(value: unknown, path: string): BenchmarkStatusLevel {
     value !== "L2" &&
     value !== "L3" &&
     value !== "L4" &&
-    value !== "L5"
+    value !== "L5" &&
+    value !== "L6"
   ) {
-    throw new Error(`${path} must be one of L0, L1, L2, L3, L4, or L5`);
+    throw new Error(`${path} must be one of L0, L1, L2, L3, L4, L5, or L6`);
   }
 
   return value;

@@ -1,3 +1,7 @@
+import type {
+  BenchmarkDemoVerification,
+  BenchmarkDemoVerificationStatus,
+} from "./benchmark-demo-verifier.interface";
 import type { BenchmarkStatusLevel } from "./benchmark-manifest";
 
 type BenchmarkTokenUsage = {
@@ -27,9 +31,11 @@ export type BenchmarkResult = {
   stderrPath?: string;
   stdoutPath?: string;
   tokenUsage: BenchmarkTokenUsage | null;
+  verification?: BenchmarkDemoVerification;
 };
 
 export type BenchmarkStatusInferenceInput = {
+  externalVerificationStatus?: BenchmarkDemoVerificationStatus;
   pipelineStatus?: string;
   succeededEvents?: string[];
 };
@@ -49,6 +55,9 @@ export type BenchmarkSummary = {
     totalPromptTokens: number;
     totalTokens: number;
   };
+  verificationStatusCounts: Partial<
+    Record<BenchmarkDemoVerificationStatus, number>
+  >;
 };
 
 export function inferBenchmarkStatusLevel(
@@ -57,7 +66,7 @@ export function inferBenchmarkStatusLevel(
   const succeededEvents = new Set(input.succeededEvents ?? []);
 
   if (succeededEvents.has("compositing-succeeded")) {
-    return "L5";
+    return input.externalVerificationStatus === "verified" ? "L6" : "L5";
   }
   if (succeededEvents.has("capture-succeeded")) {
     return "L4";
@@ -115,6 +124,11 @@ export function summarizeBenchmarkResults(
         (result) => result.tokenUsage.totalTokens,
       ),
     },
+    verificationStatusCounts: countBy(
+      results.flatMap((result) =>
+        result.verification === undefined ? [] : [result.verification.status],
+      ),
+    ),
   };
 }
 
