@@ -1,9 +1,22 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  findFullPipelineResultPath,
   inferBenchmarkStatusLevel,
   summarizeBenchmarkResults,
 } from "./benchmark-results";
+
+describe("findFullPipelineResultPath", () => {
+  it("finds failed full-pipeline result metadata written to stderr", () => {
+    expect(
+      findFullPipelineResultPath({
+        stderr:
+          "Pipeline failed\nResult JSON: /runs/full-pipeline-result.json\n",
+        stdout: "",
+      }),
+    ).toBe("/runs/full-pipeline-result.json");
+  });
+});
 
 describe("inferBenchmarkStatusLevel", () => {
   it("maps whole-pipeline outcomes to benchmark status levels", () => {

@@ -60,6 +60,17 @@ export type BenchmarkSummary = {
   >;
 };
 
+export function findFullPipelineResultPath(input: {
+  stderr: string;
+  stdout: string;
+}): string | undefined {
+  return [input.stdout, input.stderr]
+    .flatMap((output) => output.split("\n"))
+    .find((line) => line.startsWith("Result JSON: "))
+    ?.replace("Result JSON: ", "")
+    .trim();
+}
+
 export function inferBenchmarkStatusLevel(
   input: BenchmarkStatusInferenceInput,
 ): BenchmarkStatusLevel {

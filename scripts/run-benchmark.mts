@@ -9,6 +9,7 @@ import type { BenchmarkRepo } from "../src/server/shared/benchmark/benchmark-man
 import { redactBenchmarkOutput } from "../src/server/shared/benchmark/benchmark-output-redaction";
 import {
   type BenchmarkResult,
+  findFullPipelineResultPath,
   inferBenchmarkStatusLevel,
   summarizeBenchmarkResults,
 } from "../src/server/shared/benchmark/benchmark-results";
@@ -84,7 +85,10 @@ async function runRepoBenchmark(input: {
     stderrPath,
     stdoutPath,
   });
-  const fullPipelineResult = await readFullPipelineResult(stdoutPath);
+  const fullPipelineResult = await readFullPipelineResult({
+    stderrPath,
+    stdoutPath,
+  });
   const fullPipelineLog = await readFullPipelineLog(
     fullPipelineResult?.artifacts?.logPath,
   );
@@ -231,7 +235,10 @@ async function redactBenchmarkLog(path: string) {
   }
 }
 
-async function readFullPipelineResult(stdoutPath: string): Promise<
+async function readFullPipelineResult(input: {
+  stderrPath: string;
+  stdoutPath: string;
+}): Promise<
   | {
       artifacts?: {
         compositeManifestPath?: string;
@@ -244,12 +251,11 @@ async function readFullPipelineResult(stdoutPath: string): Promise<
     }
   | undefined
 > {
-  const stdout = await readFile(stdoutPath, "utf8");
-  const resultPath = stdout
-    .split("\n")
-    .find((line) => line.startsWith("Result JSON: "))
-    ?.replace("Result JSON: ", "")
-    .trim();
+  const [stderr, stdout] = await Promise.all([
+    readFile(input.stderrPath, "utf8"),
+    readFile(input.stdoutPath, "utf8"),
+  ]);
+  const resultPath = findFullPipelineResultPath({ stderr, stdout });
   if (resultPath === undefined) {
     return undefined;
   }
