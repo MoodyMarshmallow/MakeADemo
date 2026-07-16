@@ -221,6 +221,8 @@ export class DaytonaSdkPreparationWorkspaceProvider
     const createOptions = { timeout: this.sandboxCreateTimeoutSeconds };
     const sandbox = await this.createSandboxWithConnectionRetry(
       {
+        autoDeleteInterval: 0,
+        autoStopInterval: 15,
         disk: this.diskGB,
         ...(this.secrets === undefined ? {} : { secrets: this.secrets }),
         ...(this.snapshot === undefined ? {} : { snapshot: this.snapshot }),
@@ -316,13 +318,33 @@ function createPreparationWorkspaceHandle(input: {
     input.sandboxLogSinks ?? [],
   );
 
+  let destroyPromise: Promise<void> | undefined;
   return {
-    async destroy() {
-      await workspace.cancelActiveCommands();
-      if (input.submittedCodeSandbox !== undefined) {
-        await input.client.delete(input.submittedCodeSandbox);
-      }
-      await input.client.delete(input.sandbox);
+    destroy() {
+      destroyPromise ??= (async () => {
+        let firstError: unknown;
+        try {
+          await workspace.cancelActiveCommands();
+        } catch (error) {
+          firstError = error;
+        }
+        if (input.submittedCodeSandbox !== undefined) {
+          try {
+            await input.client.delete(input.submittedCodeSandbox);
+          } catch (error) {
+            firstError ??= error;
+          }
+        }
+        try {
+          await input.client.delete(input.sandbox);
+        } catch (error) {
+          firstError ??= error;
+        }
+        if (firstError !== undefined) {
+          throw firstError;
+        }
+      })();
+      return destroyPromise;
     },
     id: input.id,
     workspace,
@@ -388,6 +410,7 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     const output: string[] = [];
     const timeoutMs = options.timeoutMs ?? this.commandTimeoutMs;
     const decoder = new TextDecoder();
+    const ptyForData: { current?: ManagedPty } = {};
     const pty = await this.createConnectedPty(this.sandbox, {
       cols: 120,
       cwd: "/workspace",
@@ -396,6 +419,7 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
       onData: (data) => {
         const chunk = decoder.decode(data);
         output.push(chunk);
+        ptyForData.current?.notifyData(chunk);
         const visibleChunk = removeExitMarker(chunk);
         if (visibleChunk.length > 0) {
           options.onStdout?.(visibleChunk);
@@ -403,17 +427,17 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
       },
       rows: 30,
     });
+    ptyForData.current = pty;
 
     try {
+      await pty.sendInput(
+        `stty -echo\n${command}\nprintf '\\n__MAKEADEMO_EXIT__:%s\\n' $?\nexit\n`,
+      );
       const result = await withTimeout(
-        (async () => {
-          await pty.sendInput(
-            `stty -echo\n${command}\nprintf '\\n__MAKEADEMO_EXIT__:%s\\n' $?\nexit\n`,
-          );
-          return pty.wait();
-        })(),
+        pty.completion(),
         timeoutMs,
         `Daytona command did not finish within ${timeoutMs}ms.`,
+        () => void pty.cancel(),
       );
       const stdout = output.join("");
       const exitCode = readExitCode(stdout) ?? result.exitCode ?? 0;
@@ -826,6 +850,7 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     const output: string[] = [];
     const timeoutMs = options.timeoutMs ?? this.commandTimeoutMs;
     const decoder = new TextDecoder();
+    let ptyForData: ManagedPty | undefined;
     const pty = await this.createConnectedPty(sandbox, {
       cols: 120,
       cwd: "/workspace",
@@ -841,17 +866,17 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
       },
       rows: 30,
     });
+    ptyForData = pty;
 
     try {
+      await pty.sendInput(
+        `stty -echo\n${command}\nprintf '\n__MAKEADEMO_EXIT__:%s\n' $?\nexit\n`,
+      );
       const result = await withTimeout(
-        (async () => {
-          await pty.sendInput(
-            `stty -echo\n${command}\nprintf '\n__MAKEADEMO_EXIT__:%s\n' $?\nexit\n`,
-          );
-          return pty.wait();
-        })(),
+        pty.completion(),
         timeoutMs,
         `Daytona command did not finish within ${timeoutMs}ms.`,
+        () => void pty.cancel(),
       );
       const stdout = output.join("");
       const exitCode = readExitCode(stdout) ?? result.exitCode ?? 0;
@@ -862,6 +887,7 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
         stdout: removeExitMarker(stdout),
       };
     } finally {
+      ptyForData = undefined;
       this.activePtys.delete(pty);
       await pty.disconnect();
     }
@@ -910,9 +936,20 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
 class ManagedPty {
   private disconnected = false;
   private terminationPromise: Promise<void> | undefined;
-  private waitPromise:
-    | Promise<{ error?: string; exitCode?: number }>
-    | undefined;
+  private completionResolve!: (result: {
+    error?: string;
+    exitCode?: number;
+  }) => void;
+  private completionReject!: (error: unknown) => void;
+  private readonly completionPromise = new Promise<{
+    error?: string;
+    exitCode?: number;
+  }>((resolve, reject) => {
+    this.completionResolve = resolve;
+    this.completionReject = reject;
+  });
+  private markerBuffer = "";
+  private cancelled = false;
 
   constructor(private readonly pty: DaytonaSdkPty) {}
 
@@ -925,23 +962,40 @@ class ManagedPty {
   }
 
   async terminate(): Promise<void> {
+    this.cancelled = true;
+    this.completionResolve({ error: "PTY command cancelled.", exitCode: 143 });
     this.terminationPromise ??= this.terminateInternal();
     await this.terminationPromise;
   }
 
+  async cancel(): Promise<void> {
+    await this.terminate();
+  }
+
+  completion(): Promise<{ error?: string; exitCode?: number }> {
+    return this.completionPromise;
+  }
+
+  fail(error: unknown): void {
+    this.completionReject(error);
+  }
+
+  notifyData(chunk: string): void {
+    if (this.cancelled) return;
+    this.markerBuffer = (this.markerBuffer + chunk).slice(-256);
+    const match = this.markerBuffer.match(/__MAKEADEMO_EXIT__:(\d+)/);
+    if (match?.[1] !== undefined) {
+      this.completionResolve({ exitCode: Number(match[1]) });
+    }
+  }
+
   private async terminateInternal(): Promise<void> {
     await settleWithin(this.pty.kill(), ptyTerminationTimeoutMs);
-    await settleWithin(this.wait(), ptyTerminationTimeoutMs);
     await settleWithin(this.disconnect(), ptyTerminationTimeoutMs);
   }
 
   sendInput(data: string | Uint8Array): Promise<void> {
     return this.pty.sendInput(data);
-  }
-
-  wait(): Promise<{ error?: string; exitCode?: number }> {
-    this.waitPromise ??= this.pty.wait();
-    return this.waitPromise;
   }
 
   waitForConnection(): Promise<void> {
@@ -962,6 +1016,7 @@ function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
   message: string,
+  onTimeout?: () => void,
 ): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([
@@ -971,7 +1026,10 @@ function withTimeout<T>(
       }
     }),
     new Promise<never>((_, reject) => {
-      timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+      timeout = setTimeout(() => {
+        onTimeout?.();
+        reject(new Error(message));
+      }, timeoutMs);
     }),
   ]);
 }

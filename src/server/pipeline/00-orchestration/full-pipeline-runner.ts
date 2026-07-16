@@ -175,178 +175,186 @@ export async function runFullPipelineJob(
     },
   };
 
-  await log({
-    event: "pipeline-started",
-    message: "Full pipeline started.",
-    outputRoot,
-    repoUrl: input.repoUrl,
-    runDirectory,
-    runId,
-    workspaceId: input.workspaceId,
-  });
-
-  const initialPreparedDemo = await runPipelineJob(
-    input,
-    orchestratorDependencies,
-    {
-      ...options,
-      onProgress: async (event) => {
-        await options.onProgress?.(event);
-        await log({
-          event: "stage-progress",
-          message: `${event.stage} ${event.status}.`,
-          stage: event.stage,
-          status: event.status,
-        });
-      },
-    },
-  );
-  if (initialPreparedDemo.status !== "succeeded") {
-    const resultPath = join(runDirectory, "full-pipeline-result.json");
-    const failureSummary = createFailureSummary({
-      logPath,
-      rawOpenCodeLogPath: options.rawOpenCodeLogPath,
+  try {
+    await log({
+      event: "pipeline-started",
+      message: "Full pipeline started.",
+      outputRoot,
+      repoUrl: input.repoUrl,
       runDirectory,
       runId,
-      sandboxLogPath,
-      scriptGenerationRawOpenCodeLogPath:
-        options.scriptGenerationRawOpenCodeLogPath,
-      preparedDemo: initialPreparedDemo,
+      workspaceId: input.workspaceId,
+    });
+
+    const initialPreparedDemo = await runPipelineJob(
+      input,
+      orchestratorDependencies,
+      {
+        ...options,
+        onProgress: async (event) => {
+          await options.onProgress?.(event);
+          await log({
+            event: "stage-progress",
+            message: `${event.stage} ${event.status}.`,
+            stage: event.stage,
+            status: event.status,
+          });
+        },
+      },
+    );
+    if (initialPreparedDemo.status !== "succeeded") {
+      const resultPath = join(runDirectory, "full-pipeline-result.json");
+      const failureSummary = createFailureSummary({
+        logPath,
+        rawOpenCodeLogPath: options.rawOpenCodeLogPath,
+        runDirectory,
+        runId,
+        sandboxLogPath,
+        scriptGenerationRawOpenCodeLogPath:
+          options.scriptGenerationRawOpenCodeLogPath,
+        preparedDemo: initialPreparedDemo,
+      });
+      await log({
+        event: "pipeline-failed",
+        message: `Pipeline failed with status ${initialPreparedDemo.status}.`,
+        status: initialPreparedDemo.status,
+      });
+      await writeFile(
+        resultPath,
+        `${JSON.stringify(failureSummary, null, 2)}\n`,
+      );
+      await log({
+        event: "result-written",
+        message: "Full pipeline failure result written.",
+        resultPath,
+      });
+      throw new FullPipelineStageFailure({
+        failure: failureSummary.failure,
+        logPath,
+        rawOpenCodeLogPath: options.rawOpenCodeLogPath,
+        resultPath,
+        stage: "pipeline",
+        status: initialPreparedDemo.status,
+      });
+    }
+
+    let preparedDemo: PreparedDemoResult = initialPreparedDemo;
+
+    const browserUrl = preparedDemo.capturePathValidation.browserUrl;
+    if (browserUrl === undefined || browserUrl.trim().length === 0) {
+      await log({
+        event: "pipeline-failed",
+        message: "Capture Path Validation did not return a browser URL.",
+      });
+      throw new Error("Capture Path Validation did not return a browser URL.");
+    }
+
+    let scriptSummary = summarizeScriptPackage(preparedDemo.demoScriptPackage);
+    let scriptPersistence = await persistGeneratedScript({
+      demoRequestId: options.context?.demoRequestId,
+      log,
+      runDirectory,
+      scriptPackage: preparedDemo.demoScriptPackage,
+      scriptStore: options.demoRequestScriptStore,
+      scriptSummary,
+    });
+
+    const reviewResult = await runDraftCompositeReviewLoop({
+      browserUrl,
+      dependencies: orchestratorDependencies,
+      input,
+      log,
+      options,
+      runDirectory,
+      persistScript: (scriptPackage) =>
+        persistGeneratedScript({
+          demoRequestId: options.context?.demoRequestId,
+          log,
+          runDirectory,
+          scriptPackage,
+          scriptStore: options.demoRequestScriptStore,
+          scriptSummary: summarizeScriptPackage(scriptPackage),
+        }),
+      scriptPersistence,
+      preparedDemo,
+    });
+    preparedDemo = reviewResult.preparedDemo;
+    scriptSummary = summarizeScriptPackage(preparedDemo.demoScriptPackage);
+    scriptPersistence = reviewResult.scriptPersistence;
+    const { captureManifest, finalVideo, reviewSummary } = reviewResult;
+    await writeDraftCompositeReviewMetadata({
+      finalVideo,
+      reviewSummary,
     });
     await log({
-      event: "pipeline-failed",
-      message: `Pipeline failed with status ${initialPreparedDemo.status}.`,
-      status: initialPreparedDemo.status,
+      event: "pipeline-succeeded",
+      message: "Full pipeline succeeded.",
+      viewUrl: finalVideo.viewUrl,
     });
-    await writeFile(resultPath, `${JSON.stringify(failureSummary, null, 2)}\n`);
+    const resultPath = join(runDirectory, "full-pipeline-result.json");
+    const artifactSummary: FullPipelineArtifactSummary = {
+      artifacts: {
+        captureManifestPath: captureManifest.manifestPath,
+        compositeManifestPath: finalVideo.manifestPath,
+        finalVideoPath: finalVideo.outputVideoPath ?? finalVideo.viewUrl,
+        ...(scriptPersistence.demoRequestId === undefined
+          ? {}
+          : { generatedScriptDemoRequestId: scriptPersistence.demoRequestId }),
+        ...(scriptPersistence.scriptPath === undefined
+          ? {}
+          : { generatedScriptPath: scriptPersistence.scriptPath }),
+        logPath,
+        ...(options.rawOpenCodeLogPath === undefined
+          ? {}
+          : { rawOpenCodeLogPath: options.rawOpenCodeLogPath }),
+        renderPlanPath: finalVideo.renderPlanPath,
+        ...(sandboxLogPath === undefined ? {} : { sandboxLogPath }),
+        ...(options.scriptGenerationRawOpenCodeLogPath === undefined
+          ? {}
+          : {
+              scriptGenerationRawOpenCodeLogPath:
+                options.scriptGenerationRawOpenCodeLogPath,
+            }),
+        viewUrl: finalVideo.viewUrl,
+      },
+      draftCompositeReview: reviewSummary,
+      runDirectory,
+      runId,
+      script: {
+        sceneCount: scriptSummary.sceneCount,
+        scriptId: preparedDemo.demoScriptPackage.scriptId,
+        title: preparedDemo.demoScriptPackage.title,
+      },
+      status: "succeeded",
+    };
+    await writeFile(
+      resultPath,
+      `${JSON.stringify(artifactSummary, null, 2)}\n`,
+    );
     await log({
       event: "result-written",
-      message: "Full pipeline failure result written.",
+      message: "Full pipeline result written.",
       resultPath,
     });
-    throw new FullPipelineStageFailure({
-      failure: failureSummary.failure,
+    return {
+      captureManifest,
+      draftCompositeReview: reviewSummary,
+      finalVideo,
       logPath,
-      rawOpenCodeLogPath: options.rawOpenCodeLogPath,
       resultPath,
-      stage: "pipeline",
-      status: initialPreparedDemo.status,
-    });
-  }
-
-  let preparedDemo: PreparedDemoResult = initialPreparedDemo;
-
-  const browserUrl = preparedDemo.capturePathValidation.browserUrl;
-  if (browserUrl === undefined || browserUrl.trim().length === 0) {
-    await log({
-      event: "pipeline-failed",
-      message: "Capture Path Validation did not return a browser URL.",
-    });
-    throw new Error("Capture Path Validation did not return a browser URL.");
-  }
-
-  let scriptSummary = summarizeScriptPackage(preparedDemo.demoScriptPackage);
-  let scriptPersistence = await persistGeneratedScript({
-    demoRequestId: options.context?.demoRequestId,
-    log,
-    runDirectory,
-    scriptPackage: preparedDemo.demoScriptPackage,
-    scriptStore: options.demoRequestScriptStore,
-    scriptSummary,
-  });
-
-  const reviewResult = await runDraftCompositeReviewLoop({
-    browserUrl,
-    dependencies: orchestratorDependencies,
-    input,
-    log,
-    options,
-    runDirectory,
-    persistScript: (scriptPackage) =>
-      persistGeneratedScript({
-        demoRequestId: options.context?.demoRequestId,
-        log,
-        runDirectory,
-        scriptPackage,
-        scriptStore: options.demoRequestScriptStore,
-        scriptSummary: summarizeScriptPackage(scriptPackage),
-      }),
-    scriptPersistence,
-    preparedDemo,
-  });
-  preparedDemo = reviewResult.preparedDemo;
-  scriptSummary = summarizeScriptPackage(preparedDemo.demoScriptPackage);
-  scriptPersistence = reviewResult.scriptPersistence;
-  const { captureManifest, finalVideo, reviewSummary } = reviewResult;
-  await writeDraftCompositeReviewMetadata({
-    finalVideo,
-    reviewSummary,
-  });
-  await log({
-    event: "pipeline-succeeded",
-    message: "Full pipeline succeeded.",
-    viewUrl: finalVideo.viewUrl,
-  });
-  const resultPath = join(runDirectory, "full-pipeline-result.json");
-  const artifactSummary: FullPipelineArtifactSummary = {
-    artifacts: {
-      captureManifestPath: captureManifest.manifestPath,
-      compositeManifestPath: finalVideo.manifestPath,
-      finalVideoPath: finalVideo.outputVideoPath ?? finalVideo.viewUrl,
-      ...(scriptPersistence.demoRequestId === undefined
-        ? {}
-        : { generatedScriptDemoRequestId: scriptPersistence.demoRequestId }),
+      ...(sandboxLogPath === undefined ? {} : { sandboxLogPath }),
       ...(scriptPersistence.scriptPath === undefined
         ? {}
-        : { generatedScriptPath: scriptPersistence.scriptPath }),
-      logPath,
-      ...(options.rawOpenCodeLogPath === undefined
-        ? {}
-        : { rawOpenCodeLogPath: options.rawOpenCodeLogPath }),
-      renderPlanPath: finalVideo.renderPlanPath,
-      ...(sandboxLogPath === undefined ? {} : { sandboxLogPath }),
-      ...(options.scriptGenerationRawOpenCodeLogPath === undefined
-        ? {}
-        : {
-            scriptGenerationRawOpenCodeLogPath:
-              options.scriptGenerationRawOpenCodeLogPath,
-          }),
-      viewUrl: finalVideo.viewUrl,
-    },
-    draftCompositeReview: reviewSummary,
-    runDirectory,
-    runId,
-    script: {
-      sceneCount: scriptSummary.sceneCount,
-      scriptId: preparedDemo.demoScriptPackage.scriptId,
-      title: preparedDemo.demoScriptPackage.title,
-    },
-    status: "succeeded",
-  };
-  await writeFile(resultPath, `${JSON.stringify(artifactSummary, null, 2)}\n`);
-  await log({
-    event: "result-written",
-    message: "Full pipeline result written.",
-    resultPath,
-  });
-  await cleanupPreparationWorkspaces({
-    handles: preparationWorkspaces,
-    log,
-  });
-
-  return {
-    captureManifest,
-    draftCompositeReview: reviewSummary,
-    finalVideo,
-    logPath,
-    resultPath,
-    ...(sandboxLogPath === undefined ? {} : { sandboxLogPath }),
-    ...(scriptPersistence.scriptPath === undefined
-      ? {}
-      : { scriptPath: scriptPersistence.scriptPath }),
-    preparedDemo,
-    status: "succeeded",
-  };
+        : { scriptPath: scriptPersistence.scriptPath }),
+      preparedDemo,
+      status: "succeeded",
+    };
+  } finally {
+    await cleanupPreparationWorkspaces({
+      handles: preparationWorkspaces,
+      log,
+    });
+  }
 }
 
 async function cleanupPreparationWorkspaces(input: {
