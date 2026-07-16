@@ -617,6 +617,46 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     ).toBeLessThan(calls.findIndex((call) => "delete" in Object(call)));
   });
 
+  it("kills active streaming commands before disconnecting so cancellation settles", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeClient(calls, { ptyWaitsForKill: true }),
+    });
+    const handle = await provider.create();
+
+    const execution = handle.workspace.execute("opencode run slow", {
+      onStdout: () => {},
+    });
+    await Promise.resolve();
+
+    await Promise.all([
+      handle.workspace.cancelActiveCommands?.(),
+      handle.workspace.cancelActiveCommands?.(),
+    ]);
+    await expect(
+      Promise.race([
+        execution,
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("cancellation did not settle")),
+            100,
+          ),
+        ),
+      ]),
+    ).resolves.toMatchObject({ exitCode: 7 });
+
+    const killIndex = calls.findIndex((call) => "kill" in Object(call));
+    const disconnectIndex = calls.findIndex(
+      (call) => "disconnect" in Object(call),
+    );
+    expect(killIndex).toBeGreaterThanOrEqual(0);
+    expect(killIndex).toBeLessThan(disconnectIndex);
+    expect(calls.filter((call) => "kill" in Object(call))).toHaveLength(1);
+    expect(calls.filter((call) => "disconnect" in Object(call))).toHaveLength(
+      1,
+    );
+  });
+
   it("times out and disconnects a streaming command that never finishes", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
@@ -1785,6 +1825,7 @@ function fakeClient(
     ptyNeverConnects?: boolean;
     ptyStaleDuplicateIdOnFirstCreate?: boolean;
     ptyWaitFails?: boolean;
+    ptyWaitsForKill?: boolean;
     ptyWaitsForDisconnect?: boolean;
   } = {},
 ) {
@@ -1859,9 +1900,14 @@ function fakeClient(
           }
         }
         let disconnected = false;
+        let killed = false;
         let resolveDisconnect: (() => void) | undefined;
+        let resolveKill: (() => void) | undefined;
         const disconnectedPromise = new Promise<void>((resolve) => {
           resolveDisconnect = resolve;
+        });
+        const killedPromise = new Promise<void>((resolve) => {
+          resolveKill = resolve;
         });
         return {
           async disconnect() {
@@ -1871,6 +1917,14 @@ function fakeClient(
             disconnected = true;
             calls.push({ disconnect: true });
             resolveDisconnect?.();
+          },
+          async kill() {
+            if (killed) {
+              return;
+            }
+            killed = true;
+            calls.push({ kill: true });
+            resolveKill?.();
           },
           async sendInput(data: string | Uint8Array) {
             calls.push({ sendInput: data });
@@ -1886,6 +1940,8 @@ function fakeClient(
             }
             if (options.ptyWaitsForDisconnect === true) {
               await disconnectedPromise;
+            } else if (options.ptyWaitsForKill === true) {
+              await killedPromise;
             }
             return { exitCode: 0 };
           },

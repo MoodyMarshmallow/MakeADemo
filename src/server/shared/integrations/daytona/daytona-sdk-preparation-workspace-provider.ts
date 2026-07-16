@@ -65,6 +65,7 @@ type DaytonaSdkSandbox = {
     }): Promise<{
       disconnect(): Promise<void>;
       sendInput(data: string | Uint8Array): Promise<void>;
+      kill(): Promise<void>;
       wait(): Promise<{ error?: string; exitCode?: number }>;
       waitForConnection(): Promise<void>;
     }>;
@@ -134,6 +135,7 @@ const defaultCommandTimeoutMs = 10 * 60_000;
 const defaultLogWriteTimeoutMs = 5_000;
 const defaultPreviewUrlTimeoutMs = 30_000;
 const defaultPtyConnectionTimeoutMs = 30_000;
+const ptyTerminationTimeoutMs = 1_000;
 const defaultSandboxCreateTimeoutSeconds = 300;
 const sandboxCreateConnectionRetryLimit = 2;
 const networkSettingsConnectionRetryLimit = 2;
@@ -429,7 +431,7 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
 
   async cancelActiveCommands(): Promise<void> {
     await Promise.allSettled(
-      [...this.activePtys].map((pty) => pty.disconnect()),
+      [...this.activePtys].map((pty) => pty.terminate()),
     );
   }
 
@@ -907,6 +909,10 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
 
 class ManagedPty {
   private disconnected = false;
+  private terminationPromise: Promise<void> | undefined;
+  private waitPromise:
+    | Promise<{ error?: string; exitCode?: number }>
+    | undefined;
 
   constructor(private readonly pty: DaytonaSdkPty) {}
 
@@ -918,17 +924,38 @@ class ManagedPty {
     await this.pty.disconnect();
   }
 
+  async terminate(): Promise<void> {
+    this.terminationPromise ??= this.terminateInternal();
+    await this.terminationPromise;
+  }
+
+  private async terminateInternal(): Promise<void> {
+    await settleWithin(this.pty.kill(), ptyTerminationTimeoutMs);
+    await settleWithin(this.wait(), ptyTerminationTimeoutMs);
+    await settleWithin(this.disconnect(), ptyTerminationTimeoutMs);
+  }
+
   sendInput(data: string | Uint8Array): Promise<void> {
     return this.pty.sendInput(data);
   }
 
   wait(): Promise<{ error?: string; exitCode?: number }> {
-    return this.pty.wait();
+    this.waitPromise ??= this.pty.wait();
+    return this.waitPromise;
   }
 
   waitForConnection(): Promise<void> {
     return this.pty.waitForConnection();
   }
+}
+
+async function settleWithin<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+): Promise<void> {
+  await Promise.allSettled([
+    withTimeout(promise, timeoutMs, "PTY termination timed out."),
+  ]);
 }
 
 function withTimeout<T>(
