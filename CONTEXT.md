@@ -46,6 +46,7 @@
 - **Supporting Documents** are normalized into text artifacts before **Repo Preparation** begins.
 - **Repo Security Screen** runs before **Repo Preparation** and does not use an agent.
 - **Repo Security Screen** does not install dependencies or execute submitted repo code.
+- **Repo Security Screen** inventories committed dotenv paths without reading dotenv contents and does not reject a repo solely because `.env*` files are present.
 - **Repo Preparation** happens in an ephemeral cloud workspace and does not modify the maker's source repo.
 - During **Repo Preparation**, the preparation agent may edit and execute the ephemeral workspace, but the prepared output must still pass non-agent **Capture Path Validation** before Footage Capture trusts it.
 - During **Repo Preparation**, the preparation agent may use controlled network access for setup and research, but the prepared app runtime must pass **Runtime Network Lockdown** before Footage Capture trusts it.

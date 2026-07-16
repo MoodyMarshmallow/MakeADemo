@@ -29,6 +29,40 @@ describe("readRepoSecurityInput", () => {
     );
   });
 
+  it("inventories dotenv paths without reading or returning their contents", async () => {
+    const commands: string[] = [];
+    const sentinel = "DOTENV_CANARY_ORIGINAL";
+    const workspace = new FakePreparationWorkspace({
+      commands,
+      fileStats:
+        "package.json\t17\n.env\t31\napps/web/.env.production\t42\n.env.test.local.template\t27\n",
+      textByPath: {
+        ".env": `API_KEY=${sentinel}`,
+        ".env.test.local.template": `API_KEY=${sentinel}`,
+        "apps/web/.env.production": `API_KEY=${sentinel}`,
+        "package.json": '{"name":"app"}',
+      },
+    });
+
+    const result = await readRepoSecurityInput(
+      new FakePreparationWorkspaceProvider(workspace),
+      "https://github.com/example/app",
+    );
+
+    expect(result.files).toEqual([
+      { path: "package.json", text: '{"name":"app"}' },
+      { path: ".env" },
+      { path: "apps/web/.env.production" },
+      { path: ".env.test.local.template" },
+    ]);
+    expect(
+      commands.filter(
+        (command) => command.startsWith("cat ") && command.includes(".env"),
+      ),
+    ).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain(sentinel);
+  });
+
   it("retries transient Daytona clone failures before reading repo security input", async () => {
     const workspace = new FakePreparationWorkspace({
       cloneResults: [
@@ -381,6 +415,8 @@ class FakePreparationWorkspace implements PreparationWorkspace {
       cloneError?: Error;
       cloneResults?: PreparationWorkspaceCommandResult[];
       commands?: string[];
+      fileStats?: string;
+      textByPath?: Record<string, string>;
     } = {},
   ) {}
 
@@ -407,11 +443,25 @@ class FakePreparationWorkspace implements PreparationWorkspace {
     }
 
     if (command.includes("-printf '%P\\t%s\\n'")) {
-      return { exitCode: 0, stderr: "", stdout: "package.json\t17\n" };
+      return {
+        exitCode: 0,
+        stderr: "",
+        stdout: this.input.fileStats ?? "package.json\t17\n",
+      };
     }
 
     if (command.startsWith("cat ")) {
-      return { exitCode: 0, stderr: "", stdout: '{"name":"app"}' };
+      const path = Object.keys(this.input.textByPath ?? {}).find((candidate) =>
+        command.includes(`/${candidate}'`),
+      );
+      return {
+        exitCode: 0,
+        stderr: "",
+        stdout:
+          path === undefined
+            ? '{"name":"app"}'
+            : (this.input.textByPath?.[path] ?? ""),
+      };
     }
 
     throw new Error(`Unexpected command: ${command}`);

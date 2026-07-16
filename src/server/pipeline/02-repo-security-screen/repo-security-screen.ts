@@ -27,7 +27,6 @@ const lockfiles = new Set([
   "yarn.lock",
 ]);
 const privateKeyFilenames = new Set(["id_ed25519", "id_rsa"]);
-const safeEnvFileSuffixes = new Set(["example", "sample", "template"]);
 
 export function screenRepoSecurity(
   input: RepoSecurityInput,
@@ -45,7 +44,7 @@ export function screenRepoSecurity(
   }
 
   for (const file of normalizedFiles) {
-    if (isCommittedSecretFile(file.path)) {
+    if (isCommittedPrivateKey(file.path)) {
       rejections.push(`repo contains committed secret file ${file.path}`);
     }
   }
@@ -79,18 +78,9 @@ export function screenRepoSecurity(
   };
 }
 
-function isCommittedSecretFile(path: string) {
+function isCommittedPrivateKey(path: string) {
   const filename = path.split("/").at(-1) ?? path;
-  if (privateKeyFilenames.has(filename)) {
-    return true;
-  }
-
-  if (!filename.startsWith(".env")) {
-    return false;
-  }
-
-  const suffix = filename.slice(".env.".length);
-  return !safeEnvFileSuffixes.has(suffix);
+  return privateKeyFilenames.has(filename);
 }
 
 function inspectPackageJson(

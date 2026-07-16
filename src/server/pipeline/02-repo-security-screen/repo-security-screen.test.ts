@@ -19,25 +19,33 @@ describe("screenRepoSecurity", () => {
     expect(result.rejections).toContain(
       "package script demo contains a destructive command",
     );
-    expect(result.rejections).toContain(
+    expect(result.rejections).not.toContain(
       "repo contains committed secret file .env",
     );
   });
 
-  it("rejects secret-looking files committed outside the repo root", () => {
+  it("allows dotenv files at common paths while still rejecting private keys", () => {
     const result = screenRepoSecurity({
       files: [
         { path: "package.json", text: JSON.stringify({}) },
-        { path: "apps/web/.env.production", text: "API_KEY=secret" },
+        { path: ".env", text: "API_KEY=DOTENV_CANARY_ORIGINAL" },
+        { path: ".env.test", text: "API_KEY=test" },
+        { path: ".env.development", text: "API_KEY=development" },
+        { path: ".env.production", text: "API_KEY=production" },
+        { path: ".env.test.local.template", text: "API_KEY=template" },
+        { path: "apps/web/.env.production", text: "API_KEY=nested" },
         { path: "config/id_ed25519", text: "private-key" },
       ],
       repoStats: { fileCount: 10, sizeBytes: 100_000 },
     });
 
     expect(result.status).toBe("rejected");
-    expect(result.rejections).toContain(
-      "repo contains committed secret file apps/web/.env.production",
+    expect(result.rejections).not.toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("repo contains committed secret file .env"),
+      ]),
     );
+    expect(JSON.stringify(result)).not.toContain("DOTENV_CANARY_ORIGINAL");
     expect(result.rejections).toContain(
       "repo contains committed secret file config/id_ed25519",
     );

@@ -20,7 +20,7 @@ export type RepoPreparationCloneDiagnosticsContext = {
   daytonaSubmittedCodeSnapshot?: string;
 };
 
-/** Clones both workspace views, reseals their networks, captures clone diagnostics, and installs OpenCode policy. */
+/** Clones and verifies both workspace views, reseals their networks, then installs OpenCode policy. */
 export async function bootstrapRepoPreparationWorkspace(input: {
   cloneFailureDiagnosticsContext?: RepoPreparationCloneDiagnosticsContext;
   commitSha?: string;

@@ -86,6 +86,33 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
     expect(command).not.toContain("--dangerously-skip-permissions");
     expect(command).toContain("--dir /workspace");
     expect(command).toContain("--model 'openai/gpt-5.5'");
+    const configIndex = events.findIndex(
+      (event) =>
+        typeof event === "object" &&
+        event !== null &&
+        "execute" in event &&
+        typeof event.execute === "string" &&
+        event.execute.includes("plugins/makeademo-tools.ts"),
+    );
+    const openCodeIndex = events.findIndex(
+      (event) =>
+        typeof event === "object" &&
+        event !== null &&
+        "execute" in event &&
+        typeof event.execute === "string" &&
+        event.execute.includes("opencode run"),
+    );
+    expect(openCodeIndex).toBeGreaterThan(configIndex);
+    expect(
+      events.some(
+        (event) =>
+          typeof event === "object" &&
+          event !== null &&
+          "execute" in event &&
+          typeof event.execute === "string" &&
+          event.execute.includes("dotenv"),
+      ),
+    ).toBe(false);
 
     const cloneCommands = events
       .filter(

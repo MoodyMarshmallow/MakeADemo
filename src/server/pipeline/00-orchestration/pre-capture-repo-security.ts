@@ -346,9 +346,7 @@ function readErrorMessage(error: unknown): string {
 }
 
 function shouldReadForSecurity(path: string): boolean {
-  return (
-    path === "package.json" || path.startsWith(".env") || path.endsWith(".sh")
-  );
+  return path === "package.json" || path.endsWith(".sh");
 }
 
 function shellQuote(value: string): string {
