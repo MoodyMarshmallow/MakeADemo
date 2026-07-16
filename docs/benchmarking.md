@@ -7,6 +7,13 @@ the entire fixed benchmark suite. Each completed run is recorded independently,
 and the summarizer reports every run's duration together with the arithmetic
 mean, median, and maximum duration.
 
+The suite uses one absolute 35-minute deadline shared by all jobs and
+repetitions. Set `MAKEADEMO_BENCHMARK_TIMEOUT_MS` to a positive safe integer to
+override it. A child that emits a readable `Result JSON:` marker gets five
+seconds to exit naturally, then receives SIGTERM and SIGKILL two seconds later
+if needed. The same cleanup runs at the suite deadline; durable results already
+written remain authoritative.
+
 ## First Pass
 
 Run the complete benchmark with no arguments:

@@ -1,11 +1,13 @@
-import { spawn } from "node:child_process";
-import { createWriteStream } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { finished } from "node:stream/promises";
 
 import type { BenchmarkRepo } from "../src/server/shared/benchmark/benchmark-manifest";
 import { redactBenchmarkOutput } from "../src/server/shared/benchmark/benchmark-output-redaction";
+import {
+  createBenchmarkProcessController,
+  parseBenchmarkTimeout,
+  runBenchmarkProcess,
+} from "../src/server/shared/benchmark/benchmark-process-lifecycle";
 import {
   type BenchmarkResult,
   type BenchmarkStatusInferenceInput,
@@ -32,6 +34,18 @@ const selectedBenchmarkSuite = {
 const benchmarkRunId = createRunId();
 const outputRoot = join(".makeademo-benchmark-runs", benchmarkRunId);
 const resultsPath = join(outputRoot, "benchmark-results.jsonl");
+const suiteDeadlineAt =
+  Date.now() +
+  parseBenchmarkTimeout(process.env.MAKEADEMO_BENCHMARK_TIMEOUT_MS);
+const processController = createBenchmarkProcessController();
+let interrupted = false;
+const handleSignal = (signal: NodeJS.Signals) => {
+  interrupted = true;
+  process.exitCode = signal === "SIGINT" ? 130 : 143;
+  void processController.cancelAll();
+};
+process.once("SIGINT", handleSignal);
+process.once("SIGTERM", handleSignal);
 
 await mkdir(outputRoot, { recursive: true });
 await writeFile(
@@ -47,31 +61,43 @@ process.stdout.write(`Output root: ${outputRoot}\n`);
 process.stdout.write(`Results: ${resultsPath}\n`);
 
 let pendingResultWrite = Promise.resolve();
-const results = await runBenchmarkJobs({
-  repos: selectedBenchmarkRepos,
-  run: async ({ repo, repetitionIndex }) => {
-    const result = await runRepoBenchmark({
-      benchmarkRunId,
-      outputRoot,
-      repo,
-      repetitionIndex,
-    });
-    pendingResultWrite = pendingResultWrite.then(() =>
-      appendJsonLine(resultsPath, result),
-    );
-    await pendingResultWrite;
-    return result;
-  },
-});
+let results: BenchmarkResult[];
+try {
+  results = await runBenchmarkJobs({
+    repos: selectedBenchmarkRepos,
+    deadlineAt: suiteDeadlineAt,
+    run: async ({ repo, repetitionIndex, deadlineAt }) => {
+      const result = await runRepoBenchmark({
+        benchmarkRunId,
+        outputRoot,
+        repo,
+        repetitionIndex,
+        ...(deadlineAt === undefined ? {} : { deadlineAt }),
+      });
+      pendingResultWrite = pendingResultWrite.then(() =>
+        appendJsonLine(resultsPath, result),
+      );
+      await pendingResultWrite;
+      return result;
+    },
+  });
+} finally {
+  process.removeListener("SIGINT", handleSignal);
+  process.removeListener("SIGTERM", handleSignal);
+  await processController.cancelAll();
+}
 
-process.stdout.write("\nBenchmark complete.\n");
-printSummary(results);
+if (!interrupted) {
+  process.stdout.write("\nBenchmark complete.\n");
+  printSummary(results);
+}
 
 async function runRepoBenchmark(input: {
   benchmarkRunId: string;
   outputRoot: string;
   repo: BenchmarkRepo;
   repetitionIndex: number;
+  deadlineAt?: number;
 }): Promise<BenchmarkResult> {
   const runName = `${input.repo.id}-r${input.repetitionIndex + 1}`;
   const runDirectory = join(input.outputRoot, runName);
@@ -91,11 +117,21 @@ async function runRepoBenchmark(input: {
   );
   process.stdout.write(`$ ${command.join(" ")}\n`);
 
-  const exitCode = await runCommand({
+  const lifecycle = await runBenchmarkProcess({
     args,
     stderrPath,
     stdoutPath,
+    deadlineAt:
+      input.deadlineAt ??
+      Date.now() +
+        parseBenchmarkTimeout(process.env.MAKEADEMO_BENCHMARK_TIMEOUT_MS),
+    controller: processController,
   });
+  const exitCode = lifecycle.exitCode;
+  await Promise.all([
+    redactBenchmarkLog(stdoutPath),
+    redactBenchmarkLog(stderrPath),
+  ]);
   const fullPipelineResult = await readFullPipelineResult({
     stderrPath,
     stdoutPath,
@@ -104,7 +140,10 @@ async function runRepoBenchmark(input: {
     fullPipelineResult?.artifacts?.logPath ??
     (await findPipelineLogPath(pipelineOutputRoot));
   const fullPipelineLog = await readFullPipelineLog(pipelineLogPath);
-  const status = exitCode === 0 ? "succeeded" : "failed";
+  const status =
+    fullPipelineResult?.status === "succeeded" || exitCode === 0
+      ? "succeeded"
+      : "failed";
   const endedAt = new Date();
   const statusLevel = inferBenchmarkStatusLevel(
     fullPipelineResult?.status === undefined
@@ -154,38 +193,6 @@ async function runRepoBenchmark(input: {
     `[${input.repo.id}] ${status} ${statusLevel} in ${formatDuration(result.durationMs)}\n`,
   );
   return result;
-}
-
-function runCommand(input: {
-  args: string[];
-  stderrPath: string;
-  stdoutPath: string;
-}): Promise<number | null> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("bun", input.args, {
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const stdout = createWriteStream(input.stdoutPath);
-    const stderr = createWriteStream(input.stderrPath);
-
-    child.stdout.pipe(stdout);
-    child.stderr.pipe(stderr);
-
-    child.on("error", reject);
-    child.on("close", async (code) => {
-      try {
-        await Promise.all([finished(stdout), finished(stderr)]);
-        await Promise.all([
-          redactBenchmarkLog(input.stdoutPath),
-          redactBenchmarkLog(input.stderrPath),
-        ]);
-        resolve(code);
-      } catch (error) {
-        reject(error);
-      }
-    });
-  });
 }
 
 async function redactBenchmarkLog(path: string) {
@@ -244,9 +251,13 @@ async function readFullPipelineLog(logPath: string | undefined) {
   const lines = (await readFile(logPath, "utf8"))
     .split("\n")
     .filter((line) => line.trim().length > 0);
-  const events = lines.map(
-    (line) => JSON.parse(line) as Record<string, unknown>,
-  );
+  const events = lines.flatMap((line) => {
+    try {
+      return [JSON.parse(line) as Record<string, unknown>];
+    } catch {
+      return [];
+    }
+  });
   const succeededEvents = events
     .map((event) => event.event)
     .filter((event): event is string => typeof event === "string");

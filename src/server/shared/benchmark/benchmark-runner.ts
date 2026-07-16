@@ -8,9 +8,11 @@ export function runBenchmarkJobs<
   Repo extends { effectiveRepetitions: number; id: string },
 >(input: {
   repos: Repo[];
+  deadlineAt?: number;
   run: (job: {
     repetitionIndex: number;
     repo: Repo;
+    deadlineAt?: number;
   }) => Promise<BenchmarkResult>;
 }): Promise<BenchmarkResult[]> {
   const jobs = input.repos.flatMap((repo) =>
@@ -20,5 +22,13 @@ export function runBenchmarkJobs<
     })),
   );
 
-  return Promise.all(jobs.map((job) => input.run(job)));
+  return Promise.all(
+    jobs.map((job) =>
+      input.run(
+        input.deadlineAt === undefined
+          ? job
+          : { ...job, deadlineAt: input.deadlineAt },
+      ),
+    ),
+  );
 }
