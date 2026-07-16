@@ -13,6 +13,7 @@ export type VerifyCompletedBenchmarkDemoInput = {
   repo: BenchmarkRepo;
   runDirectory: string;
   verifier: BenchmarkDemoVerifier;
+  signal?: AbortSignal;
 };
 
 export async function verifyCompletedBenchmarkDemo(
@@ -34,6 +35,7 @@ export async function verifyCompletedBenchmarkDemo(
     outputDirectory: join(input.runDirectory, "external-verification"),
     repoId: input.repo.id,
     repoUrl: input.repo.repoUrl,
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
 }
 

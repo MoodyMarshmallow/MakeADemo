@@ -21,6 +21,7 @@ export type BenchmarkDemoVerifierInput = {
   outputDirectory: string;
   repoId: string;
   repoUrl: string;
+  signal?: AbortSignal;
 };
 
 /**

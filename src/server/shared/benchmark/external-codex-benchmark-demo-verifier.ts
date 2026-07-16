@@ -13,6 +13,7 @@ type CodexCommandInput = {
   prompt: string;
   timeoutMs: number;
   verdictPath: string;
+  signal?: AbortSignal;
 };
 
 type CodexCommandResult = {
@@ -46,6 +47,7 @@ export async function verifyBenchmarkDemoWithCodex(
       prompt: createVerificationPrompt(input),
       timeoutMs: dependencies.timeoutMs ?? defaultTimeoutMs,
       verdictPath,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
     if (result.exitCode !== 0) {
       throw new Error(
@@ -132,6 +134,7 @@ function runCodex(input: CodexCommandInput): Promise<CodexCommandResult> {
     const child = spawn("codex", input.args, {
       cwd: input.cwd,
       env: process.env,
+      detached: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";
@@ -146,17 +149,44 @@ function runCodex(input: CodexCommandInput): Promise<CodexCommandResult> {
     });
     child.on("error", reject);
 
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(
-        new Error(
-          `External Codex verifier timed out after ${input.timeoutMs}ms`,
+    let settled = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let terminationError: Error | undefined;
+    const terminate = (reason: Error) => {
+      if (settled) return;
+      terminationError = reason;
+      try {
+        if (child.pid !== undefined) process.kill(-child.pid, "SIGTERM");
+        else child.kill("SIGTERM");
+      } catch {}
+      killTimer = setTimeout(() => {
+        try {
+          if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+          else child.kill("SIGKILL");
+        } catch {}
+      }, 2_000);
+    };
+    const timer = setTimeout(
+      () =>
+        terminate(
+          new Error(
+            `External Codex verifier timed out after ${input.timeoutMs}ms`,
+          ),
         ),
-      );
-    }, input.timeoutMs);
+      input.timeoutMs,
+    );
+    const onAbort = () =>
+      terminate(new Error("External Codex verifier aborted."));
+    input.signal?.addEventListener("abort", onAbort, { once: true });
     child.on("close", (exitCode) => {
       clearTimeout(timer);
-      resolve({ exitCode, stderr, stdout });
+      input.signal?.removeEventListener("abort", onAbort);
+      if (killTimer) clearTimeout(killTimer);
+      if (!settled) {
+        settled = true;
+        if (terminationError !== undefined) reject(terminationError);
+        else resolve({ exitCode, stderr, stdout });
+      }
     });
     child.stdin.end(input.prompt);
   });

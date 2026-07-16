@@ -167,4 +167,33 @@ describe("verifyBenchmarkDemoWithCodex", () => {
       status: "error",
     });
   });
+
+  it("propagates an abort signal to the external evaluator process", async () => {
+    const outputDirectory = await mkdtemp(
+      join(tmpdir(), "makeademo-benchmark-verification-"),
+    );
+    const controller = new AbortController();
+    let receivedSignal: AbortSignal | undefined;
+
+    await verifyBenchmarkDemoWithCodex(
+      {
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
+        evidenceImagePaths: [],
+        features: ["Show the app"],
+        finalVideoPath: join(outputDirectory, "final-video.mp4"),
+        outputDirectory,
+        repoId: "app",
+        repoUrl: "https://github.com/example/app",
+        signal: controller.signal,
+      },
+      {
+        async runCodex(input) {
+          receivedSignal = input.signal;
+          return { exitCode: 1, stderr: "aborted", stdout: "" };
+        },
+      },
+    );
+
+    expect(receivedSignal).toBe(controller.signal);
+  });
 });

@@ -1,12 +1,14 @@
-import { spawn } from "node:child_process";
-import { createWriteStream } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { finished } from "node:stream/promises";
 
 import { verifyCompletedBenchmarkDemo } from "../src/server/shared/benchmark/benchmark-demo-verification";
 import type { BenchmarkRepo } from "../src/server/shared/benchmark/benchmark-manifest";
 import { redactBenchmarkOutput } from "../src/server/shared/benchmark/benchmark-output-redaction";
+import {
+  createBenchmarkProcessController,
+  parseBenchmarkTimeout,
+  runBenchmarkProcess,
+} from "../src/server/shared/benchmark/benchmark-process-lifecycle";
 import {
   type BenchmarkResult,
   type BenchmarkStatusInferenceInput,
@@ -25,6 +27,18 @@ import { verifyBenchmarkDemoWithCodex } from "../src/server/shared/benchmark/ext
 const benchmarkRunId = createRunId();
 const outputRoot = join(".makeademo-benchmark-runs", benchmarkRunId);
 const resultsPath = join(outputRoot, "benchmark-results.jsonl");
+const suiteDeadlineAt =
+  Date.now() +
+  parseBenchmarkTimeout(process.env.MAKEADEMO_BENCHMARK_TIMEOUT_MS);
+const processController = createBenchmarkProcessController();
+let interrupted = false;
+const handleSignal = (signal: NodeJS.Signals) => {
+  interrupted = true;
+  process.exitCode = signal === "SIGINT" ? 130 : 143;
+  void processController.cancelAll();
+};
+process.once("SIGINT", handleSignal);
+process.once("SIGTERM", handleSignal);
 
 await mkdir(outputRoot, { recursive: true });
 await writeFile(
@@ -37,31 +51,43 @@ process.stdout.write(`Output root: ${outputRoot}\n`);
 process.stdout.write(`Results: ${resultsPath}\n`);
 
 let pendingResultWrite = Promise.resolve();
-const results = await runBenchmarkJobs({
-  repos: benchmarkRepos,
-  run: async ({ repo, repetitionIndex }) => {
-    const result = await runRepoBenchmark({
-      benchmarkRunId,
-      outputRoot,
-      repo,
-      repetitionIndex,
-    });
-    pendingResultWrite = pendingResultWrite.then(() =>
-      appendJsonLine(resultsPath, result),
-    );
-    await pendingResultWrite;
-    return result;
-  },
-});
+let results: BenchmarkResult[];
+try {
+  results = await runBenchmarkJobs({
+    repos: benchmarkRepos,
+    deadlineAt: suiteDeadlineAt,
+    run: async ({ repo, repetitionIndex, deadlineAt }) => {
+      const result = await runRepoBenchmark({
+        benchmarkRunId,
+        outputRoot,
+        repo,
+        repetitionIndex,
+        ...(deadlineAt === undefined ? {} : { deadlineAt }),
+      });
+      pendingResultWrite = pendingResultWrite.then(() =>
+        appendJsonLine(resultsPath, result),
+      );
+      await pendingResultWrite;
+      return result;
+    },
+  });
+} finally {
+  process.removeListener("SIGINT", handleSignal);
+  process.removeListener("SIGTERM", handleSignal);
+  await processController.cancelAll();
+}
 
-process.stdout.write("\nBenchmark complete.\n");
-printSummary(results);
+if (!interrupted) {
+  process.stdout.write("\nBenchmark complete.\n");
+  printSummary(results);
+}
 
 async function runRepoBenchmark(input: {
   benchmarkRunId: string;
   outputRoot: string;
   repo: BenchmarkRepo;
   repetitionIndex: number;
+  deadlineAt?: number;
 }): Promise<BenchmarkResult> {
   const runName = `${input.repo.id}-r${input.repetitionIndex + 1}`;
   const runDirectory = join(input.outputRoot, runName);
@@ -81,11 +107,21 @@ async function runRepoBenchmark(input: {
   );
   process.stdout.write(`$ ${command.join(" ")}\n`);
 
-  const exitCode = await runCommand({
+  const lifecycle = await runBenchmarkProcess({
     args,
     stderrPath,
     stdoutPath,
+    deadlineAt:
+      input.deadlineAt ??
+      Date.now() +
+        parseBenchmarkTimeout(process.env.MAKEADEMO_BENCHMARK_TIMEOUT_MS),
+    controller: processController,
   });
+  const exitCode = lifecycle.exitCode;
+  await Promise.all([
+    redactBenchmarkLog(stdoutPath),
+    redactBenchmarkLog(stderrPath),
+  ]);
   const fullPipelineResult = await readFullPipelineResult({
     stderrPath,
     stdoutPath,
@@ -94,12 +130,16 @@ async function runRepoBenchmark(input: {
     fullPipelineResult?.artifacts?.logPath ??
     (await findPipelineLogPath(pipelineOutputRoot));
   const fullPipelineLog = await readFullPipelineLog(pipelineLogPath);
-  const status = exitCode === 0 ? "succeeded" : "failed";
+  const status =
+    fullPipelineResult?.status === "succeeded" || exitCode === 0
+      ? "succeeded"
+      : "failed";
   const verification = await runExternalVerification({
     fullPipelineResult,
     repo: input.repo,
     runDirectory,
     status,
+    ...(input.deadlineAt === undefined ? {} : { deadlineAt: input.deadlineAt }),
   });
   const endedAt = new Date();
   const statusLevel = inferBenchmarkStatusLevel(
@@ -172,6 +212,7 @@ async function runExternalVerification(input: {
   repo: BenchmarkRepo;
   runDirectory: string;
   status: "failed" | "succeeded";
+  deadlineAt?: number;
 }) {
   if (
     input.status !== "succeeded" ||
@@ -185,50 +226,34 @@ async function runExternalVerification(input: {
   process.stdout.write(
     `[${input.repo.id}] external Codex verification starting\n`,
   );
-  const verification = await verifyCompletedBenchmarkDemo({
+  const controller = new AbortController();
+  const remainingMs =
+    input.deadlineAt === undefined ? undefined : input.deadlineAt - Date.now();
+  const deadlineTimer =
+    remainingMs === undefined || remainingMs <= 0
+      ? undefined
+      : setTimeout(() => controller.abort(), remainingMs);
+  if (remainingMs !== undefined && remainingMs <= 0) return undefined;
+  const verificationPromise = verifyCompletedBenchmarkDemo({
     compositeManifestPath:
       input.fullPipelineResult.artifacts.compositeManifestPath,
     finalVideoPath: input.fullPipelineResult.artifacts.finalVideoPath,
     repo: input.repo,
     runDirectory: input.runDirectory,
     verifier: verifyBenchmarkDemoWithCodex,
+    signal: controller.signal,
   });
+  let verification: Awaited<typeof verificationPromise>;
+  try {
+    verification = await verificationPromise;
+  } finally {
+    if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+  }
+  if (verification === undefined) return undefined;
   process.stdout.write(
     `[${input.repo.id}] external Codex verification ${verification.status}: ${verification.reason}\n`,
   );
   return verification;
-}
-
-function runCommand(input: {
-  args: string[];
-  stderrPath: string;
-  stdoutPath: string;
-}): Promise<number | null> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("bun", input.args, {
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const stdout = createWriteStream(input.stdoutPath);
-    const stderr = createWriteStream(input.stderrPath);
-
-    child.stdout.pipe(stdout);
-    child.stderr.pipe(stderr);
-
-    child.on("error", reject);
-    child.on("close", async (code) => {
-      try {
-        await Promise.all([finished(stdout), finished(stderr)]);
-        await Promise.all([
-          redactBenchmarkLog(input.stdoutPath),
-          redactBenchmarkLog(input.stderrPath),
-        ]);
-        resolve(code);
-      } catch (error) {
-        reject(error);
-      }
-    });
-  });
 }
 
 async function redactBenchmarkLog(path: string) {
@@ -291,9 +316,13 @@ async function readFullPipelineLog(logPath: string | undefined) {
   const lines = (await readFile(logPath, "utf8"))
     .split("\n")
     .filter((line) => line.trim().length > 0);
-  const events = lines.map(
-    (line) => JSON.parse(line) as Record<string, unknown>,
-  );
+  const events = lines.flatMap((line) => {
+    try {
+      return [JSON.parse(line) as Record<string, unknown>];
+    } catch {
+      return [];
+    }
+  });
   const succeededEvents = events
     .map((event) => event.event)
     .filter((event): event is string => typeof event === "string");
