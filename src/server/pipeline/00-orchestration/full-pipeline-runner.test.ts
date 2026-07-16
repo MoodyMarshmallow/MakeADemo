@@ -271,10 +271,19 @@ describe("runFullPipelineJob", () => {
   });
 
   it("fails before capture when Capture Path Validation did not produce a browser URL", async () => {
+    const preparationWorkspace = fakePreparationWorkspaceHandle();
+    let destroyCount = 0;
+    preparationWorkspace.destroy = async () => {
+      destroyCount += 1;
+    };
     await expect(
       runFullPipelineJob(
         fullPipelineInput(),
-        orchestratorDependencies([], { includeBrowserUrl: false }),
+        orchestratorDependencies(
+          [],
+          { includeBrowserUrl: false },
+          preparationWorkspace,
+        ),
         {
           async captureScenes() {
             throw new Error("capture should not run");
@@ -283,6 +292,27 @@ describe("runFullPipelineJob", () => {
             throw new Error("compositing should not run");
           },
         },
+      ),
+    ).rejects.toThrow(
+      "Capture Path Validation succeeded without a browser URL.",
+    );
+    expect(destroyCount).toBe(1);
+  });
+
+  it("preserves the downstream failure when preparation cleanup also fails", async () => {
+    const preparationWorkspace = fakePreparationWorkspaceHandle();
+    preparationWorkspace.destroy = async () => {
+      throw new Error("cleanup failed");
+    };
+
+    await expect(
+      runFullPipelineJob(
+        fullPipelineInput(),
+        orchestratorDependencies(
+          [],
+          { includeBrowserUrl: false },
+          preparationWorkspace,
+        ),
       ),
     ).rejects.toThrow(
       "Capture Path Validation succeeded without a browser URL.",

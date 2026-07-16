@@ -34,6 +34,8 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(handle.id).toBe("sandbox_123");
     expect(calls[0]).toEqual({
       create: {
+        autoDeleteInterval: 0,
+        autoStopInterval: 15,
         disk: 3,
         snapshot: "makeademo-opencode",
       },
@@ -59,7 +61,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     await provider.create();
 
     expect(calls[0]).toEqual({
-      create: { disk: 3 },
+      create: { autoDeleteInterval: 0, autoStopInterval: 15, disk: 3 },
       options: { timeout: 180 },
     });
   });
@@ -90,8 +92,14 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
 
     expect(handle.id).toBe("sandbox_123");
     expect(calls.slice(0, 2)).toEqual([
-      { create: { disk: 3 }, options: { timeout: 180 } },
-      { create: { disk: 3 }, options: { timeout: 180 } },
+      {
+        create: { autoDeleteInterval: 0, autoStopInterval: 15, disk: 3 },
+        options: { timeout: 180 },
+      },
+      {
+        create: { autoDeleteInterval: 0, autoStopInterval: 15, disk: 3 },
+        options: { timeout: 180 },
+      },
     ]);
   });
 
@@ -106,6 +114,8 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
 
     expect(calls[0]).toEqual({
       create: {
+        autoDeleteInterval: 0,
+        autoStopInterval: 15,
         disk: 3,
         secrets: { OPENAI_API_KEY: "makeademo-openai" },
       },
@@ -392,15 +402,18 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         sendInput:
           "stty -echo\nopencode run hello\nprintf '\\n__MAKEADEMO_EXIT__:%s\\n' $?\nexit\n",
       },
-      { wait: true },
       { disconnect: true },
     ]);
+    expect(calls.filter((call) => "wait" in Object(call))).toHaveLength(0);
   });
 
   it("uses a per-call timeout override for streaming Daytona commands", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeClient(calls, { ptyWaitsForDisconnect: true }),
+      client: fakeClient(calls, {
+        ptyWaitsForDisconnect: true,
+        ptySuppressExitMarker: true,
+      }),
       commandTimeoutMs: 1_000,
     });
     const handle = await provider.create();
@@ -598,7 +611,9 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
   it("disconnects active streaming commands before deleting the sandbox", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeClient(calls, { ptyWaitsForDisconnect: true }),
+      client: fakeClient(calls, {
+        ptyWaitsForDisconnect: true,
+      }),
     });
     const handle = await provider.create();
 
@@ -660,7 +675,10 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
   it("times out and disconnects a streaming command that never finishes", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeClient(calls, { ptyWaitsForDisconnect: true }),
+      client: fakeClient(calls, {
+        ptyWaitsForDisconnect: true,
+        ptySuppressExitMarker: true,
+      }),
       commandTimeoutMs: 1,
     });
     const handle = await provider.create();
@@ -765,16 +783,20 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
   it("does not retry streaming PTY failures after sending the command", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeClient(calls, { ptyWaitFails: true }),
+      client: fakeClient(calls, {
+        ptySuppressExitMarker: true,
+      }),
+      commandTimeoutMs: 1,
     });
     const handle = await provider.create();
 
     await expect(
       handle.workspace.execute("opencode run hello", { onStdout: () => {} }),
-    ).rejects.toThrow("PTY wait failed after command started.");
+    ).rejects.toThrow("Daytona command did not finish within 1ms.");
 
     expect(calls.filter((call) => "createPty" in Object(call))).toHaveLength(1);
     expect(calls.filter((call) => "sendInput" in Object(call))).toHaveLength(1);
+    expect(calls.filter((call) => "wait" in Object(call))).toHaveLength(0);
   });
 
   it("does not retry non-PTY command failures", async () => {
@@ -905,6 +927,8 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(calls.slice(0, 2)).toEqual([
       {
         create: {
+          autoDeleteInterval: 0,
+          autoStopInterval: 15,
           disk: 3,
           snapshot: "makeademo-opencode",
         },
@@ -968,6 +992,8 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(calls.slice(0, 2)).toEqual([
       {
         create: {
+          autoDeleteInterval: 0,
+          autoStopInterval: 15,
           disk: 3,
           secrets: { OPENAI_API_KEY: "makeademo-openai" },
         },
@@ -1425,6 +1451,44 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       { delete: "parent_sandbox" },
     ]);
   });
+
+  it("still attempts parent deletion when linked submitted-code deletion fails", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: {
+        ...fakeLinkedClient(calls),
+        async delete(input: { id?: string; name?: string }) {
+          const id = input.id ?? input.name;
+          calls.push({ delete: id });
+          if (id === "submitted_sandbox")
+            throw new Error("child delete failed");
+        },
+      },
+      submittedCodeSnapshot: "makeademo-submitted-code-browser",
+    });
+    const handle = await provider.create();
+
+    await expect(handle.destroy()).rejects.toThrow("child delete failed");
+    expect(calls.slice(-2)).toEqual([
+      { delete: "submitted_sandbox" },
+      { delete: "parent_sandbox" },
+    ]);
+  });
+
+  it("performs destruction at most once when called repeatedly", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code-browser",
+    });
+    const handle = await provider.create();
+
+    await Promise.all([handle.destroy(), handle.destroy()]);
+    expect(calls.filter((call) => "delete" in Object(call))).toEqual([
+      { delete: "submitted_sandbox" },
+      { delete: "parent_sandbox" },
+    ]);
+  });
 });
 
 function fakeLinkedClient(
@@ -1827,6 +1891,7 @@ function fakeClient(
     ptyWaitFails?: boolean;
     ptyWaitsForKill?: boolean;
     ptyWaitsForDisconnect?: boolean;
+    ptySuppressExitMarker?: boolean;
   } = {},
 ) {
   let submittedCodeInitializationFailures = 0;
@@ -1929,9 +1994,11 @@ function fakeClient(
           async sendInput(data: string | Uint8Array) {
             calls.push({ sendInput: data });
             ptyOptions.onData(new TextEncoder().encode("hello\n"));
-            ptyOptions.onData(
-              new TextEncoder().encode("\n__MAKEADEMO_EXIT__:7\n"),
-            );
+            if (options.ptySuppressExitMarker !== true) {
+              ptyOptions.onData(
+                new TextEncoder().encode("\n__MAKEADEMO_EXIT__:7\n"),
+              );
+            }
           },
           async wait() {
             calls.push({ wait: true });
