@@ -25,16 +25,44 @@ describe("inferBenchmarkStatusLevel", () => {
     ).toBe("L0");
     expect(
       inferBenchmarkStatusLevel({ pipelineStatus: "preparation-failed" }),
-    ).toBe("L0");
-    expect(
-      inferBenchmarkStatusLevel({ pipelineStatus: "validation-failed" }),
     ).toBe("L1");
+    expect(
+      inferBenchmarkStatusLevel({
+        stageOutcomes: [{ stage: "repo-preparation", status: "failed" }],
+      }),
+    ).toBe("L1");
+    expect(
+      inferBenchmarkStatusLevel({
+        stageOutcomes: [
+          { stage: "repo-preparation", status: "succeeded" },
+          { stage: "script-generation", status: "failed" },
+        ],
+      }),
+    ).toBe("L2");
+    expect(
+      inferBenchmarkStatusLevel({
+        pipelineStatus: "capture-path-validation-failed",
+        stageOutcomes: [
+          { stage: "repo-preparation", status: "succeeded" },
+          { stage: "script-generation", status: "succeeded" },
+          { stage: "capture-path-validation", status: "failed" },
+        ],
+      }),
+    ).toBe("L3");
+    expect(
+      inferBenchmarkStatusLevel({
+        stageOutcomes: [
+          { stage: "repo-preparation", status: "succeeded" },
+          { stage: "script-generation", status: "succeeded" },
+          { stage: "capture-path-validation", status: "succeeded" },
+        ],
+      }),
+    ).toBe("L4");
     expect(inferBenchmarkStatusLevel({ pipelineStatus: "succeeded" })).toBe(
       "L5",
     );
     expect(
       inferBenchmarkStatusLevel({
-        pipelineStatus: "succeeded",
         succeededEvents: ["capture-succeeded"],
       }),
     ).toBe("L4");
@@ -103,14 +131,14 @@ describe("summarizeBenchmarkResults", () => {
           repoUrl: "https://github.com/example/two",
           startedAt: "2026-06-15T00:00:01.000Z",
           status: "failed",
-          statusLevel: "L0",
+          statusLevel: "L1",
           tokenUsage: null,
         },
       ]),
     ).toMatchObject({
       averageDurationMs: 2000,
       failureStageCounts: { "repo-preparation": 1 },
-      levelCounts: { L0: 1, L5: 1 },
+      levelCounts: { L1: 1, L5: 1 },
       medianDurationMs: 2000,
       repoCount: 2,
       runDurations: [
