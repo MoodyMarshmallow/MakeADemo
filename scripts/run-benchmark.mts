@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { finished } from "node:stream/promises";
 
@@ -9,6 +9,7 @@ import type { BenchmarkRepo } from "../src/server/shared/benchmark/benchmark-man
 import { redactBenchmarkOutput } from "../src/server/shared/benchmark/benchmark-output-redaction";
 import {
   type BenchmarkResult,
+  type BenchmarkStatusInferenceInput,
   findFullPipelineResultPath,
   inferBenchmarkStatusLevel,
   summarizeBenchmarkResults,
@@ -89,9 +90,10 @@ async function runRepoBenchmark(input: {
     stderrPath,
     stdoutPath,
   });
-  const fullPipelineLog = await readFullPipelineLog(
-    fullPipelineResult?.artifacts?.logPath,
-  );
+  const pipelineLogPath =
+    fullPipelineResult?.artifacts?.logPath ??
+    (await findPipelineLogPath(pipelineOutputRoot));
+  const fullPipelineLog = await readFullPipelineLog(pipelineLogPath);
   const status = exitCode === 0 ? "succeeded" : "failed";
   const verification = await runExternalVerification({
     fullPipelineResult,
@@ -106,6 +108,7 @@ async function runRepoBenchmark(input: {
           ...(verification === undefined
             ? {}
             : { externalVerificationStatus: verification.status }),
+          stageOutcomes: fullPipelineLog.stageOutcomes,
           succeededEvents: fullPipelineLog.succeededEvents,
         }
       : {
@@ -113,6 +116,7 @@ async function runRepoBenchmark(input: {
             ? {}
             : { externalVerificationStatus: verification.status }),
           pipelineStatus: fullPipelineResult.status,
+          stageOutcomes: fullPipelineLog.stageOutcomes,
           succeededEvents: fullPipelineLog.succeededEvents,
         },
   );
@@ -275,7 +279,13 @@ async function readFullPipelineResult(input: {
 
 async function readFullPipelineLog(logPath: string | undefined) {
   if (logPath === undefined) {
-    return { succeededEvents: [] as string[] };
+    return {
+      stageOutcomes: [] as Array<{
+        stage: string;
+        status: "failed" | "started" | "succeeded";
+      }>,
+      succeededEvents: [] as string[],
+    };
   }
 
   const lines = (await readFile(logPath, "utf8"))
@@ -287,16 +297,53 @@ async function readFullPipelineLog(logPath: string | undefined) {
   const succeededEvents = events
     .map((event) => event.event)
     .filter((event): event is string => typeof event === "string");
+  const stageOutcomes: NonNullable<
+    BenchmarkStatusInferenceInput["stageOutcomes"]
+  > = events.flatMap((event) => {
+    if (
+      event.event !== "stage-progress" ||
+      typeof event.stage !== "string" ||
+      (event.status !== "failed" &&
+        event.status !== "started" &&
+        event.status !== "succeeded")
+    ) {
+      return [];
+    }
+
+    return [{ stage: event.stage, status: event.status }];
+  });
   const failedEvent = events.find((event) =>
     typeof event.event === "string" ? event.event.endsWith("failed") : false,
   );
+  const failedStage = stageOutcomes
+    .slice()
+    .reverse()
+    .find((outcome) => outcome.status === "failed")?.stage;
 
   return {
     ...(typeof failedEvent?.stage === "string"
       ? { failureStage: failedEvent.stage }
-      : {}),
+      : failedStage === undefined
+        ? {}
+        : { failureStage: failedStage }),
+    stageOutcomes,
     succeededEvents,
   };
+}
+
+async function findPipelineLogPath(
+  pipelineOutputRoot: string,
+): Promise<string | undefined> {
+  try {
+    const paths = await readdir(pipelineOutputRoot, { recursive: true });
+    return paths
+      .filter((path) => path.endsWith("pipeline-log.jsonl"))
+      .sort()
+      .map((path) => join(pipelineOutputRoot, path))
+      .at(-1);
+  } catch {
+    return undefined;
+  }
 }
 
 async function appendJsonLine(path: string, value: unknown) {

@@ -37,6 +37,10 @@ export type BenchmarkResult = {
 export type BenchmarkStatusInferenceInput = {
   externalVerificationStatus?: BenchmarkDemoVerificationStatus;
   pipelineStatus?: string;
+  stageOutcomes?: Array<{
+    stage: string;
+    status: "failed" | "started" | "succeeded";
+  }>;
   succeededEvents?: string[];
 };
 
@@ -75,16 +79,45 @@ export function inferBenchmarkStatusLevel(
   input: BenchmarkStatusInferenceInput,
 ): BenchmarkStatusLevel {
   const succeededEvents = new Set(input.succeededEvents ?? []);
+  const succeededStages = new Set(
+    (input.stageOutcomes ?? [])
+      .filter((outcome) => outcome.status === "succeeded")
+      .map((outcome) => outcome.stage),
+  );
+  const failedStages = new Set(
+    (input.stageOutcomes ?? [])
+      .filter((outcome) => outcome.status === "failed")
+      .map((outcome) => outcome.stage),
+  );
 
-  if (succeededEvents.has("compositing-succeeded")) {
+  if (
+    input.pipelineStatus === "succeeded" ||
+    succeededEvents.has("compositing-succeeded")
+  ) {
     return input.externalVerificationStatus === "verified" ? "L6" : "L5";
   }
-  if (succeededEvents.has("capture-succeeded")) {
+  if (
+    succeededEvents.has("capture-succeeded") ||
+    succeededStages.has("capture-path-validation")
+  ) {
     return "L4";
   }
+  if (
+    input.pipelineStatus === "capture-path-validation-failed" ||
+    succeededStages.has("script-generation")
+  ) {
+    return "L3";
+  }
+  if (succeededStages.has("repo-preparation")) {
+    return "L2";
+  }
+  if (
+    input.pipelineStatus === "preparation-failed" ||
+    failedStages.has("repo-preparation")
+  ) {
+    return "L1";
+  }
   switch (input.pipelineStatus) {
-    case "succeeded":
-      return "L5";
     case "validation-failed":
       return "L1";
     default:

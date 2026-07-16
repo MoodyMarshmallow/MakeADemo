@@ -53,13 +53,20 @@ The suite snapshot and each durable result retain the SHA used for the run.
 
 | Level | Meaning |
 | --- | --- |
-| `L0` | Repo rejected safely, Repo Preparation failed, or no trusted stage output exists. |
-| `L1` | Repo Preparation produced enough output to reach Project Validation, but validation failed. |
-| `L2` | Reserved for explicit Project Validation success when later pipeline work is skipped by a failure. |
-| `L3` | Script Generation produced a Video Script Package. |
-| `L4` | Footage Capture produced Scene artifacts. |
+| `L0` | Repo Security Screen rejected the repo, or no trusted pipeline progress exists. |
+| `L1` | Repo Preparation failed, including exhausting its validation or repair attempts. |
+| `L2` | Repo Preparation succeeded, but Script Generation did not produce a Demo Script. |
+| `L3` | Script Generation produced a Demo Script, but Capture Path Validation failed, including exhausting its repair attempts. |
+| `L4` | Capture Path Validation succeeded, but Footage Capture or Compositing did not produce a final video. |
 | `L5` | Compositing produced the final video artifact. |
 | `L6` | An independent external Codex evaluator verified that final-video frames depict the submitted application at its pinned commit, contain no obvious broken visual artifacts, and pair overlay text with relevant footage. |
+
+The level records the furthest trusted pipeline milestone, not whether the
+process merely started a later stage. This keeps common bounded-retry failures
+visible: Repo Preparation exhaustion lands at L1, while Capture Path Validation
+exhaustion lands at L3. A later Footage Capture or Compositing failure remains
+at L4 because the prepared app and generated capture path already passed their
+validation gate.
 
 L6 is machine-verified, not human-verified. The evaluator receives contact
 sheets and sampled final-video frames, independently fetches the exact pinned
