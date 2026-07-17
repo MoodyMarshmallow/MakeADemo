@@ -19,6 +19,30 @@ describe("OpenCode provider Daytona secrets", () => {
     ).toEqual({ OPENAI_API_KEY: "makeademo-openai" });
   });
 
+  it("derives stable non-reversible secret names from each provider key", async () => {
+    const firstName = await ensureOpenCodeProviderDaytonaSecret({
+      client: fakeSecretClient([], []),
+      env: { OPENAI_API_KEY: "sk-local" },
+      providerID: "openai",
+    });
+    const repeatedName = await ensureOpenCodeProviderDaytonaSecret({
+      client: fakeSecretClient([], []),
+      env: { OPENAI_API_KEY: "sk-local" },
+      providerID: "openai",
+    });
+    const rotatedName = await ensureOpenCodeProviderDaytonaSecret({
+      client: fakeSecretClient([], []),
+      env: { OPENAI_API_KEY: "sk-other" },
+      providerID: "openai",
+    });
+
+    expect(firstName).toBe("makeademo-openai-7c9f8cb332ed");
+    expect(repeatedName).toBe(firstName);
+    expect(rotatedName).toBe("makeademo-openai-3dcad332ca20");
+    expect(rotatedName).not.toBe(firstName);
+    expect(`${firstName}${rotatedName}`).not.toContain("sk-");
+  });
+
   it("creates a Daytona secret from the local OpenAI API key", async () => {
     const calls: unknown[] = [];
 
@@ -28,14 +52,14 @@ describe("OpenCode provider Daytona secrets", () => {
       providerID: "openai",
     });
 
-    expect(secretName).toBe("makeademo-openai");
+    expect(secretName).toBe("makeademo-openai-7c9f8cb332ed");
     expect(calls).toEqual([
       { list: true },
       {
         create: {
           description: "MakeADemo OpenCode provider credential.",
           hosts: ["api.openai.com"],
-          name: "makeademo-openai",
+          name: "makeademo-openai-7c9f8cb332ed",
           value: "sk-local",
         },
       },
@@ -53,7 +77,7 @@ describe("OpenCode provider Daytona secrets", () => {
       providerID: "openai",
     });
 
-    expect(secretName).toBe("makeademo-openai");
+    expect(secretName).toBe("makeademo-openai-7c9f8cb332ed");
     expect(calls).toEqual([
       { list: true },
       { list: true },
@@ -61,7 +85,7 @@ describe("OpenCode provider Daytona secrets", () => {
         create: {
           description: "MakeADemo OpenCode provider credential.",
           hosts: ["api.openai.com"],
-          name: "makeademo-openai",
+          name: "makeademo-openai-7c9f8cb332ed",
           value: "sk-local",
         },
       },
@@ -95,73 +119,33 @@ describe("OpenCode provider Daytona secrets", () => {
     expect(calls).toEqual([{ list: true }]);
   });
 
-  it("updates the existing Daytona secret when it already exists", async () => {
+  it("reuses an existing versioned secret without concurrent updates", async () => {
     const calls: unknown[] = [];
-
-    const secretName = await ensureOpenCodeProviderDaytonaSecret({
-      client: fakeSecretClient(calls, [
-        { id: "secret_123", name: "makeademo-openai" },
-      ]),
-      env: { OPENAI_API_KEY: "sk-rotated" },
-      providerID: "openai",
-    });
-
-    expect(secretName).toBe("makeademo-openai");
-    expect(calls).toEqual([
-      { list: true },
-      {
-        update: {
-          id: "secret_123",
-          input: {
-            description: "MakeADemo OpenCode provider credential.",
-            hosts: ["api.openai.com"],
-            value: "sk-rotated",
-          },
-        },
-      },
+    const client = fakeSecretClient(calls, [
+      { id: "secret_123", name: "makeademo-openai-f76395b4a9c4" },
     ]);
+
+    const secretNames = await Promise.all([
+      ensureOpenCodeProviderDaytonaSecret({
+        client,
+        env: { OPENAI_API_KEY: "sk-rotated" },
+        providerID: "openai",
+      }),
+      ensureOpenCodeProviderDaytonaSecret({
+        client,
+        env: { OPENAI_API_KEY: "sk-rotated" },
+        providerID: "openai",
+      }),
+    ]);
+
+    expect(secretNames).toEqual([
+      "makeademo-openai-f76395b4a9c4",
+      "makeademo-openai-f76395b4a9c4",
+    ]);
+    expect(calls).toEqual([{ list: true }, { list: true }]);
   });
 
-  it("retries when updating a Daytona secret hits a transient connection failure", async () => {
-    const calls: unknown[] = [];
-
-    const secretName = await ensureOpenCodeProviderDaytonaSecret({
-      client: fakeSecretClient(
-        calls,
-        [{ id: "secret_123", name: "makeademo-openai" }],
-        { updateErrors: [connectionRefusedError()] },
-      ),
-      env: { OPENAI_API_KEY: "sk-rotated" },
-      providerID: "openai",
-    });
-
-    expect(secretName).toBe("makeademo-openai");
-    expect(calls).toEqual([
-      { list: true },
-      {
-        update: {
-          id: "secret_123",
-          input: {
-            description: "MakeADemo OpenCode provider credential.",
-            hosts: ["api.openai.com"],
-            value: "sk-rotated",
-          },
-        },
-      },
-      {
-        update: {
-          id: "secret_123",
-          input: {
-            description: "MakeADemo OpenCode provider credential.",
-            hosts: ["api.openai.com"],
-            value: "sk-rotated",
-          },
-        },
-      },
-    ]);
-  });
-
-  it("re-lists and updates when concurrent secret creation wins the race", async () => {
+  it("re-lists and reuses when concurrent secret creation wins the race", async () => {
     const calls: unknown[] = [];
 
     const secretName = await ensureOpenCodeProviderDaytonaSecret({
@@ -170,36 +154,81 @@ describe("OpenCode provider Daytona secrets", () => {
           statusCode: 409,
         }),
         secretsAfterCreateError: [
-          { id: "secret_123", name: "makeademo-openai" },
+          { id: "secret_123", name: "makeademo-openai-6c358976588e" },
         ],
       }),
       env: { OPENAI_API_KEY: "sk-raced" },
       providerID: "openai",
     });
 
-    expect(secretName).toBe("makeademo-openai");
+    expect(secretName).toBe("makeademo-openai-6c358976588e");
     expect(calls).toEqual([
       { list: true },
       {
         create: {
           description: "MakeADemo OpenCode provider credential.",
           hosts: ["api.openai.com"],
-          name: "makeademo-openai",
+          name: "makeademo-openai-6c358976588e",
           value: "sk-raced",
         },
       },
       { list: true },
-      {
-        update: {
-          id: "secret_123",
-          input: {
-            description: "MakeADemo OpenCode provider credential.",
-            hosts: ["api.openai.com"],
-            value: "sk-raced",
-          },
+    ]);
+  });
+
+  it("concurrent absent-secret ensures converge after one create conflicts", async () => {
+    const calls: unknown[] = [];
+    let createdSecret: { id: string; name: string } | undefined;
+    const client = {
+      secret: {
+        async create(input: {
+          description?: string;
+          hosts?: string[];
+          name: string;
+          value: string;
+        }) {
+          calls.push({ create: input.name });
+          if (createdSecret !== undefined) {
+            throw Object.assign(new Error("Secret already exists"), {
+              statusCode: 409,
+            });
+          }
+          createdSecret = { id: "secret_123", name: input.name };
+          return createdSecret;
+        },
+        async list() {
+          calls.push({ list: true });
+          const snapshot = createdSecret;
+          await Promise.resolve();
+          return snapshot === undefined ? [] : [snapshot];
+        },
+        async update() {
+          throw new Error("versioned secrets must never be updated");
         },
       },
+    };
+
+    const names = await Promise.all([
+      ensureOpenCodeProviderDaytonaSecret({
+        client,
+        env: { OPENAI_API_KEY: "sk-raced" },
+        providerID: "openai",
+      }),
+      ensureOpenCodeProviderDaytonaSecret({
+        client,
+        env: { OPENAI_API_KEY: "sk-raced" },
+        providerID: "openai",
+      }),
     ]);
+
+    expect(names).toEqual([
+      "makeademo-openai-6c358976588e",
+      "makeademo-openai-6c358976588e",
+    ]);
+    expect(calls.filter((call) => "create" in (call as object))).toHaveLength(
+      2,
+    );
+    expect(calls.filter((call) => "list" in (call as object))).toHaveLength(3);
   });
 
   it("allows overriding the generated Daytona secret name", async () => {
@@ -214,11 +243,13 @@ describe("OpenCode provider Daytona secrets", () => {
       providerID: "openai",
     });
 
-    expect(secretName).toBe("custom-openai");
+    expect(secretName).toBe("custom-openai-7c9f8cb332ed");
     expect(calls).toEqual([
       { list: true },
       {
-        create: expect.objectContaining({ name: "custom-openai" }),
+        create: expect.objectContaining({
+          name: "custom-openai-7c9f8cb332ed",
+        }),
       },
     ]);
   });
@@ -332,7 +363,7 @@ describe("OpenCode provider Daytona secrets", () => {
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(25 + 10);
 
-    await expect(promise).resolves.toBe("makeademo-openai");
+    await expect(promise).resolves.toBe("makeademo-openai-3602ea1e5f77");
     expect(calls).toEqual([
       { list: true },
       { list: true },
@@ -340,7 +371,7 @@ describe("OpenCode provider Daytona secrets", () => {
         create: {
           description: "MakeADemo OpenCode provider credential.",
           hosts: ["api.openai.com"],
-          name: "makeademo-openai",
+          name: "makeademo-openai-3602ea1e5f77",
           value: "sk-retry",
         },
       },

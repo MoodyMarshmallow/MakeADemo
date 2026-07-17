@@ -462,6 +462,153 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
     );
   });
 
+  it("retries once in a fresh workspace when OpenCode receives a Daytona secret reference", async () => {
+    const events: unknown[] = [];
+    const agent = new DaytonaOpenCodeRepoPreparation({
+      modelID: "gpt-5.5",
+      provider: fakeProviderSequence(events, [
+        {
+          openCodeResults: [providerSecretReferenceAuthFailure()],
+        },
+        {
+          commandStdout: ["Submitted preparation result."],
+          preparationResult: successResult(),
+          validationResult: validationArtifact(),
+        },
+      ]),
+      providerID: "openai",
+      timeoutMs: 1_000,
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result).toMatchObject({ status: "succeeded" });
+    expect(
+      events.filter(
+        (event): event is { execute: string } =>
+          typeof event === "object" &&
+          event !== null &&
+          "execute" in event &&
+          typeof event.execute === "string" &&
+          event.execute.includes("opencode run"),
+      ),
+    ).toHaveLength(2);
+    expect(events.filter(isDestroyEvent)).toHaveLength(1);
+    expect(events.filter(isCancelActiveCommandsEvent)).toHaveLength(1);
+    const firstCancelIndex = events.findIndex(isCancelActiveCommandsEvent);
+    const firstDestroyIndex = events.findIndex(isDestroyEvent);
+    const retryCreateIndex = events.findIndex(
+      (event) =>
+        typeof event === "object" &&
+        event !== null &&
+        "create" in event &&
+        event.create === 2,
+    );
+    expect(firstCancelIndex).toBeLessThan(firstDestroyIndex);
+    expect(firstDestroyIndex).toBeLessThan(retryCreateIndex);
+  });
+
+  it("returns the provider-auth blocker when the fresh-workspace retry also fails", async () => {
+    const events: unknown[] = [];
+    const agent = new DaytonaOpenCodeRepoPreparation({
+      modelID: "gpt-5.5",
+      provider: fakeProviderSequence(events, [
+        { openCodeResults: [providerSecretReferenceAuthFailure()] },
+        { openCodeResults: [providerSecretReferenceAuthFailure()] },
+      ]),
+      providerID: "openai",
+      timeoutMs: 1_000,
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result).toEqual({
+      assumptions: [],
+      blockers: [
+        "OpenCode provider authentication failed because Daytona supplied a secret reference instead of the provider API key.",
+      ],
+      status: "failed",
+      suggestedChanges: [
+        "Retry Repo Preparation after verifying the Daytona provider secret injection.",
+      ],
+    });
+    expect(JSON.stringify(result)).not.toContain("dtn_secr");
+    expect(JSON.stringify(result)).not.toContain("invalid JSON");
+    expect(events.filter(isDestroyEvent)).toHaveLength(2);
+    expect(events.filter(isCancelActiveCommandsEvent)).toHaveLength(2);
+  });
+
+  it("does not retry a generic nonzero OpenCode result without a handoff artifact", async () => {
+    const events: unknown[] = [];
+    const agent = new DaytonaOpenCodeRepoPreparation({
+      modelID: "gpt-5.5",
+      provider: fakeProviderSequence(events, [
+        {
+          openCodeResults: [
+            { exitCode: 1, stderr: "agent failed", stdout: "not JSON" },
+          ],
+        },
+      ]),
+      providerID: "openai",
+      timeoutMs: 1_000,
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result).toMatchObject({
+      blockers: ["OpenCode did not return valid preparation JSON."],
+      status: "failed",
+    });
+    expect(events.filter(isDestroyEvent)).toHaveLength(1);
+  });
+
+  it("does not retry an invalid provider key that is not a Daytona secret reference", async () => {
+    const events: unknown[] = [];
+    const agent = new DaytonaOpenCodeRepoPreparation({
+      modelID: "gpt-5.5",
+      provider: fakeProviderSequence(events, [
+        {
+          openCodeResults: [
+            providerInvalidApiKeyFailure("sk-proj-********test"),
+          ],
+        },
+      ]),
+      providerID: "openai",
+      timeoutMs: 1_000,
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result).toMatchObject({
+      blockers: [
+        "OpenCode provider authentication failed because the provider rejected the configured API key.",
+      ],
+      status: "failed",
+    });
+    expect(JSON.stringify(result)).not.toContain("sk-proj");
+    expect(events.filter(isDestroyEvent)).toHaveLength(1);
+  });
+
   it("reports pre-OpenCode git clone failures as Repo Preparation clone blockers", async () => {
     const events: unknown[] = [];
     const agent = new DaytonaOpenCodeRepoPreparation({
@@ -2323,6 +2470,7 @@ function fakeProvider(
         cloneResults?: Array<PreparationWorkspaceCommandResult | Error>;
         dependencyInstallRequest?: { command: string };
         manifestPayload?: unknown;
+        openCodeResults?: PreparationWorkspaceCommandResult[];
         openCodeStartupErrors?: Error[];
         preparationResult?: ReturnType<typeof successResult>;
         queuedSandboxLogWrites?: boolean;
@@ -2390,6 +2538,7 @@ function fakeWorkspace(
     cloneResults?: Array<PreparationWorkspaceCommandResult | Error>;
     dependencyInstallRequest?: { command: string };
     manifestPayload?: unknown;
+    openCodeResults?: PreparationWorkspaceCommandResult[];
     openCodeStartupErrors?: Error[];
     preparationResult?: ReturnType<typeof successResult>;
     queuedSandboxLogWrites?: boolean;
@@ -2416,6 +2565,7 @@ function fakeWorkspace(
   ];
   const cloneResults = [...(input.cloneResults ?? [])];
   const openCodeStartupErrors = [...(input.openCodeStartupErrors ?? [])];
+  const openCodeResults = [...(input.openCodeResults ?? [])];
   let dependencyInstallRequest = input.dependencyInstallRequest;
   let sandboxLogChain = Promise.resolve();
   let validationRequest = input.validationRequest;
@@ -2511,6 +2661,9 @@ function fakeWorkspace(
       }
       if (openCodeCompletion !== undefined) {
         await openCodeCompletion;
+      }
+      if (command.includes("opencode run") && openCodeResults.length > 0) {
+        return openCodeResults.shift() as PreparationWorkspaceCommandResult;
       }
       if (
         command.startsWith("if test -f") &&
@@ -2706,6 +2859,63 @@ function fakeWorkspace(
       return sandboxLogChain;
     },
   };
+}
+
+function fakeProviderSequence(
+  events: unknown[],
+  inputs: Array<Exclude<Parameters<typeof fakeProvider>[1], string[]>>,
+): PreparationWorkspaceProvider {
+  const providers = inputs.map((input) => fakeProvider(events, input));
+  let createIndex = 0;
+  return {
+    async create() {
+      const provider = providers[createIndex];
+      createIndex += 1;
+      if (provider === undefined) {
+        throw new Error("Unexpected extra workspace creation.");
+      }
+      events.push({ create: createIndex });
+      return provider.create();
+    },
+  };
+}
+
+function providerSecretReferenceAuthFailure(): PreparationWorkspaceCommandResult {
+  return providerInvalidApiKeyFailure("dtn_secr***************test");
+}
+
+function providerInvalidApiKeyFailure(
+  receivedCredential: string,
+): PreparationWorkspaceCommandResult {
+  return {
+    exitCode: 1,
+    stderr: "",
+    stdout: JSON.stringify({
+      error: {
+        data: {
+          message: `Incorrect API key provided: ${receivedCredential}.`,
+          responseBody: JSON.stringify({
+            error: { code: "invalid_api_key" },
+          }),
+          statusCode: 401,
+        },
+        name: "APIError",
+      },
+      type: "error",
+    }),
+  };
+}
+
+function isDestroyEvent(event: unknown): boolean {
+  return typeof event === "object" && event !== null && "destroy" in event;
+}
+
+function isCancelActiveCommandsEvent(event: unknown): boolean {
+  return (
+    typeof event === "object" &&
+    event !== null &&
+    "cancelActiveCommands" in event
+  );
 }
 
 function validationArtifact() {
