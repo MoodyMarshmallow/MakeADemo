@@ -1,4 +1,8 @@
-export type MeaningfulActivityKind = "text" | "editor-tool" | "makeademo-tool";
+export type MeaningfulActivityKind =
+  | "text"
+  | "editor-tool"
+  | "inspection-tool"
+  | "makeademo-tool";
 
 export type MeaningfulActivity = {
   at: number;
@@ -9,6 +13,10 @@ export type MeaningfulActivity = {
 export type MeaningfulActivityTracker = {
   read: () => MeaningfulActivity | undefined;
   write: (channel: "stdout" | "stderr", chunk: string) => void;
+};
+
+export type MeaningfulActivityTrackerOptions = {
+  countCompletedInspectionTools?: boolean;
 };
 
 export type MeaningfulActivityTimeoutOptions = {
@@ -42,8 +50,9 @@ export class MeaningfulActivityTimeoutError extends Error {
 
 /**
  * Tracks only agent work that can make progress, then bounds a provider call
- * by inactivity and one absolute hard deadline. Heartbeats and read-only
- * inspection tools never reset the inactivity timer.
+ * by inactivity and one absolute hard deadline. Heartbeats never reset the
+ * inactivity timer; inspection tools may be enabled for stages where active
+ * repository exploration is meaningful progress.
  */
 export function runWithMeaningfulActivityTimeout<T>(
   start: () => Promise<T>,
@@ -122,7 +131,9 @@ export function runWithMeaningfulActivityTimeout<T>(
   });
 }
 
-export function createMeaningfulActivityTracker(): MeaningfulActivityTracker {
+export function createMeaningfulActivityTracker(
+  options: MeaningfulActivityTrackerOptions = {},
+): MeaningfulActivityTracker {
   const carries: Record<"stdout" | "stderr", string> = {
     stderr: "",
     stdout: "",
@@ -135,7 +146,7 @@ export function createMeaningfulActivityTracker(): MeaningfulActivityTracker {
     if (text !== undefined && text.trim().length > 0) {
       latest = { at: Date.now(), kind: "text" };
     }
-    const tool = readCompletedActivityTool(event);
+    const tool = readCompletedActivityTool(event, options);
     if (tool !== undefined) {
       latest = { at: Date.now(), kind: tool.kind, tool: tool.tool };
     }
@@ -181,6 +192,7 @@ function readStructuredText(value: unknown): string | undefined {
 
 function readCompletedActivityTool(
   value: unknown,
+  options: MeaningfulActivityTrackerOptions,
 ): { kind: MeaningfulActivityKind; tool: string } | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const record = value as Record<string, unknown>;
@@ -190,20 +202,30 @@ function readCompletedActivityTool(
       record.state !== null &&
       (record.state as Record<string, unknown>).status === "completed");
   if (status) {
-    const tool = findTool(value);
+    const tool = findTool(value, options);
     if (tool?.startsWith("makeademo_")) return { kind: "makeademo-tool", tool };
     if (tool !== undefined && ["apply_patch", "write", "edit"].includes(tool)) {
       return { kind: "editor-tool", tool };
     }
+    if (
+      options.countCompletedInspectionTools === true &&
+      tool !== undefined &&
+      ["read", "grep", "glob", "list"].includes(tool)
+    ) {
+      return { kind: "inspection-tool", tool };
+    }
   }
   for (const child of Object.values(record)) {
-    const nested = readCompletedActivityTool(child);
+    const nested = readCompletedActivityTool(child, options);
     if (nested !== undefined) return nested;
   }
   return undefined;
 }
 
-function findTool(value: unknown): string | undefined {
+function findTool(
+  value: unknown,
+  options: MeaningfulActivityTrackerOptions,
+): string | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const record = value as Record<string, unknown>;
   for (const key of ["toolName", "tool", "name"]) {
@@ -211,12 +233,14 @@ function findTool(value: unknown): string | undefined {
     if (
       typeof candidate === "string" &&
       (candidate.startsWith("makeademo_") ||
-        ["apply_patch", "write", "edit"].includes(candidate))
+        ["apply_patch", "write", "edit"].includes(candidate) ||
+        (options.countCompletedInspectionTools === true &&
+          ["read", "grep", "glob", "list"].includes(candidate)))
     )
       return candidate;
   }
   for (const child of Object.values(record)) {
-    const nested = findTool(child);
+    const nested = findTool(child, options);
     if (nested !== undefined) return nested;
   }
   return undefined;

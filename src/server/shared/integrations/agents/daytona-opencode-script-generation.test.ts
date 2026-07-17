@@ -196,6 +196,91 @@ describe("DaytonaOpenCodeScriptGeneration", () => {
     });
   });
 
+  it("extends Script Generation inactivity for completed inspection tools", async () => {
+    const events: unknown[] = [];
+    const agent = new DaytonaOpenCodeScriptGeneration({
+      hardTimeoutMs: 1_000,
+      modelID: "gpt-5.5",
+      providerID: "openai",
+      timeoutMs: 100,
+    });
+
+    const pending = agent.generateScriptPackage({
+      ...scriptGenerationInput(),
+      opencodeSessionID: "session_prepare_123",
+      preparationWorkspace: workspaceHandle(events, [interactivePackage()], {
+        commandOutputScheduleByRun: [
+          [
+            {
+              afterMs: 10,
+              channel: "stdout",
+              chunk: '{"type":"text","part":{"text":"working"}}\n',
+            },
+            {
+              afterMs: 80,
+              channel: "stdout",
+              chunk:
+                '{"part":{"state":{"status":"completed"},"tool":"read"},"type":"tool_use"}\n',
+            },
+            {
+              afterMs: 80,
+              channel: "stdout",
+              chunk: '{"type":"step_start"}\n',
+            },
+          ],
+        ],
+      }),
+    });
+
+    await expect(pending).resolves.toMatchObject({
+      scriptId: "script_conduit",
+    });
+  });
+
+  it.each(["running", "failed"] as const)(
+    "does not extend Script Generation inactivity for %s inspection tools",
+    async (status) => {
+      const events: unknown[] = [];
+      const agent = new DaytonaOpenCodeScriptGeneration({
+        hardTimeoutMs: 1_000,
+        maxAttempts: 1,
+        modelID: "gpt-5.5",
+        providerID: "openai",
+        timeoutMs: 100,
+      });
+
+      const pending = agent.generateScriptPackage({
+        ...scriptGenerationInput(),
+        opencodeSessionID: "session_prepare_123",
+        preparationWorkspace: workspaceHandle(events, [interactivePackage()], {
+          commandOutputScheduleByRun: [
+            [
+              {
+                afterMs: 10,
+                channel: "stdout",
+                chunk: '{"type":"text","part":{"text":"working"}}\n',
+              },
+              {
+                afterMs: 80,
+                channel: "stdout",
+                chunk: `{"part":{"state":{"status":"${status}"},"tool":"read"},"type":"tool_use"}\n`,
+              },
+              {
+                afterMs: 80,
+                channel: "stdout",
+                chunk: '{"type":"step_start"}\n',
+              },
+            ],
+          ],
+        }),
+      });
+
+      await expect(pending).rejects.toThrow(
+        "Script Generation agent timed out after 100ms of inactivity.",
+      );
+    },
+  );
+
   it("bounds Script Generation artifact reads by the public stage timeout", async () => {
     const events: unknown[] = [];
     const agent = new DaytonaOpenCodeScriptGeneration({
