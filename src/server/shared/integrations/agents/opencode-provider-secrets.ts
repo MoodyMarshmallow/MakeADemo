@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Daytona, DaytonaConflictError } from "@daytona/sdk";
 
 import type { PipelineEventLogger } from "../../logging/pipeline-event-logger";
@@ -50,6 +51,11 @@ export function createOpenCodeProviderSandboxSecrets(input: {
   };
 }
 
+/**
+ * Ensures an immutable, key-versioned Daytona provider secret and returns its name.
+ * Rotated keys intentionally leave stale secret versions for separate cleanup;
+ * this provisioning path must never mutate or delete a version in active use.
+ */
 export async function ensureOpenCodeProviderDaytonaSecret(input: {
   client?: DaytonaSecretClient;
   daytonaApiKey?: string;
@@ -62,6 +68,7 @@ export async function ensureOpenCodeProviderDaytonaSecret(input: {
   const provider = readOpenCodeProviderSecret(input.providerID, input.env);
   const secretName = readOpenCodeProviderDaytonaSecretName(
     input.providerID,
+    provider.apiKey,
     input.env,
   );
   const client =
@@ -199,19 +206,9 @@ async function ensureOpenCodeProviderDaytonaSecretValue(input: {
       if (racedSecret === undefined) {
         throw error;
       }
-
-      await withDaytonaSecretConnectionRetry(
-        () => input.client.secret.update(racedSecret.id, secretInput),
-        input.timeoutMs,
-      );
     }
     return;
   }
-
-  await withDaytonaSecretConnectionRetry(
-    () => input.client.secret.update(existingSecret.id, secretInput),
-    input.timeoutMs,
-  );
 }
 
 async function ensureOpenCodeProviderDaytonaSecretValueWithRetry(input: {
@@ -373,13 +370,18 @@ function readOpenCodeProviderSecret(
 
 function readOpenCodeProviderDaytonaSecretName(
   providerID: string,
+  providerApiKey: string,
   env: Record<string, string | undefined> = process.env,
 ): string {
   if (providerID === "openai") {
-    return (
+    const baseName =
       env.MAKEADEMO_OPENAI_DAYTONA_SECRET_NAME?.trim() ||
-      defaultOpenAiDaytonaSecretName
-    );
+      defaultOpenAiDaytonaSecretName;
+    const fingerprint = createHash("sha256")
+      .update(providerApiKey)
+      .digest("hex")
+      .slice(0, 12);
+    return `${baseName}-${fingerprint}`;
   }
 
   throw new Error(`Unsupported OpenCode provider: ${providerID}`);

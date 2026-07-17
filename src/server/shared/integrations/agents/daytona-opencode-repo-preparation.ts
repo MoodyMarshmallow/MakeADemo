@@ -133,7 +133,21 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
     this.validatePreparation = options.validatePreparation;
   }
 
-  async prepare(input: RepoPreparationInput) {
+  async prepare(input: RepoPreparationInput): Promise<RepoPreparationResult> {
+    const firstRun = await this.prepareOnce(input);
+    if (!isProviderSecretReferenceAuthFailure(firstRun)) {
+      return firstRun;
+    }
+
+    const retryRun = await this.prepareOnce(input);
+    return isProviderSecretReferenceAuthFailure(retryRun)
+      ? providerSecretReferenceAuthFailureResult()
+      : retryRun;
+  }
+
+  private async prepareOnce(
+    input: RepoPreparationInput,
+  ): Promise<RepoPreparationResult | ProviderSecretReferenceAuthFailure> {
     const handle = await this.provider.create();
     await this.writeSandboxLog(handle.workspace, {
       event: "workspace-created",
@@ -183,7 +197,7 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
     }
 
     if (result.value.status === "ready") {
-      let loopResult: RawPreparationRunResult;
+      let loopResult: OpenCodeLoopResult;
       try {
         loopResult = await this.runOpenCodeLoop(
           handle,
@@ -205,6 +219,11 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
             "Retry Repo Preparation in a fresh Daytona workspace.",
           ],
         };
+      }
+      if (isProviderSecretReferenceAuthFailure(loopResult)) {
+        await cancelActiveCommandsQuietly(handle);
+        await destroyQuietly(handle);
+        return loopResult;
       }
       const parsedResult = parseCommandResult(loopResult, handle);
       if (parsedResult.status === "failed") {
@@ -251,7 +270,7 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
     handle: PreparationWorkspaceHandle,
     input: RepoPreparationInput,
     initialPrompt: string,
-  ): Promise<RawPreparationRunResult> {
+  ): Promise<OpenCodeLoopResult> {
     let prompt = initialPrompt;
     let currentSessionID: string | undefined;
     const hardDeadlineAt = Date.now() + this.hardTimeoutMs;
@@ -586,6 +605,14 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
         }
 
         return preparationResult;
+      }
+
+      const providerAuthFailure = readProviderAuthFailure(openCodeResult);
+      if (providerAuthFailure !== undefined) {
+        return isProviderSecretReferenceAuthFailure(providerAuthFailure) &&
+          attempt > 0
+          ? providerSecretReferenceAuthFailureResult()
+          : providerAuthFailure;
       }
 
       return parseOpenCodeJsonResult(openCodeResult.stdout);
@@ -989,7 +1016,20 @@ function parseCommandResult(
 
 type RawPreparationRunResult =
   | PreparationWorkspaceCommandResult
-  | Awaited<ReturnType<RepoPreparationAgent["prepare"]>>;
+  | RepoPreparationResult;
+
+type OpenCodeLoopResult =
+  | RawPreparationRunResult
+  | ProviderSecretReferenceAuthFailure;
+
+type RepoPreparationResult = Awaited<
+  ReturnType<RepoPreparationAgent["prepare"]>
+>;
+
+type ProviderSecretReferenceAuthFailure = {
+  blocker: string;
+  status: "provider-secret-reference-auth-failed";
+};
 
 type TimedRunResult<T> =
   | { status: "succeeded"; value: T }
@@ -1206,6 +1246,106 @@ function toolPayloadProtocolFailure(reason: string) {
     status: "failed" as const,
     suggestedChanges: [
       "Retry Repo Preparation in a fresh Daytona workspace; report this MakeADemo tool protocol failure if it repeats.",
+    ],
+  };
+}
+
+function readProviderAuthFailure(
+  result: PreparationWorkspaceCommandResult,
+): ProviderSecretReferenceAuthFailure | RepoPreparationResult | undefined {
+  if (result.exitCode === 0) {
+    return undefined;
+  }
+
+  for (const line of `${result.stdout}\n${result.stderr}`.split("\n")) {
+    const event = tryParseJson(line);
+    const message = readProviderInvalidApiKeyMessage(event);
+    if (message === undefined) {
+      continue;
+    }
+
+    return /\bdtn_secr[A-Za-z0-9_*.-]*/.test(message)
+      ? {
+          blocker:
+            "OpenCode provider authentication failed because Daytona supplied a secret reference instead of the provider API key.",
+          status: "provider-secret-reference-auth-failed",
+        }
+      : providerInvalidApiKeyFailureResult();
+  }
+
+  return undefined;
+}
+
+function readProviderInvalidApiKeyMessage(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  const event = value as Record<string, unknown>;
+  if (event.type !== "error") {
+    return undefined;
+  }
+  const error = event.error;
+  if (typeof error !== "object" || error === null) {
+    return undefined;
+  }
+  const data = (error as Record<string, unknown>).data;
+  if (typeof data !== "object" || data === null) {
+    return undefined;
+  }
+  const errorData = data as Record<string, unknown>;
+  if (errorData.statusCode !== 401) {
+    return undefined;
+  }
+  const responseBody =
+    typeof errorData.responseBody === "string"
+      ? tryParseJson(errorData.responseBody)
+      : undefined;
+  if (typeof responseBody !== "object" || responseBody === null) {
+    return undefined;
+  }
+  const providerError = (responseBody as Record<string, unknown>).error;
+  if (
+    typeof providerError !== "object" ||
+    providerError === null ||
+    (providerError as Record<string, unknown>).code !== "invalid_api_key"
+  ) {
+    return undefined;
+  }
+
+  return typeof errorData.message === "string" ? errorData.message : undefined;
+}
+
+function isProviderSecretReferenceAuthFailure(
+  result: OpenCodeLoopResult,
+): result is ProviderSecretReferenceAuthFailure {
+  return (
+    "status" in result &&
+    result.status === "provider-secret-reference-auth-failed"
+  );
+}
+
+function providerSecretReferenceAuthFailureResult(): RepoPreparationResult {
+  return {
+    assumptions: [],
+    blockers: [
+      "OpenCode provider authentication failed because Daytona supplied a secret reference instead of the provider API key.",
+    ],
+    status: "failed",
+    suggestedChanges: [
+      "Retry Repo Preparation after verifying the Daytona provider secret injection.",
+    ],
+  };
+}
+
+function providerInvalidApiKeyFailureResult(): RepoPreparationResult {
+  return {
+    assumptions: [],
+    blockers: [
+      "OpenCode provider authentication failed because the provider rejected the configured API key.",
+    ],
+    status: "failed",
+    suggestedChanges: [
+      "Verify the configured provider API key before retrying Repo Preparation.",
     ],
   };
 }
