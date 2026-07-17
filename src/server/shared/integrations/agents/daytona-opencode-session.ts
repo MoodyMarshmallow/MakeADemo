@@ -45,7 +45,9 @@ export class DaytonaOpenCodeSession {
             modelID: this.options.modelID,
             providerID: this.options.providerID,
           };
-    const activity = createMeaningfulActivityTracker();
+    const activity = createMeaningfulActivityTracker({
+      countCompletedInspectionTools: input.stage === "script-generation",
+    });
     return runWithMeaningfulActivityTimeout(
       () =>
         input.workspace.execute(
