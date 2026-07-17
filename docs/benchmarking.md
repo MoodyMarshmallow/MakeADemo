@@ -94,23 +94,26 @@ Use categories to make failures explainable. The fixed suite includes:
 | `legacy` | Tests older dependency and build assumptions. |
 | `large` | Tests clone, dependency install, and agent context pressure. |
 | `hard` | Expected to fail or require a useful Preparation Fallback Prompt. |
+| `production` | Source repository for a deployed product with a real browser interface, rather than a tutorial, starter, template, or showcase app. |
 
 ## Current Suggested Bank
 
-The fixed suite contains ten repos ordered by benchmark importance:
+The fixed suite contains ten repos ordered by benchmark importance. Every entry
+is the source repository for a deployed product with a browser interface, and
+each SHA resolves to a tagged release rather than a moving default branch:
 
 | Repo | Classification | Expected first-pass result |
 | --- | --- | --- |
-| `cypress-io/cypress-realworld-app` | Seeded React/Vite/Express payment app and deterministic baseline | `L6` |
-| `epicweb-dev/epic-stack` | React Router full-stack notes app with local persistence and auth | `L6` |
-| `calcom/cal.diy` | Scheduling SaaS, monorepo, auth/external-service pressure | `L6` |
+| `midday-ai/midday` | Next.js finance operations suite with auth, banking integrations, and background services | `L6` |
+| `calcom/cal.diy` | Next.js scheduling product, monorepo, auth, database, and integration pressure | `L6` |
 | `directus/directus` | Vue/Node content studio, SQL database, auth, and monorepo setup | `L6` |
-| `ghostfolio/ghostfolio` | Angular/NestJS finance app with database, cache, and market-data pressure | `L6` |
-| `nuxt/movies` | Compact Nuxt/Vue app that requires deterministic TMDB data and images | `L6` |
-| `sveltejs/realworld` | SvelteKit publishing app with CRUD, auth, routing, and pagination | `L6` |
-| `satnaing/astro-paper` | Astro content site and low-complexity static baseline | `L6` |
-| `twentyhq/twenty` | Large CRM, database/auth-heavy monorepo | `L6` |
-| `excalidraw/excalidraw` | Canvas-heavy local-first whiteboard and capture-path stretch case | `L6` |
+| `mattermost/mattermost` | React/Go team collaboration platform with PostgreSQL and a very large codebase | `L6` |
+| `TryGhost/Ghost` | Ember/Node publishing platform with authoring, memberships, themes, and persistence | `L6` |
+| `ghostfolio/ghostfolio` | Angular/NestJS wealth-management product with database, cache, and market-data pressure | `L6` |
+| `outline/outline` | React/Koa collaborative knowledge base with rich editing, auth, and persistence | `L6` |
+| `twentyhq/twenty` | Large React/NestJS CRM with database and auth-heavy monorepo setup | `L6` |
+| `excalidraw/excalidraw` | Canvas-heavy local-first production whiteboard | `L6` |
+| `gchq/CyberChef` | Frontend-only JavaScript data-transformation utility and deterministic baseline | `L6` |
 
 Adjust `expectedLevel` in `benchmark-suite.ts` when the benchmark hypothesis
 changes. The expected level is not a claim that the repo definitely works.
