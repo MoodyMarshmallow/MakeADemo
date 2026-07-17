@@ -3,10 +3,14 @@ type PreparationStatus =
   | "created-new-demo"
   | "reused-existing-demo";
 
+/** Controls whether validation infers and runs a package-manager install. */
+type DependencyInstallStrategy = "inferred" | "not-required";
+
 export type PreparationManifest = {
   assumptions: string[];
   createdFiles: string[];
   demoCommand: string;
+  dependencyInstall?: DependencyInstallStrategy;
   diffArtifactId: string;
   existingDemoEvidence: string[];
   mockedServices: string[];
@@ -34,6 +38,7 @@ export function readPreparationManifest(value: unknown): PreparationManifest {
     assumptions: readStringArray(record, "assumptions"),
     createdFiles: readOptionalStringArray(record, "createdFiles"),
     demoCommand: readNonEmptyString(record, "demoCommand"),
+    dependencyInstall: readDependencyInstallStrategy(record),
     diffArtifactId: readNonEmptyString(record, "diffArtifactId"),
     existingDemoEvidence: readOptionalStringArray(
       record,
@@ -52,6 +57,19 @@ export function readPreparationManifest(value: unknown): PreparationManifest {
     url: readLocalHttpUrl(record, "url"),
     workspaceId: readNonEmptyString(record, "workspaceId"),
   };
+}
+
+function readDependencyInstallStrategy(
+  record: Record<string, unknown>,
+): DependencyInstallStrategy {
+  const value =
+    record.dependencyInstall === undefined
+      ? "inferred"
+      : record.dependencyInstall;
+  if (value !== "inferred" && value !== "not-required") {
+    throw new Error("dependencyInstall must be inferred or not-required");
+  }
+  return value;
 }
 
 function assertRecord(value: unknown, path: string): Record<string, unknown> {

@@ -52,6 +52,42 @@ describe("DaytonaSandboxRunner", () => {
     expect(workspace.destroyed).toBe(false);
   });
 
+  it("skips inferred dependency installation when the manifest says it is not required", async () => {
+    const workspace = new FakePreparationWorkspaceHandle(
+      new Map([["yarn install", 137]]),
+      undefined,
+      { repoFilesOutput: "package.json\nyarn.lock\n" },
+    );
+    const runner = new DaytonaSandboxRunner();
+
+    const result = await runner.runValidation({
+      demoCommand: "node server.js",
+      preparationManifest: manifest("workspace_123", "not-required"),
+      preparationWorkspace: workspace,
+      repoUrl: "https://github.com/example/app",
+      url: "http://localhost:3000",
+    });
+
+    expect(workspace.submittedCommands).not.toContain("yarn install");
+    expect(workspace.submittedNetworkAccess).toEqual([]);
+    expect(workspace.submittedCommands).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("exec node server.js"),
+        expect.stringContaining("fetch"),
+        expect.stringContaining("fresh-capture-baseline.tgz"),
+      ]),
+    );
+    expect(workspace.sandboxLogs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "project-validation.dependency-install.skipped",
+          reason: "manifest-not-required",
+        }),
+      ]),
+    );
+    expect(result.runtimeExitCode).toBe(0);
+  });
+
   it("syncs prepared parent workspace changes before submitted-code validation", async () => {
     const workspace = new FakePreparationWorkspaceHandle();
     const runner = new DaytonaSandboxRunner();
@@ -552,6 +588,7 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
       failFreshCaptureRestore?: boolean;
       failSandboxLogWrites?: boolean;
       neverSettleSandboxLogWrites?: boolean;
+      repoFilesOutput?: string;
     } = {},
   ) {}
 
@@ -636,17 +673,21 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
       exitCode: this.exitCodesByCommand.get(command) ?? 0,
       stderr: "",
       stdout: command.startsWith("find /workspace")
-        ? "package-lock.json\npackage.json\n"
+        ? (this.options.repoFilesOutput ?? "package-lock.json\npackage.json\n")
         : `ran ${command}`,
     };
   }
 }
 
-function manifest(workspaceId: string) {
+function manifest(
+  workspaceId: string,
+  dependencyInstall: "inferred" | "not-required" = "inferred",
+) {
   return {
     assumptions: [],
     createdFiles: [],
     demoCommand: "npm run demo:makeademo",
+    dependencyInstall,
     diffArtifactId: "artifact_diff",
     existingDemoEvidence: [],
     mockedServices: [],
