@@ -86,7 +86,7 @@ describe("readBenchmarkManifest", () => {
     ).toThrow("Duplicate benchmark repo id: same");
   });
 
-  it("accepts L6 as independently verified demo output", () => {
+  it("accepts L6 as manually verified demo output", () => {
     const manifest = readBenchmarkManifest({
       repos: [
         {

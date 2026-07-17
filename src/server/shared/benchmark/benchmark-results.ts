@@ -1,7 +1,3 @@
-import type {
-  BenchmarkDemoVerification,
-  BenchmarkDemoVerificationStatus,
-} from "./benchmark-demo-verifier.interface";
 import type { BenchmarkStatusLevel } from "./benchmark-manifest";
 
 type BenchmarkTokenUsage = {
@@ -31,11 +27,9 @@ export type BenchmarkResult = {
   stderrPath?: string;
   stdoutPath?: string;
   tokenUsage: BenchmarkTokenUsage | null;
-  verification?: BenchmarkDemoVerification;
 };
 
 export type BenchmarkStatusInferenceInput = {
-  externalVerificationStatus?: BenchmarkDemoVerificationStatus;
   pipelineStatus?: string;
   stageOutcomes?: Array<{
     stage: string;
@@ -59,9 +53,6 @@ export type BenchmarkSummary = {
     totalPromptTokens: number;
     totalTokens: number;
   };
-  verificationStatusCounts: Partial<
-    Record<BenchmarkDemoVerificationStatus, number>
-  >;
 };
 
 export function findFullPipelineResultPath(input: {
@@ -94,7 +85,7 @@ export function inferBenchmarkStatusLevel(
     input.pipelineStatus === "succeeded" ||
     succeededEvents.has("compositing-succeeded")
   ) {
-    return input.externalVerificationStatus === "verified" ? "L6" : "L5";
+    return "L5";
   }
   if (
     succeededEvents.has("capture-succeeded") ||
@@ -168,11 +159,6 @@ export function summarizeBenchmarkResults(
         (result) => result.tokenUsage.totalTokens,
       ),
     },
-    verificationStatusCounts: countBy(
-      results.flatMap((result) =>
-        result.verification === undefined ? [] : [result.verification.status],
-      ),
-    ),
   };
 }
 

@@ -39,18 +39,6 @@ for (const [level, count] of Object.entries(summary.levelCounts).sort()) {
   process.stdout.write(`  ${level}: ${count}\n`);
 }
 
-process.stdout.write("\nExternal Codex verification:\n");
-const verificationEntries = Object.entries(
-  summary.verificationStatusCounts,
-).sort();
-if (verificationEntries.length === 0) {
-  process.stdout.write("  none\n");
-} else {
-  for (const [status, count] of verificationEntries) {
-    process.stdout.write(`  ${status}: ${count}\n`);
-  }
-}
-
 process.stdout.write("\nFailure stages:\n");
 const failureEntries = Object.entries(summary.failureStageCounts).sort();
 if (failureEntries.length === 0) {

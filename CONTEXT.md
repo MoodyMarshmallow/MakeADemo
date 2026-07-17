@@ -32,7 +32,7 @@
 - **Footage Capture**: The stage where MakeADemo records raw browser footage needed by the approved script.
 - **Compositing**: The stage where MakeADemo assembles captured footage into the final demo video with text, transitions, and other presentation effects.
 - **Draft Composite**: A temporary composited demo video produced for quality review before MakeADemo accepts it as the final output.
-- **Benchmark Demo Verification**: An independent, benchmark-only Codex evaluation that compares final-video frames with source-controlled interface evidence from the submitted repository at its pinned commit and judges whether the video is visually coherent. It is separate from the generation session and awards L6 only when the application matches, no obvious broken visual artifacts are present, and overlay text is relevant to the concurrent footage.
+- **Benchmark Demo Verification**: A manual review performed by the external coding agent reading the benchmark guide. It compares an L5 final video with source-controlled interface evidence from the submitted repository at its pinned commit and reports L6 only when the application matches, no obvious broken visual artifacts are present, and overlay text is relevant to the concurrent footage.
 
 - **Pipeline Stage**: One user-visible step in the MakeADemo Pipeline with clear inputs, outputs, and failure states.
 - **Pipeline Job**: One execution of the MakeADemo Pipeline for a submitted project.
@@ -72,7 +72,7 @@
 - Each **Scene Description** maps to exactly one **Scene** during **Footage Capture**.
 - Each **Scene Description** has one **Scene**, shown to the user as its **Companion Video** and later used by **Compositing**.
 - **Compositing** produces a **Draft Composite** before final output acceptance, so the full video can be reviewed for narrative, timing, presentation, and capture quality.
-- **Benchmark Demo Verification** runs only after the MakeADemo Pipeline produces a final video. An inconclusive, rejected, incoherent, or failed evaluation leaves the benchmark at L5; only an independently verified application match with coherent visuals and relevant overlay/footage pairing reaches L6.
+- **Benchmark Demo Verification** runs manually after the MakeADemo Pipeline produces an L5 final video. The benchmark command never invokes an evaluator or writes L6. The external coding agent keeps inconclusive or failing reviews at L5 and reports L6 only for a verified application match with coherent visuals and relevant overlay/footage pairing.
 
 ## Architectural Intent
 
