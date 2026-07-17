@@ -1,4 +1,5 @@
 import {
+  type BenchmarkRepo,
   buildBenchmarkPipelineArgs,
   readBenchmarkManifest,
 } from "./benchmark-manifest";
@@ -223,4 +224,28 @@ export const benchmarkSuite = readBenchmarkManifest({
 });
 
 export const benchmarkRepos = benchmarkSuite.repos;
+
+/** Selects requested benchmark repos while preserving suite importance order. */
+export function selectBenchmarkRepos(input: {
+  repoIds: readonly string[];
+  repos: readonly BenchmarkRepo[];
+}): BenchmarkRepo[] {
+  if (input.repoIds.length === 0) {
+    return [...input.repos];
+  }
+
+  const availableRepoIds = new Set(input.repos.map((repo) => repo.id));
+  const unknownRepoId = input.repoIds.find(
+    (repoId) => !availableRepoIds.has(repoId),
+  );
+  if (unknownRepoId !== undefined) {
+    throw new Error(
+      `Unknown benchmark repo id: ${unknownRepoId}. Available repo ids: ${input.repos.map((repo) => repo.id).join(", ")}`,
+    );
+  }
+
+  const requestedRepoIds = new Set(input.repoIds);
+  return input.repos.filter((repo) => requestedRepoIds.has(repo.id));
+}
+
 export { buildBenchmarkPipelineArgs };

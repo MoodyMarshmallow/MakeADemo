@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { benchmarkRepos, buildBenchmarkPipelineArgs } from "./benchmark-suite";
+import {
+  benchmarkRepos,
+  buildBenchmarkPipelineArgs,
+  selectBenchmarkRepos,
+} from "./benchmark-suite";
 
 describe("benchmarkRepos", () => {
   it("defines ten pinned whole-pipeline runs with their demo features", () => {
@@ -54,5 +58,31 @@ describe("benchmarkRepos", () => {
       "--feature",
       "Create an invoice for a customer and preview its line items and payment details",
     ]);
+  });
+
+  it("selects requested repos in benchmark importance order", () => {
+    expect(
+      selectBenchmarkRepos({
+        repoIds: ["excalidraw", "midday"],
+        repos: benchmarkRepos,
+      }).map((repo) => repo.id),
+    ).toEqual(["midday", "excalidraw"]);
+  });
+
+  it("selects the complete suite when no repo ids are requested", () => {
+    expect(
+      selectBenchmarkRepos({ repoIds: [], repos: benchmarkRepos }),
+    ).toEqual(benchmarkRepos);
+  });
+
+  it("rejects unknown repo ids before running the benchmark", () => {
+    expect(() =>
+      selectBenchmarkRepos({
+        repoIds: ["midday", "unknown-app"],
+        repos: benchmarkRepos,
+      }),
+    ).toThrowError(
+      "Unknown benchmark repo id: unknown-app. Available repo ids: midday, calcom, directus, mattermost, ghost, ghostfolio, outline, twenty, excalidraw, cyberchef",
+    );
   });
 });

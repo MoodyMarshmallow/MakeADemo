@@ -2,9 +2,10 @@
 
 Use this benchmark to measure how far submitted repos get through the MakeADemo Pipeline, how long each run takes, and which repos fail early versus late.
 
-The runner starts every repo in the fixed benchmark suite concurrently. Each
-completed run is recorded independently, and the summarizer reports every run's
-duration together with the arithmetic mean, median, and maximum duration.
+The runner starts the selected repos concurrently. With no repo IDs it selects
+the entire fixed benchmark suite. Each completed run is recorded independently,
+and the summarizer reports every run's duration together with the arithmetic
+mean, median, and maximum duration.
 
 ## First Pass
 
@@ -13,6 +14,18 @@ Run the complete benchmark with no arguments:
 ```bash
 bun run benchmark
 ```
+
+To reduce runtime and token usage, pass one or more repo IDs after `--`:
+
+```bash
+bun run benchmark -- midday
+bun run benchmark -- midday excalidraw cyberchef
+```
+
+Selected repos still run concurrently and retain their benchmark importance
+order. Valid IDs are `midday`, `calcom`, `directus`, `mattermost`, `ghost`,
+`ghostfolio`, `outline`, `twenty`, `excalidraw`, and `cyberchef`. An unknown ID
+fails before the benchmark creates a run or invokes the pipeline.
 
 The command prints individual, average, median, and maximum durations when it
 finishes. To summarize an existing JSONL result file again:
@@ -35,14 +48,15 @@ Daytona secret placeholder, not the plaintext local value.
 Every benchmark runs the whole MakeADemo Pipeline, from Repo Security Screen
 through Compositing. Repositories, commits, features, provider, and repetition
 count are fixed in
-`src/server/shared/benchmark/benchmark-suite.ts`; the command takes no suite
-configuration arguments. The model is not overridden, so pipeline runs inherit
-the normal CLI default.
+`src/server/shared/benchmark/benchmark-suite.ts`; command-line arguments only
+select which hardcoded repo entries to run. The model is not overridden, so
+pipeline runs inherit the normal CLI default.
 
 Every repository has a full 40-character `commitSha`. The
 security inspection and both Repo Preparation workspace views check out that
 commit in detached-HEAD mode and verify the resulting `HEAD` before continuing.
-The suite snapshot and each durable result retain the SHA used for the run.
+The run's suite snapshot contains only the selected repos, and it and each
+durable result retain the SHA used for the run.
 
 ## Success Levels
 

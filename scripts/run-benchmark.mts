@@ -18,8 +18,17 @@ import {
   benchmarkRepos,
   benchmarkSuite,
   buildBenchmarkPipelineArgs,
+  selectBenchmarkRepos,
 } from "../src/server/shared/benchmark/benchmark-suite";
 
+const selectedBenchmarkRepos = selectBenchmarkRepos({
+  repoIds: process.argv.slice(2).filter((argument) => argument !== "--"),
+  repos: benchmarkRepos,
+});
+const selectedBenchmarkSuite = {
+  ...benchmarkSuite,
+  repos: selectedBenchmarkRepos,
+};
 const benchmarkRunId = createRunId();
 const outputRoot = join(".makeademo-benchmark-runs", benchmarkRunId);
 const resultsPath = join(outputRoot, "benchmark-results.jsonl");
@@ -27,16 +36,19 @@ const resultsPath = join(outputRoot, "benchmark-results.jsonl");
 await mkdir(outputRoot, { recursive: true });
 await writeFile(
   join(outputRoot, "benchmark-manifest.snapshot.json"),
-  `${JSON.stringify(benchmarkSuite, null, 2)}\n`,
+  `${JSON.stringify(selectedBenchmarkSuite, null, 2)}\n`,
 );
 
 process.stdout.write(`Benchmark run: ${benchmarkRunId}\n`);
+process.stdout.write(
+  `Repos: ${selectedBenchmarkRepos.map((repo) => repo.id).join(", ")}\n`,
+);
 process.stdout.write(`Output root: ${outputRoot}\n`);
 process.stdout.write(`Results: ${resultsPath}\n`);
 
 let pendingResultWrite = Promise.resolve();
 const results = await runBenchmarkJobs({
-  repos: benchmarkRepos,
+  repos: selectedBenchmarkRepos,
   run: async ({ repo, repetitionIndex }) => {
     const result = await runRepoBenchmark({
       benchmarkRunId,
