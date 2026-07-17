@@ -31,6 +31,41 @@ describe("readPreparationManifest", () => {
       status: "created-new-demo",
       url: "http://127.0.0.1:3000",
       workspaceId: "workspace_123",
+      dependencyInstall: "inferred",
     });
+  });
+
+  it("accepts an explicit dependency-install opt-out", () => {
+    expect(
+      readPreparationManifest({
+        assumptions: [],
+        dependencyInstall: "not-required",
+        demoCommand: "node server.js",
+        diffArtifactId: "artifact_diff",
+        repoUrl: "https://github.com/example/app",
+        risks: [],
+        setupSummary: "Prepared a standard-library-only demo.",
+        status: "created-new-demo",
+        url: "http://127.0.0.1:3000",
+        workspaceId: "workspace_123",
+      }),
+    ).toMatchObject({ dependencyInstall: "not-required" });
+  });
+
+  it("rejects unknown dependency-install values", () => {
+    expect(() =>
+      readPreparationManifest({
+        assumptions: [],
+        dependencyInstall: "sometimes",
+        demoCommand: "node server.js",
+        diffArtifactId: "artifact_diff",
+        repoUrl: "https://github.com/example/app",
+        risks: [],
+        setupSummary: "Prepared demo.",
+        status: "created-new-demo",
+        url: "http://127.0.0.1:3000",
+        workspaceId: "workspace_123",
+      }),
+    ).toThrow("dependencyInstall must be inferred or not-required");
   });
 });

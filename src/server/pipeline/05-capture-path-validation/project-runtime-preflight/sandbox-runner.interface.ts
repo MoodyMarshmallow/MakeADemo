@@ -19,8 +19,9 @@ export type SandboxValidationOutput = {
 
 /**
  * Runs untrusted submitted project code inside an isolated sandbox.
- * Implementations must allow dependency installation, seal the runtime network
- * boundary before the demo command runs, and report any blocked boundary attempts.
+ * Implementations must honor the Preparation Manifest dependency-install
+ * strategy, seal the runtime network boundary before the demo command runs,
+ * and report any blocked boundary attempts.
  */
 export interface SandboxRunner {
   runValidation(

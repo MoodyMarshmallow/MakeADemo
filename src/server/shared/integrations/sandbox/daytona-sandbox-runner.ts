@@ -73,25 +73,20 @@ export class DaytonaSandboxRunner implements SandboxRunner {
         event: "project-validation.repo-files.succeeded",
         repoFileCount: repoFiles.length,
       });
-      const installPlan = inferInstallPlan(repoFiles);
-      await writeSandboxLog({
-        command: installPlan.command,
-        event: "project-validation.dependency-install.started",
-      });
-
-      const installResult = await runDependencyInstallWithNetworkWindow({
-        command: installPlan.command,
-        workspace: handle.workspace,
-      });
-
-      if (installResult.exitCode !== 0) {
+      const installResult =
+        input.preparationManifest.dependencyInstall === "not-required"
+          ? { exitCode: 0, stderr: "", stdout: "" }
+          : await this.runDependencyInstall({
+              repoFiles,
+              workspace: handle.workspace,
+              writeSandboxLog,
+            });
+      if (input.preparationManifest.dependencyInstall === "not-required") {
         await writeSandboxLog({
-          command: installPlan.command,
-          event: "project-validation.dependency-install.failed",
-          exitCode: installResult.exitCode,
-          stderr: installResult.stderr,
-          stdout: installResult.stdout,
+          event: "project-validation.dependency-install.skipped",
+          reason: "manifest-not-required",
         });
+      } else if (installResult.exitCode !== 0) {
         await this.cleanup(handle);
         return {
           blockedNetworkAttempts: [],
@@ -103,12 +98,6 @@ export class DaytonaSandboxRunner implements SandboxRunner {
           runtimeExitCode: installResult.exitCode,
         };
       }
-      await writeSandboxLog({
-        command: installPlan.command,
-        event: "project-validation.dependency-install.succeeded",
-        exitCode: installResult.exitCode,
-      });
-
       await writeSandboxLog({
         command: input.demoCommand,
         event: "project-validation.demo-command.started",
@@ -240,6 +229,38 @@ export class DaytonaSandboxRunner implements SandboxRunner {
     if (this.destroyWorkspaceOnCleanup) {
       await handle.destroy();
     }
+  }
+
+  private async runDependencyInstall(input: {
+    repoFiles: string[];
+    workspace: PreparationWorkspaceHandle["workspace"];
+    writeSandboxLog: (entry: Record<string, unknown>) => Promise<void>;
+  }): Promise<{ exitCode: number; stderr: string; stdout: string }> {
+    const installPlan = inferInstallPlan(input.repoFiles);
+    await input.writeSandboxLog({
+      command: installPlan.command,
+      event: "project-validation.dependency-install.started",
+    });
+    const installResult = await runDependencyInstallWithNetworkWindow({
+      command: installPlan.command,
+      workspace: input.workspace,
+    });
+    if (installResult.exitCode !== 0) {
+      await input.writeSandboxLog({
+        command: installPlan.command,
+        event: "project-validation.dependency-install.failed",
+        exitCode: installResult.exitCode,
+        stderr: installResult.stderr,
+        stdout: installResult.stdout,
+      });
+      return installResult;
+    }
+    await input.writeSandboxLog({
+      command: installPlan.command,
+      event: "project-validation.dependency-install.succeeded",
+      exitCode: installResult.exitCode,
+    });
+    return installResult;
   }
 }
 
