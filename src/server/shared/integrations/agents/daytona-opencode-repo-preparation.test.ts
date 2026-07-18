@@ -2586,17 +2586,19 @@ function fakeWorkspace(
         }
         await new Promise((resolve) => setTimeout(resolve, commandDelayMs));
       }
-      events.push({
-        execute: command,
-        ...(command.includes("opencode run")
-          ? {
-              configDir: options?.env?.OPENCODE_CONFIG_DIR,
-              streaming:
-                options?.onStdout !== undefined ||
-                options?.onStderr !== undefined,
-            }
-          : {}),
-      });
+      if (command !== "git -C /workspace ls-files -z") {
+        events.push({
+          execute: command,
+          ...(command.includes("opencode run")
+            ? {
+                configDir: options?.env?.OPENCODE_CONFIG_DIR,
+                streaming:
+                  options?.onStdout !== undefined ||
+                  options?.onStderr !== undefined,
+              }
+            : {}),
+        });
+      }
       if (
         command.includes("git clone") &&
         input.captureCloneTimeouts === true
@@ -2664,6 +2666,13 @@ function fakeWorkspace(
       }
       if (command.includes("opencode run") && openCodeResults.length > 0) {
         return openCodeResults.shift() as PreparationWorkspaceCommandResult;
+      }
+      if (command === "git -C /workspace ls-files -z") {
+        return {
+          exitCode: 0,
+          stderr: "",
+          stdout: "src/App.tsx\0src/styles.css\0",
+        };
       }
       if (
         command.startsWith("if test -f") &&
@@ -2941,6 +2950,10 @@ function successResult() {
       existingDemoEvidence: [],
       mockedServices: [],
       modifiedFiles: [],
+      nativeVisibleInterface: {
+        nativeStartupAttempts: ["npm run demo:makeademo"],
+        sourceControlledUiPaths: ["src/App.tsx", "src/styles.css"],
+      },
       repoUrl: "https://github.com/example/app",
       risks: [],
       scriptGenerationContext: [],

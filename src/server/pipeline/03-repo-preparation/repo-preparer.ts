@@ -1,5 +1,8 @@
 import { createPreparationFallbackPrompt } from "./preparation-fallback-prompt";
-import { readPreparationManifest } from "./preparation-manifest";
+import {
+  readPreparationManifest,
+  validateNativeVisibleInterfaceProvenance,
+} from "./preparation-manifest";
 import type {
   RepoPreparationAgent,
   RepoPreparationInput,
@@ -25,8 +28,13 @@ export async function prepareRepo(
   }
 
   try {
+    const manifest = readPreparationManifest(result.manifest);
+    validateNativeVisibleInterfaceProvenance(
+      manifest,
+      result.baselineSourceControlledPaths ?? [],
+    );
     return {
-      manifest: readPreparationManifest(result.manifest),
+      manifest,
       ...(result.opencodeSessionID === undefined
         ? {}
         : { opencodeSessionID: result.opencodeSessionID }),

@@ -1,5 +1,8 @@
 import { runDependencyInstallWithNetworkWindow } from "../../../pipeline/03-repo-preparation/dependency-install-network-window";
-import type { readPreparationManifest } from "../../../pipeline/03-repo-preparation/preparation-manifest";
+import {
+  type readPreparationManifest,
+  validateNativeVisibleInterfaceProvenance,
+} from "../../../pipeline/03-repo-preparation/preparation-manifest";
 import type {
   PreparationWorkspaceHandle,
   PreparationWorkspaceProvider,
@@ -203,6 +206,7 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
           handle,
           input,
           result.value.prompt,
+          result.value.baselineSourceControlledPaths,
         );
       } catch (error) {
         await this.writeSandboxLog(handle.workspace, {
@@ -225,7 +229,11 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
         await releaseQuietly(handle);
         return loopResult;
       }
-      const parsedResult = parseCommandResult(loopResult, handle);
+      const parsedResult = parseCommandResult(
+        loopResult,
+        handle,
+        result.value.baselineSourceControlledPaths,
+      );
       if (parsedResult.status === "failed") {
         await releaseQuietly(handle);
       }
@@ -261,6 +269,8 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
     }
 
     return {
+      baselineSourceControlledPaths:
+        bootstrap.baselineSourceControlledPaths ?? [],
       prompt: createDaytonaRepoPreparationPrompt(input),
       status: "ready",
     };
@@ -270,6 +280,7 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
     handle: PreparationWorkspaceHandle,
     input: RepoPreparationInput,
     initialPrompt: string,
+    baselineSourceControlledPaths: string[],
   ): Promise<OpenCodeLoopResult> {
     let prompt = initialPrompt;
     let currentSessionID: string | undefined;
@@ -378,6 +389,7 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
             deadlineAt,
             handle,
             input,
+            baselineSourceControlledPaths,
             validationRequest,
           });
           if (validationOutcome.status === "retry") {
@@ -416,6 +428,7 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
             deadlineAt,
             handle,
             input,
+            baselineSourceControlledPaths,
             validationRequest: validationRequestResult.value,
           });
           if (validationOutcome.status === "retry") {
@@ -539,6 +552,7 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
           deadlineAt,
           handle,
           input,
+          baselineSourceControlledPaths,
           validationRequest,
         });
         if (validationOutcome.status === "retry") {
@@ -787,6 +801,7 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
 
   private async processValidationRequest(input: {
     attempt: number;
+    baselineSourceControlledPaths: string[];
     currentSessionID: string | undefined;
     deadlineAt: number;
     handle: PreparationWorkspaceHandle;
@@ -822,6 +837,10 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
           manifest = await readPreparationManifestFile(
             input.handle.workspace,
             input.validationRequest.manifestPath,
+          );
+          validateNativeVisibleInterfaceProvenance(
+            manifest,
+            input.baselineSourceControlledPaths,
           );
           return await validatePreparation({
             manifest,
@@ -988,9 +1007,16 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
 function parseCommandResult(
   result: RawPreparationRunResult,
   workspace: PreparationWorkspaceHandle,
+  baselineSourceControlledPaths?: string[],
 ) {
   if (!("exitCode" in result)) {
-    return result.status === "succeeded" ? { ...result, workspace } : result;
+    return result.status === "succeeded"
+      ? {
+          ...result,
+          baselineSourceControlledPaths: baselineSourceControlledPaths ?? [],
+          workspace,
+        }
+      : result;
   }
 
   if (result.exitCode !== 0) {
@@ -1011,7 +1037,11 @@ function parseCommandResult(
     return parsedResult;
   }
 
-  return { ...parsedResult, workspace };
+  return {
+    ...parsedResult,
+    baselineSourceControlledPaths: baselineSourceControlledPaths ?? [],
+    workspace,
+  };
 }
 
 type RawPreparationRunResult =
@@ -1046,7 +1076,11 @@ type TimeoutMetadata = {
 };
 
 type PreparationSetupResult =
-  | { prompt: string; status: "ready" }
+  | {
+      baselineSourceControlledPaths: string[];
+      prompt: string;
+      status: "ready";
+    }
   | { result: RawPreparationRunResult; status: "result" };
 
 function raceWithTimeout<T>(

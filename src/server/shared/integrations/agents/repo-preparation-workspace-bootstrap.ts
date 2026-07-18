@@ -27,7 +27,10 @@ export async function bootstrapRepoPreparationWorkspace(input: {
   logger: PipelineEventLogger;
   repoUrl: string;
   workspace: PreparationWorkspace;
-}): Promise<{ failure?: ReturnType<typeof createRepoCloneFailure> }> {
+}): Promise<{
+  baselineSourceControlledPaths?: string[];
+  failure?: ReturnType<typeof createRepoCloneFailure>;
+}> {
   await writeLog(input, { event: "clone-started" });
   await input.workspace.setOutboundNetworkAccess(true);
   const parentClone = await cloneParent(
@@ -72,6 +75,10 @@ export async function bootstrapRepoPreparationWorkspace(input: {
     }
   }
 
+  const baselineSourceControlledPaths = await readSourceControlledPaths(
+    input.workspace,
+  );
+
   const config = await input.workspace.execute(createWriteConfigCommand());
   if (config.exitCode !== 0) {
     throw new Error(
@@ -79,7 +86,17 @@ export async function bootstrapRepoPreparationWorkspace(input: {
     );
   }
   await writeLog(input, { event: "opencode-config-installed" });
-  return {};
+  return { baselineSourceControlledPaths };
+}
+
+async function readSourceControlledPaths(
+  workspace: PreparationWorkspace,
+): Promise<string[]> {
+  const result = await workspace.execute("git -C /workspace ls-files -z");
+  if (result.exitCode !== 0) {
+    throw new Error("Failed to inventory source-controlled submitted paths.");
+  }
+  return result.stdout.split("\0").filter((path) => path.length > 0);
 }
 
 export function createRepoPreparationOpenCodeCommand(input: {

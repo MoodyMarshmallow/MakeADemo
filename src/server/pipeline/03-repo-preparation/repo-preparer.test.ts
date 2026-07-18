@@ -8,10 +8,15 @@ describe("prepareRepo", () => {
     const agent: RepoPreparationAgent = {
       async prepare() {
         return {
+          baselineSourceControlledPaths: ["src/App.tsx"],
           manifest: {
             assumptions: [],
             demoCommand: "npm run demo:makeademo",
             diffArtifactId: "artifact_diff",
+            nativeVisibleInterface: {
+              nativeStartupAttempts: ["npm run demo:makeademo"],
+              sourceControlledUiPaths: ["src/App.tsx"],
+            },
             repoUrl: "https://github.com/example/app",
             risks: [],
             setupSummary: "Reused an existing demo script.",
@@ -44,10 +49,15 @@ describe("prepareRepo", () => {
     const agent: RepoPreparationAgent = {
       async prepare() {
         return {
+          baselineSourceControlledPaths: ["src/App.tsx"],
           manifest: {
             assumptions: [],
             demoCommand: "npm run demo:makeademo",
             diffArtifactId: "artifact_diff",
+            nativeVisibleInterface: {
+              nativeStartupAttempts: ["npm run demo:makeademo"],
+              sourceControlledUiPaths: ["src/App.tsx"],
+            },
             repoUrl: "https://github.com/example/app",
             risks: [],
             setupSummary: "Reused an existing demo script.",
@@ -137,6 +147,50 @@ describe("prepareRepo", () => {
     if (result.status === "failed") {
       expect(result.fallbackPrompt).toContain(
         "Preparation Manifest was invalid: status must be a non-empty string",
+      );
+    }
+  });
+
+  it("rejects a success manifest whose visible interface was created during preparation", async () => {
+    const agent: RepoPreparationAgent = {
+      async prepare() {
+        return {
+          baselineSourceControlledPaths: ["src/App.tsx"],
+          manifest: {
+            assumptions: [],
+            createdFiles: ["demo/index.html"],
+            demoCommand: "node demo/server.js",
+            diffArtifactId: "artifact_diff",
+            nativeVisibleInterface: {
+              nativeStartupAttempts: ["node demo/server.js"],
+              sourceControlledUiPaths: ["demo/index.html"],
+            },
+            repoUrl: "https://github.com/example/app",
+            risks: [],
+            setupSummary: "Created a standalone replacement demo.",
+            status: "created-new-demo",
+            url: "http://localhost:3000",
+            workspaceId: "workspace_123",
+          },
+          status: "succeeded",
+        };
+      },
+    };
+
+    const result = await prepareRepo(
+      {
+        normalizedSupportingDocuments: [],
+        repoUrl: "https://github.com/example/app",
+        structuredDemoIntent: { keyProductFeatures: ["dashboard"] },
+        workspaceId: "workspace_123",
+      },
+      { agent },
+    );
+
+    expect(result).toMatchObject({ status: "failed" });
+    if (result.status === "failed") {
+      expect(result.fallbackPrompt).toContain(
+        "sourceControlledUiPaths includes demo/index.html, which was not source-controlled before Repo Preparation",
       );
     }
   });

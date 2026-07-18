@@ -14,6 +14,7 @@ describe("createPreCapturePipelineDependencies", () => {
     const repoPreparationAgent: RepoPreparationAgent = {
       async prepare() {
         return {
+          baselineSourceControlledPaths: ["src/App.tsx"],
           manifest: {
             assumptions: [],
             createdFiles: [],
@@ -22,6 +23,10 @@ describe("createPreCapturePipelineDependencies", () => {
             existingDemoEvidence: [],
             mockedServices: [],
             modifiedFiles: [],
+            nativeVisibleInterface: {
+              nativeStartupAttempts: ["npm run dev"],
+              sourceControlledUiPaths: ["src/App.tsx"],
+            },
             repoUrl: "https://github.com/example/app",
             risks: [],
             scriptGenerationContext: [],
@@ -154,6 +159,10 @@ function manifest() {
     existingDemoEvidence: [],
     mockedServices: [],
     modifiedFiles: [],
+    nativeVisibleInterface: {
+      nativeStartupAttempts: ["npm run dev"],
+      sourceControlledUiPaths: ["src/App.tsx"],
+    },
     repoUrl: "https://github.com/example/app",
     risks: [],
     scriptGenerationContext: [],

@@ -9,6 +9,10 @@ describe("readPreparationManifest", () => {
         assumptions: ["uses local fixtures"],
         demoCommand: "npm run demo:makeademo",
         diffArtifactId: "artifact_diff",
+        nativeVisibleInterface: {
+          nativeStartupAttempts: ["npm run demo:makeademo"],
+          sourceControlledUiPaths: ["src/App.tsx"],
+        },
         repoUrl: "https://github.com/example/app",
         risks: [],
         setupSummary: "Created a local demo route with mocked data.",
@@ -24,6 +28,10 @@ describe("readPreparationManifest", () => {
       existingDemoEvidence: [],
       mockedServices: [],
       modifiedFiles: [],
+      nativeVisibleInterface: {
+        nativeStartupAttempts: ["npm run demo:makeademo"],
+        sourceControlledUiPaths: ["src/App.tsx"],
+      },
       repoUrl: "https://github.com/example/app",
       risks: [],
       scriptGenerationContext: [],
@@ -42,6 +50,10 @@ describe("readPreparationManifest", () => {
         dependencyInstall: "not-required",
         demoCommand: "node server.js",
         diffArtifactId: "artifact_diff",
+        nativeVisibleInterface: {
+          nativeStartupAttempts: ["node server.js"],
+          sourceControlledUiPaths: ["src/App.tsx"],
+        },
         repoUrl: "https://github.com/example/app",
         risks: [],
         setupSummary: "Prepared a standard-library-only demo.",
@@ -59,6 +71,10 @@ describe("readPreparationManifest", () => {
         dependencyInstall: "sometimes",
         demoCommand: "node server.js",
         diffArtifactId: "artifact_diff",
+        nativeVisibleInterface: {
+          nativeStartupAttempts: ["node server.js"],
+          sourceControlledUiPaths: ["src/App.tsx"],
+        },
         repoUrl: "https://github.com/example/app",
         risks: [],
         setupSummary: "Prepared demo.",

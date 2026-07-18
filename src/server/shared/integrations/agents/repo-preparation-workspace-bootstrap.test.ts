@@ -69,7 +69,11 @@ describe("bootstrapRepoPreparationWorkspace", () => {
       workspace,
     });
 
-    expect(result).toEqual({});
+    expect(result.baselineSourceControlledPaths).toEqual([
+      ".env",
+      "apps/web/.env.production",
+      "package.json",
+    ]);
     expect(events).toEqual([
       "parent-network:true",
       "parent-clone",
@@ -146,6 +150,13 @@ function createExecutor(
     if (command.includes("git clone")) {
       events.push(`${kind}-clone`);
       return { exitCode: 0, stderr: "", stdout: "cloned" };
+    }
+    if (command === "git -C /workspace ls-files -z") {
+      return {
+        exitCode: 0,
+        stderr: "",
+        stdout: ".env\0apps/web/.env.production\0package.json\0",
+      };
     }
     if (command.includes("plugins/makeademo-tools.ts")) {
       events.push("config");

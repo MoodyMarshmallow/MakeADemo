@@ -6,6 +6,17 @@ type PreparationStatus =
 /** Controls whether validation infers and runs a package-manager install. */
 type DependencyInstallStrategy = "inferred" | "not-required";
 
+/**
+ * Identifies the submitted repository UI that the prepared visible interface
+ * must render. Paths must come from the source-controlled baseline captured
+ * before Repo Preparation; startup attempts describe how native UI startup was
+ * attempted rather than a replacement standalone entrypoint.
+ */
+type NativeVisibleInterfaceProvenance = {
+  nativeStartupAttempts: string[];
+  sourceControlledUiPaths: string[];
+};
+
 export type PreparationManifest = {
   assumptions: string[];
   createdFiles: string[];
@@ -15,6 +26,7 @@ export type PreparationManifest = {
   existingDemoEvidence: string[];
   mockedServices: string[];
   modifiedFiles: string[];
+  nativeVisibleInterface?: NativeVisibleInterfaceProvenance;
   repoUrl: string;
   risks: string[];
   scriptGenerationContext: string[];
@@ -46,6 +58,7 @@ export function readPreparationManifest(value: unknown): PreparationManifest {
     ),
     mockedServices: readOptionalStringArray(record, "mockedServices"),
     modifiedFiles: readOptionalStringArray(record, "modifiedFiles"),
+    nativeVisibleInterface: readNativeVisibleInterface(record),
     repoUrl: readNonEmptyString(record, "repoUrl"),
     risks: readStringArray(record, "risks"),
     scriptGenerationContext: readOptionalStringArray(
@@ -57,6 +70,58 @@ export function readPreparationManifest(value: unknown): PreparationManifest {
     url: readLocalHttpUrl(record, "url"),
     workspaceId: readNonEmptyString(record, "workspaceId"),
   };
+}
+
+/**
+ * Verifies that claimed visible UI paths existed in the submitted repository
+ * before Repo Preparation. Callers must supply the backend-captured baseline,
+ * never an agent-provided path inventory.
+ */
+export function validateNativeVisibleInterfaceProvenance(
+  manifest: PreparationManifest,
+  baselineSourceControlledPaths: readonly string[],
+): void {
+  const provenance = manifest.nativeVisibleInterface;
+  if (provenance === undefined) {
+    throw new Error("nativeVisibleInterface must be present");
+  }
+  const baselinePaths = new Set(baselineSourceControlledPaths);
+  for (const path of provenance.sourceControlledUiPaths) {
+    if (!baselinePaths.has(path)) {
+      throw new Error(
+        `nativeVisibleInterface.sourceControlledUiPaths includes ${path}, which was not source-controlled before Repo Preparation`,
+      );
+    }
+  }
+}
+
+function readNativeVisibleInterface(
+  record: Record<string, unknown>,
+): NativeVisibleInterfaceProvenance {
+  const provenance = assertRecord(
+    record.nativeVisibleInterface,
+    "nativeVisibleInterface",
+  );
+  const sourceControlledUiPaths = readStringArray(
+    provenance,
+    "sourceControlledUiPaths",
+  );
+  if (sourceControlledUiPaths.length === 0) {
+    throw new Error(
+      "nativeVisibleInterface.sourceControlledUiPaths must not be empty",
+    );
+  }
+  const nativeStartupAttempts = readStringArray(
+    provenance,
+    "nativeStartupAttempts",
+  );
+  if (nativeStartupAttempts.length === 0) {
+    throw new Error(
+      "nativeVisibleInterface.nativeStartupAttempts must not be empty",
+    );
+  }
+
+  return { nativeStartupAttempts, sourceControlledUiPaths };
 }
 
 function readDependencyInstallStrategy(

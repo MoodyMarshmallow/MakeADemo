@@ -14,6 +14,11 @@ export type RepoPreparationInput = {
 
 type RepoPreparationAgentResult =
   | {
+      /**
+       * Backend-captured source-controlled paths from the submitted pinned
+       * repository, collected before Repo Preparation can edit the workspace.
+       */
+      baselineSourceControlledPaths?: string[];
       manifest: unknown;
       opencodeSessionID?: string;
       status: "succeeded";
@@ -31,7 +36,8 @@ type RepoPreparationAgentResult =
  * Prepares an ephemeral cloned workspace for deterministic demo validation.
  * Implementations may edit and execute only that workspace, should check for
  * existing demos before creating new setup, must check out commitSha when one is
- * supplied, and must not modify the source repo.
+ * supplied, must capture the submitted source-controlled path baseline before
+ * edits, and must not modify the source repo.
  */
 export interface RepoPreparationAgent {
   prepare(input: RepoPreparationInput): Promise<RepoPreparationAgentResult>;

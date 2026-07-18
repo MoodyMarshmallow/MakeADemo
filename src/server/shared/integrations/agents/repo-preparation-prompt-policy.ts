@@ -32,6 +32,9 @@ export function createDaytonaRepoPreparationPrompt(
     "",
     "## Preparation Strategy",
     "- Prefer the smallest safe change that creates or exposes a deterministic demo path.",
+    "- The visible interface must remain the submitted repository's native source-controlled UI. Do not create a replacement frontend, standalone simulation, walkthrough, or HTML entrypoint.",
+    "- You may add fixtures, mock adapters, configuration, and small glue/demo routes only when the rendered screens import native source-controlled UI components, styles, or assets.",
+    "- If the native visible interface cannot be prepared, submit status failed with a clear blocker instead of substituting a new UI.",
     "- Prefer local mock data, fixture data, or frontend-only demo modes over hosted services.",
     "- Keep existing project conventions where practical.",
     "- If the repo already has a suitable demo command, use it rather than creating a new one.",
@@ -190,6 +193,7 @@ function createPreparationManifestGuidance(
     '- setupSummary: one short paragraph explaining what changed and how the demo runs. Example: "Prepared a frontend-only demo that uses local mock RealWorld API data."',
     '- createdFiles: files newly created for MakeADemo. Example: ["frontend/src/demoApi.js"]. Use [] if none.',
     '- modifiedFiles: existing files changed for MakeADemo. Example: ["package.json", "frontend/src/main.jsx"]. Use [] if none.',
+    "- nativeVisibleInterface: required provenance for the rendered native UI. sourceControlledUiPaths must list submitted-repository UI components, routes, styles, or assets rendered by the demo; nativeStartupAttempts must list the native startup commands or strategies attempted. The backend rejects paths created during preparation.",
     '- demoCommand: command MakeADemo preparation preflight and Capture Path Validation should run from /workspace to start a long-running local server. Example: "npm run demo".',
     '- dependencyInstall: optional install strategy. Use "not-required" only when no further install is needed (for example, a standard-library-only server or dependencies already installed through the backend tool); otherwise use "inferred".',
     '- url: local HTTP URL served by demoCommand. Example: "http://localhost:4173/".',
@@ -216,6 +220,14 @@ function createPreparationManifestGuidance(
         ],
         mockedServices: ["RealWorld API", "avatar image service"],
         modifiedFiles: ["package.json", "frontend/src/main.jsx"],
+        nativeVisibleInterface: {
+          nativeStartupAttempts: ["npm run demo"],
+          sourceControlledUiPaths: [
+            "frontend/src/main.jsx",
+            "frontend/src/App.jsx",
+            "frontend/src/index.css",
+          ],
+        },
         repoUrl: input.repoUrl,
         risks: [
           "Repository tests require undeclared jsdom but the browser demo path does not",

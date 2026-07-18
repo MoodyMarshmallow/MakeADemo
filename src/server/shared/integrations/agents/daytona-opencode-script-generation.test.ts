@@ -1849,6 +1849,10 @@ function scriptGenerationInput() {
       existingDemoEvidence: [],
       mockedServices: ["local article API"],
       modifiedFiles: [],
+      nativeVisibleInterface: {
+        nativeStartupAttempts: ["npm run dev"],
+        sourceControlledUiPaths: ["src/App.tsx"],
+      },
       repoUrl: "https://github.com/example/conduit",
       risks: [],
       scriptGenerationContext: ["Use hash routes and demo@example.com."],
