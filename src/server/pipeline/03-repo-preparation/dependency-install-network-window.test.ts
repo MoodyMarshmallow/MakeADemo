@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { runDependencyInstallWithNetworkWindow } from "./dependency-install-network-window";
+import {
+  runDependencyInstallWithNetworkWindow,
+  runPlannedDependencyInstallWithNetworkWindow,
+} from "./dependency-install-network-window";
 import type { PreparationWorkspace } from "./preparation-workspace.interface";
 
 describe("runDependencyInstallWithNetworkWindow", () => {
@@ -214,6 +217,47 @@ describe("runDependencyInstallWithNetworkWindow", () => {
       "submitted-network:unblocked",
       "log:submitted-code-network.opened",
       "submitted-execute:pnpm install",
+      "log:submitted-code-network.closing",
+      "submitted-network:blocked",
+      "log:submitted-code-network.closed",
+    ]);
+  });
+});
+
+describe("runPlannedDependencyInstallWithNetworkWindow", () => {
+  it("executes the plan-owned install with exact argv and reseals submitted-code network", async () => {
+    const events: string[] = [];
+    const workspace = fakeWorkspace(events);
+    workspace.executeSubmittedProject = async ({ argv, executable, plan }) => {
+      events.push(
+        `submitted-project:${executable}:${argv.join(",")}:${plan.projectRoot}`,
+      );
+      return { exitCode: 0, stderr: "", stdout: "planned install completed" };
+    };
+
+    const result = await runPlannedDependencyInstallWithNetworkWindow({
+      toolchainPlan: {
+        catalogRevision: "submitted-js-2026-07-17.1",
+        evidence: [],
+        install: { argv: ["i", "--frozen-lockfile"], executable: "pnpm" },
+        node: { version: "22.23.1" },
+        packageManager: { name: "pnpm", version: "10.27.0" },
+        projectRoot: "apps/web",
+        warnings: [],
+      },
+      workspace,
+    });
+
+    expect(result).toEqual({
+      exitCode: 0,
+      stderr: "",
+      stdout: "planned install completed",
+    });
+    expect(events).toEqual([
+      "log:submitted-code-network.opening",
+      "submitted-network:unblocked",
+      "log:submitted-code-network.opened",
+      "submitted-project:pnpm:i,--frozen-lockfile:apps/web",
       "log:submitted-code-network.closing",
       "submitted-network:blocked",
       "log:submitted-code-network.closed",

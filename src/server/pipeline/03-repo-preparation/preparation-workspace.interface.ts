@@ -1,3 +1,5 @@
+import type { SubmittedCodeToolchainPlan } from "./submitted-code-toolchain.schema";
+
 export type PreparationWorkspaceCommandResult = {
   exitCode: number;
   stderr: string;
@@ -32,6 +34,19 @@ export type PreparationWorkspaceExecuteOptions = {
 export type PreparationWorkspaceLogEntry = Record<string, unknown>;
 
 /**
+ * A project-owned command paired with its pre-network resolved toolchain plan.
+ * Implementations must ignore repository-provided executable paths and map the
+ * plan only to catalog-owned PATH entries and the validated project cwd.
+ */
+export type SubmittedProjectExecutionRequest = {
+  /** Catalog-owned executable; never copied from submitted metadata or agent input. */
+  executable: string;
+  /** Catalog-owned argv; implementations must preserve argument boundaries. */
+  argv: readonly string[];
+  plan: SubmittedCodeToolchainPlan;
+};
+
+/**
  * Executes commands and network-policy changes inside a Repo Preparation workspace.
  * Implementations must scope destructive work to the ephemeral workspace copy and
  * must not expose agent-only secrets to submitted app build or runtime commands.
@@ -50,6 +65,14 @@ export interface PreparationWorkspace {
    */
   executeSubmittedCode?(
     command: string,
+    options?: PreparationWorkspaceExecuteOptions,
+  ): Promise<PreparationWorkspaceCommandResult>;
+  /**
+   * Executes the backend-resolved immutable dependency install.
+   * Implementations must reject argv that differs from the plan-owned install.
+   */
+  executeSubmittedProject?(
+    request: SubmittedProjectExecutionRequest,
     options?: PreparationWorkspaceExecuteOptions,
   ): Promise<PreparationWorkspaceCommandResult>;
   getPreviewUrl(port: number): Promise<string>;

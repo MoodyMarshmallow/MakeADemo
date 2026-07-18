@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { resolveCommand } from "package-manager-detector/commands";
 
 import { Daytona } from "@daytona/sdk";
 
@@ -17,7 +18,10 @@ import type {
   PreparationWorkspaceLogEntry,
   PreparationWorkspaceUploadFile,
   PreparationWorkspaceUploadOptions,
+  SubmittedProjectExecutionRequest,
 } from "../../../pipeline/03-repo-preparation/preparation-workspace.interface";
+import { submittedCodeToolchainCatalog } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
+import { resolveSubmittedProjectCwd } from "../../../pipeline/03-repo-preparation/submitted-project-root";
 import {
   type PipelineEventLogger,
   type PipelineLogSink,
@@ -422,28 +426,33 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     const output: string[] = [];
     const timeoutMs = options.timeoutMs ?? this.commandTimeoutMs;
     const decoder = new TextDecoder();
+    const exitMarker = createExitMarker();
     const ptyForData: { current?: ManagedPty } = {};
-    const pty = await this.createConnectedPty(this.sandbox, {
-      cols: 120,
-      cwd: "/workspace",
-      envs: options.env ?? {},
-      id: `makeademo-${randomUUID()}`,
-      onData: (data) => {
-        const chunk = decoder.decode(data);
-        output.push(chunk);
-        ptyForData.current?.notifyData(chunk);
-        const visibleChunk = removeExitMarker(chunk);
-        if (visibleChunk.length > 0) {
-          options.onStdout?.(visibleChunk);
-        }
+    const pty = await this.createConnectedPty(
+      this.sandbox,
+      {
+        cols: 120,
+        cwd: "/workspace",
+        envs: options.env ?? {},
+        id: `makeademo-${randomUUID()}`,
+        onData: (data) => {
+          const chunk = decoder.decode(data);
+          output.push(chunk);
+          ptyForData.current?.notifyData(chunk);
+          const visibleChunk = removeExitMarker(chunk, exitMarker);
+          if (visibleChunk.length > 0) {
+            options.onStdout?.(visibleChunk);
+          }
+        },
+        rows: 30,
       },
-      rows: 30,
-    });
+      exitMarker,
+    );
     ptyForData.current = pty;
 
     try {
       await pty.sendInput(
-        `stty -echo\n${command}\nprintf '\\n__MAKEADEMO_EXIT__:%s\\n' $?\nexit\n`,
+        `stty -echo\n${command}\nprintf '\\n${exitMarker}%s\\n' $?\nexit\n`,
       );
       const result = await withTimeout(
         pty.completion(),
@@ -452,12 +461,12 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
         () => void pty.cancel(),
       );
       const stdout = output.join("");
-      const exitCode = readExitCode(stdout) ?? result.exitCode ?? 0;
+      const exitCode = readExitCode(stdout, exitMarker) ?? result.exitCode ?? 0;
 
       return {
         exitCode,
         stderr: result.error ?? "",
-        stdout: removeExitMarker(stdout),
+        stdout: removeExitMarker(stdout, exitMarker),
       };
     } finally {
       this.activePtys.delete(pty);
@@ -532,6 +541,44 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
       `Daytona command did not finish within ${timeoutMs}ms.`,
     );
 
+    return {
+      exitCode: response.exitCode ?? 0,
+      stderr: response.stderr ?? "",
+      stdout: response.stdout ?? response.result ?? "",
+    };
+  }
+
+  async executeSubmittedProject(
+    request: SubmittedProjectExecutionRequest,
+    options: PreparationWorkspaceExecuteOptions = {},
+  ): Promise<PreparationWorkspaceCommandResult> {
+    if (this.submittedCodeSandbox === undefined) {
+      throw new Error("Submitted-code Daytona sandbox is not configured.");
+    }
+    const execution = createSubmittedProjectExecution(request);
+    const projectOptions = {
+      ...options,
+      env: { ...options.env, ...execution.env },
+    };
+    if (options.onStdout !== undefined || options.onStderr !== undefined) {
+      return this.executeStreamingInSandbox(
+        this.submittedCodeSandbox,
+        execution.command,
+        projectOptions,
+        execution.cwd,
+      );
+    }
+    const timeoutMs = options.timeoutMs ?? this.commandTimeoutMs;
+    const response = await withTimeout(
+      this.submittedCodeSandbox.process.executeCommand(
+        execution.command,
+        execution.cwd,
+        projectOptions.env,
+        toSdkTimeoutSeconds(timeoutMs),
+      ),
+      timeoutMs,
+      `Daytona command did not finish within ${timeoutMs}ms.`,
+    );
     return {
       exitCode: response.exitCode ?? 0,
       stderr: response.stderr ?? "",
@@ -721,6 +768,9 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
         return;
       } catch (error) {
         if (isRestrictedNetworkPolicyError(error)) {
+          // This exact tier-policy response means sandbox overrides are
+          // impossible, so provider-enforced blocking remains authoritative
+          // whether the caller attempted to open or reseal the network.
           return;
         }
         if (
@@ -858,31 +908,38 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     sandbox: DaytonaSdkSandbox,
     command: string,
     options: PreparationWorkspaceExecuteOptions,
+    cwd = "/workspace",
   ): Promise<PreparationWorkspaceCommandResult> {
     const output: string[] = [];
     const timeoutMs = options.timeoutMs ?? this.commandTimeoutMs;
     const decoder = new TextDecoder();
+    const exitMarker = createExitMarker();
     let ptyForData: ManagedPty | undefined;
-    const pty = await this.createConnectedPty(sandbox, {
-      cols: 120,
-      cwd: "/workspace",
-      envs: options.env ?? {},
-      id: `makeademo-${randomUUID()}`,
-      onData: (data) => {
-        const chunk = decoder.decode(data);
-        output.push(chunk);
-        const visibleChunk = removeExitMarker(chunk);
-        if (visibleChunk.length > 0) {
-          options.onStdout?.(visibleChunk);
-        }
+    const pty = await this.createConnectedPty(
+      sandbox,
+      {
+        cols: 120,
+        cwd,
+        envs: options.env ?? {},
+        id: `makeademo-${randomUUID()}`,
+        onData: (data) => {
+          const chunk = decoder.decode(data);
+          output.push(chunk);
+          ptyForData?.notifyData(chunk);
+          const visibleChunk = removeExitMarker(chunk, exitMarker);
+          if (visibleChunk.length > 0) {
+            options.onStdout?.(visibleChunk);
+          }
+        },
+        rows: 30,
       },
-      rows: 30,
-    });
+      exitMarker,
+    );
     ptyForData = pty;
 
     try {
       await pty.sendInput(
-        `stty -echo\n${command}\nprintf '\n__MAKEADEMO_EXIT__:%s\n' $?\nexit\n`,
+        `stty -echo\n${command}\nprintf '\\n${exitMarker}%s\\n' $?\nexit\n`,
       );
       const result = await withTimeout(
         pty.completion(),
@@ -891,12 +948,12 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
         () => void pty.cancel(),
       );
       const stdout = output.join("");
-      const exitCode = readExitCode(stdout) ?? result.exitCode ?? 0;
+      const exitCode = readExitCode(stdout, exitMarker) ?? result.exitCode ?? 0;
 
       return {
         exitCode,
         stderr: result.error ?? "",
-        stdout: removeExitMarker(stdout),
+        stdout: removeExitMarker(stdout, exitMarker),
       };
     } finally {
       ptyForData = undefined;
@@ -908,6 +965,7 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
   private async createConnectedPty(
     sandbox: DaytonaSdkSandbox,
     options: DaytonaSdkPtyOptions,
+    exitMarker: string,
   ): Promise<ManagedPty> {
     let lastError: unknown;
     for (let attempt = 1; attempt <= ptyStartupRetryLimit + 1; attempt += 1) {
@@ -918,7 +976,7 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
           ...options,
           id: attempt === 1 ? options.id : `makeademo-${randomUUID()}`,
         });
-        pty = new ManagedPty(rawPty);
+        pty = new ManagedPty(rawPty, exitMarker);
         this.activePtys.add(pty);
         await withTimeout(
           pty.waitForConnection(),
@@ -945,6 +1003,105 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
   }
 }
 
+function createSubmittedProjectExecution(
+  request: SubmittedProjectExecutionRequest,
+): { command: string; cwd: string; env: Record<string, string> } {
+  const { plan } = request;
+  if (plan.catalogRevision !== submittedCodeToolchainCatalog.revision) {
+    throw new Error(
+      `Unsupported submitted-code catalog revision: ${plan.catalogRevision}`,
+    );
+  }
+  if (
+    !(submittedCodeToolchainCatalog.node as readonly string[]).includes(
+      plan.node.version,
+    )
+  ) {
+    throw new Error(`Unsupported catalog Node version: ${plan.node.version}`);
+  }
+  const cwd = resolveSubmittedProjectCwd(plan.projectRoot);
+  const manager = plan.packageManager;
+  if (manager.name === "pnpm") {
+    assertCatalogManagerVersion(manager.version);
+  } else {
+    throw new Error(
+      `Unsupported catalog package manager: ${manager.name}@${manager.version}`,
+    );
+  }
+  const install = resolveCommand(manager.name, "frozen", []);
+  if (
+    install === null ||
+    request.executable !== install.command ||
+    plan.install.executable !== install.command ||
+    !sameArgv(request.argv, install.args) ||
+    !sameArgv(plan.install.argv, install.args)
+  ) {
+    throw new Error("Submitted project execution is not the catalog install.");
+  }
+  const corepackDescriptor = createCorepackDescriptor(manager);
+  return {
+    command: [
+      "mise",
+      "--no-config",
+      "exec",
+      `node@${plan.node.version}`,
+      "--",
+      "corepack",
+      corepackDescriptor,
+      ...request.argv,
+    ]
+      .map(shellQuote)
+      .join(" "),
+    cwd,
+    env: {
+      COREPACK_DEFAULT_TO_LATEST: "0",
+      COREPACK_ENABLE_AUTO_PIN: "0",
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
+      COREPACK_ENABLE_NETWORK: "0",
+      COREPACK_ENABLE_PROJECT_SPEC: "1",
+      COREPACK_ENABLE_STRICT: "1",
+      COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: "0",
+      COREPACK_ENV_FILE: "0",
+      MISE_LOCKED: "1",
+      MISE_NO_CONFIG: "1",
+      MISE_NO_ENV: "1",
+      MISE_NO_HOOKS: "1",
+      MISE_NOT_FOUND_AUTO_INSTALL: "0",
+      MISE_OFFLINE: "1",
+      MISE_PARANOID: "1",
+    },
+  };
+}
+
+function createCorepackDescriptor(input: {
+  corepackHash?: string;
+  name: string;
+  version: string;
+}): string {
+  if (
+    input.corepackHash !== undefined &&
+    !/^sha(?:224|256|384|512)\.[A-Fa-f0-9]+$/.test(input.corepackHash)
+  ) {
+    throw new Error("Invalid Corepack package-manager integrity suffix.");
+  }
+  return `${input.name}@${input.version}${input.corepackHash === undefined ? "" : `+${input.corepackHash}`}`;
+}
+
+function sameArgv(left: readonly string[], right: readonly string[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
+}
+
+function assertCatalogManagerVersion(version: string): void {
+  if (
+    !(submittedCodeToolchainCatalog.pnpm as readonly string[]).includes(version)
+  ) {
+    throw new Error(`Unsupported catalog package manager: pnpm@${version}`);
+  }
+}
+
 class ManagedPty {
   private disconnected = false;
   private terminationPromise: Promise<void> | undefined;
@@ -963,7 +1120,10 @@ class ManagedPty {
   private markerBuffer = "";
   private cancelled = false;
 
-  constructor(private readonly pty: DaytonaSdkPty) {}
+  constructor(
+    private readonly pty: DaytonaSdkPty,
+    private readonly exitMarker: string,
+  ) {}
 
   async disconnect(): Promise<void> {
     if (this.disconnected) {
@@ -995,7 +1155,9 @@ class ManagedPty {
   notifyData(chunk: string): void {
     if (this.cancelled) return;
     this.markerBuffer = (this.markerBuffer + chunk).slice(-256);
-    const match = this.markerBuffer.match(/__MAKEADEMO_EXIT__:(\d+)/);
+    const match = this.markerBuffer.match(
+      new RegExp(`${escapeRegExp(this.exitMarker)}(\\d+)`),
+    );
     if (match?.[1] !== undefined) {
       this.completionResolve({ exitCode: Number(match[1]) });
     }
@@ -1076,8 +1238,12 @@ function isDaytonaAuthenticationError(error: unknown): boolean {
   );
 }
 
-function readExitCode(output: string): number | undefined {
-  const match = output.match(/__MAKEADEMO_EXIT__:(\d+)/);
+function createExitMarker(): string {
+  return `__MAKEADEMO_EXIT__:${randomUUID()}:`;
+}
+
+function readExitCode(output: string, exitMarker: string): number | undefined {
+  const match = output.match(new RegExp(`${escapeRegExp(exitMarker)}(\\d+)`));
   if (match?.[1] === undefined) {
     return undefined;
   }
@@ -1085,8 +1251,15 @@ function readExitCode(output: string): number | undefined {
   return Number(match[1]);
 }
 
-function removeExitMarker(output: string): string {
-  return output.replace(/\n?__MAKEADEMO_EXIT__:\d+\n?/g, "");
+function removeExitMarker(output: string, exitMarker: string): string {
+  return output.replace(
+    new RegExp(`\\n?${escapeRegExp(exitMarker)}\\d+\\n?`, "g"),
+    "",
+  );
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function readSandboxLogLevel(
@@ -1220,10 +1393,15 @@ function formatCommandFailure(
 }
 
 function isRestrictedNetworkPolicyError(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    error.message.includes(
-      "Network access is restricted and cannot be overridden at the sandbox level",
-    )
-  );
+  if (!(error instanceof Error)) return false;
+  const message = error.message.trim();
+  const restriction =
+    "Network access is restricted and cannot be overridden at the sandbox level";
+  const documentedRestriction = `${restriction}. See https://www.daytona.io/docs/en/network-limits/#tier-based-network-restrictions`;
+  return [
+    restriction,
+    `${restriction}.`,
+    documentedRestriction,
+    `${documentedRestriction}.`,
+  ].includes(message);
 }

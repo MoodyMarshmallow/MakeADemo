@@ -2,6 +2,7 @@ import type {
   PreparationWorkspace,
   PreparationWorkspaceCommandResult,
   PreparationWorkspaceExecuteOptions,
+  SubmittedProjectExecutionRequest,
 } from "./preparation-workspace.interface";
 
 /**
@@ -38,6 +39,19 @@ export async function executeSubmittedCode(
   }
 
   return await workspace.executeSubmittedCode(command, options);
+}
+
+/** Runs a project-owned command with the already resolved catalog plan. */
+export async function executeSubmittedProject(
+  workspace: PreparationWorkspace,
+  request: SubmittedProjectExecutionRequest,
+  options: PreparationWorkspaceExecuteOptions = {},
+): Promise<PreparationWorkspaceCommandResult> {
+  if (workspace.executeSubmittedProject === undefined) {
+    throw new Error("Preparation workspace cannot execute submitted projects.");
+  }
+
+  return await workspace.executeSubmittedProject(request, options);
 }
 
 export async function setSubmittedCodeNetworkAccess(

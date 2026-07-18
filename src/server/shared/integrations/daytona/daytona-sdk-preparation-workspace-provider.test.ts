@@ -14,6 +14,7 @@ import { promisify } from "node:util";
 
 import { describe, expect, it } from "vitest";
 
+import { resolveSubmittedCodeToolchain } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
 import {
   DaytonaSdkPreparationWorkspaceProvider,
   createDaytonaSdkPreparationWorkspaceHandle,
@@ -326,6 +327,130 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
   });
 
+  it("maps submitted-project plans to catalog PATH and cwd without changing control execution", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "package.json": JSON.stringify({
+              engines: { node: "22" },
+              packageManager: "pnpm@11.13.0+sha512.0123456789abcdef",
+            }),
+            "pnpm-lock.yaml": "",
+          },
+          projectRoot: "webapp",
+        },
+      ],
+    });
+
+    await handle.workspace.executeSubmittedProject?.(
+      {
+        argv: ["i", "--frozen-lockfile"],
+        executable: "pnpm",
+        plan,
+      },
+      { env: { CI: "true" } },
+    );
+    await handle.workspace.executeSubmittedCode?.(
+      "node playwright-control.mjs",
+    );
+
+    expect(calls).toContainEqual({
+      executeCommand: {
+        command:
+          "'mise' '--no-config' 'exec' 'node@22.23.1' '--' 'corepack' 'pnpm@11.13.0+sha512.0123456789abcdef' 'i' '--frozen-lockfile'",
+        cwd: "/workspace/webapp",
+        env: {
+          CI: "true",
+          COREPACK_DEFAULT_TO_LATEST: "0",
+          COREPACK_ENABLE_AUTO_PIN: "0",
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
+          COREPACK_ENABLE_NETWORK: "0",
+          COREPACK_ENABLE_PROJECT_SPEC: "1",
+          COREPACK_ENABLE_STRICT: "1",
+          COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: "0",
+          COREPACK_ENV_FILE: "0",
+          MISE_LOCKED: "1",
+          MISE_NO_CONFIG: "1",
+          MISE_NO_ENV: "1",
+          MISE_NO_HOOKS: "1",
+          MISE_NOT_FOUND_AUTO_INSTALL: "0",
+          MISE_OFFLINE: "1",
+          MISE_PARANOID: "1",
+        },
+        sandbox: "submitted_sandbox",
+        timeout: 600,
+      },
+    });
+    expect(calls).toContainEqual({
+      executeCommand: {
+        command: "node playwright-control.mjs",
+        cwd: undefined,
+        env: undefined,
+        sandbox: "submitted_sandbox",
+        timeout: 600,
+      },
+    });
+  });
+
+  it("rejects a direct plan whose Corepack integrity suffix is malformed", async () => {
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient([]),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = {
+      catalogRevision: "submitted-js-2026-07-17.1" as const,
+      evidence: [],
+      install: { argv: ["i", "--frozen-lockfile"], executable: "pnpm" },
+      node: { version: "22.23.1" as const },
+      packageManager: {
+        corepackHash: "sha512.not-hex",
+        name: "pnpm" as const,
+        version: "11.13.0" as const,
+      },
+      projectRoot: ".",
+    };
+
+    await expect(
+      handle.workspace.executeSubmittedProject?.({
+        argv: plan.install.argv,
+        executable: plan.install.executable,
+        plan,
+      }),
+    ).rejects.toThrow("Invalid Corepack package-manager integrity suffix");
+  });
+
+  it("rejects a direct plan whose project root traverses outside workspace", async () => {
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient([]),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = {
+      catalogRevision: "submitted-js-2026-07-17.1" as const,
+      evidence: [],
+      install: { argv: ["i", "--frozen-lockfile"], executable: "pnpm" },
+      node: { version: "22.23.1" as const },
+      packageManager: { name: "pnpm" as const, version: "11.13.0" as const },
+      projectRoot: "apps/../private",
+    };
+
+    await expect(
+      handle.workspace.executeSubmittedProject?.({
+        argv: plan.install.argv,
+        executable: plan.install.executable,
+        plan,
+      }),
+    ).rejects.toThrow("Unsafe submitted project root: apps/../private");
+  });
+
   it("uses a per-call timeout override for parent Daytona commands", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
@@ -427,12 +552,27 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       },
       { waitForConnection: true },
       {
-        sendInput:
-          "stty -echo\nopencode run hello\nprintf '\\n__MAKEADEMO_EXIT__:%s\\n' $?\nexit\n",
+        sendInput: expect.stringMatching(
+          /^stty -echo\nopencode run hello\nprintf '\\n__MAKEADEMO_EXIT__:[0-9a-f-]+:%s\\n' \$\?\nexit\n$/,
+        ),
       },
       { disconnect: true },
     ]);
     expect(calls.filter((call) => "wait" in Object(call))).toHaveLength(0);
+  });
+
+  it("does not treat a forged application exit marker as wrapper completion", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeClient(calls, { ptyEmitsForgedExitMarker: true }),
+    });
+    const handle = await provider.create();
+
+    const result = await handle.workspace.execute("printf forged", {
+      onStdout: () => {},
+    });
+
+    expect(result.exitCode).toBe(7);
   });
 
   it("uses a per-call timeout override for streaming Daytona commands", async () => {
@@ -896,7 +1036,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
   });
 
-  it("continues when Daytona org policy rejects sandbox-level network overrides", async () => {
+  it("accepts the exact restricted-policy response as proof network stays blocked", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeClient(calls, {
@@ -918,6 +1058,49 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       { updateNetworkSettings: { networkBlockAll: false } },
       { updateNetworkSettings: { networkBlockAll: true } },
     ]);
+  });
+
+  it("accepts the live restricted-policy response with its known docs suffix", async () => {
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeClient([], {
+        networkError: new Error(
+          "Network access is restricted and cannot be overridden at the sandbox level. See https://www.daytona.io/docs/en/network-limits/#tier-based-network-restrictions",
+        ),
+      }),
+    });
+    const handle = await provider.create();
+
+    await expect(
+      handle.workspace.setOutboundNetworkAccess(false),
+    ).resolves.toBeUndefined();
+  });
+
+  it("does not suppress arbitrary suffixes on a restricted-policy-looking error", async () => {
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeClient([], {
+        networkError: new Error(
+          "Network access is restricted and cannot be overridden at the sandbox level. unexpected provider state",
+        ),
+      }),
+    });
+    const handle = await provider.create();
+
+    await expect(
+      handle.workspace.setOutboundNetworkAccess(false),
+    ).rejects.toThrow("unexpected provider state");
+  });
+
+  it("propagates every non-policy network disable error", async () => {
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeClient([], {
+        networkError: new Error("network update failed"),
+      }),
+    });
+    const handle = await provider.create();
+
+    await expect(
+      handle.workspace.setOutboundNetworkAccess(false),
+    ).rejects.toThrow("network update failed");
   });
 
   it("retries transient socket closures when updating sandbox network access", async () => {
@@ -1076,6 +1259,39 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         },
       ]),
     );
+  });
+
+  it("completes submitted-code streaming from its trusted marker when Daytona PTY wait never completes", async () => {
+    const calls: unknown[] = [];
+    const streamed: string[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeClient(calls, { ptyWaitsForDisconnect: true }),
+      submittedCodeSnapshot: "makeademo-submitted-code-browser",
+    });
+    const handle = await provider.create();
+
+    const result = await handle.workspace.executeSubmittedCode?.(
+      "node --version",
+      {
+        onStderr: (chunk) => streamed.push(`stderr:${chunk}`),
+        onStdout: (chunk) => streamed.push(`stdout:${chunk}`),
+        timeoutMs: 10,
+      },
+    );
+
+    expect(result).toEqual({ exitCode: 7, stderr: "", stdout: "hello\n" });
+    expect(streamed).toEqual(["stdout:hello\n"]);
+    expect(calls.filter((call) => "wait" in Object(call))).toHaveLength(0);
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        {
+          sendInput: expect.stringMatching(
+            /^stty -echo\nnode --version\nprintf '\\n__MAKEADEMO_EXIT__:[0-9a-f-]+:%s\\n' \$\?\nexit\n$/,
+          ),
+        },
+      ]),
+    );
+    expect(calls).toEqual(expect.arrayContaining([{ disconnect: true }]));
   });
 
   it("materializes uploaded files in the linked child without its bulk upload API", async () => {
@@ -1995,6 +2211,7 @@ function fakeClient(
     onWorkspaceLogWriteStarted?: () => void;
     previewNeverResolves?: boolean;
     ptyConnectionFailuresBeforeSuccess?: number;
+    ptyEmitsForgedExitMarker?: boolean;
     ptyNeverConnects?: boolean;
     ptyStaleDuplicateIdOnFirstCreate?: boolean;
     ptyWaitFails?: boolean;
@@ -2108,11 +2325,20 @@ function fakeClient(
           },
           async sendInput(data: string | Uint8Array) {
             calls.push({ sendInput: data });
+            const exitMarker = String(data).match(
+              /__MAKEADEMO_EXIT__:[0-9a-f-]+:/,
+            )?.[0];
+            if (exitMarker === undefined) {
+              throw new Error("trusted PTY exit marker was missing");
+            }
             ptyOptions.onData(new TextEncoder().encode("hello\n"));
-            if (options.ptySuppressExitMarker !== true) {
+            if (options.ptyEmitsForgedExitMarker === true) {
               ptyOptions.onData(
-                new TextEncoder().encode("\n__MAKEADEMO_EXIT__:7\n"),
+                new TextEncoder().encode("\n__MAKEADEMO_EXIT__:99\n"),
               );
+            }
+            if (options.ptySuppressExitMarker !== true) {
+              ptyOptions.onData(new TextEncoder().encode(`\n${exitMarker}7\n`));
             }
           },
           async wait() {

@@ -4,11 +4,43 @@ import type { PreparationWorkspace } from "./preparation-workspace.interface";
 import {
   SubmittedCodeWorkspaceSyncError,
   executeSubmittedCode,
+  executeSubmittedProject,
   setSubmittedCodeNetworkAccess,
   syncSubmittedCodeWorkspace,
 } from "./submitted-code-execution";
 
 describe("submitted-code execution helpers", () => {
+  it("passes a resolved plan only to submitted-project execution", async () => {
+    const calls: unknown[] = [];
+    const workspace = {
+      ...fakeWorkspace(),
+      async executeSubmittedProject(request: unknown) {
+        calls.push(request);
+        return { exitCode: 0, stderr: "", stdout: "ok" };
+      },
+    };
+    const plan = {
+      catalogRevision: "submitted-js-2026-07-17.1" as const,
+      evidence: [],
+      install: { argv: ["i", "--frozen-lockfile"], executable: "pnpm" },
+      node: { version: "22.23.1" as const },
+      packageManager: {
+        name: "pnpm" as const,
+        version: "11.13.0" as const,
+      },
+      projectRoot: "webapp",
+    };
+    const request = {
+      argv: ["i", "--frozen-lockfile"],
+      executable: "pnpm",
+      plan,
+    };
+
+    await executeSubmittedProject(workspace, request);
+
+    expect(calls).toEqual([request]);
+  });
+
   it("fails instead of falling back to outer workspace execution", async () => {
     await expect(
       executeSubmittedCode(fakeWorkspace(), "npm run build"),
