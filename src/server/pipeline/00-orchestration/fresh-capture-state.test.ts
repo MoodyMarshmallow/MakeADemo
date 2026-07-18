@@ -88,7 +88,7 @@ function succeededPreparedDemo(
 
 function fakePreparationWorkspaceHandle(): PreparationWorkspaceHandle {
   return {
-    async destroy() {},
+    async release() {},
     id: "daytona_workspace",
     workspace: {
       async execute() {

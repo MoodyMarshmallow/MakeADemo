@@ -15,8 +15,8 @@ describe("runFullPipelineJob", () => {
     const calls: string[] = [];
     const cleanupEvents: string[] = [];
     const preparationWorkspace = fakePreparationWorkspaceHandle();
-    preparationWorkspace.destroy = async () => {
-      cleanupEvents.push("destroy");
+    preparationWorkspace.release = async () => {
+      cleanupEvents.push("release");
     };
 
     try {
@@ -95,7 +95,7 @@ describe("runFullPipelineJob", () => {
         `composite:${join(outputRoot, "capture-manifest.json")}`,
         "review:1:session_prepare_123",
       ]);
-      expect(cleanupEvents.indexOf("destroy")).toBeGreaterThan(
+      expect(cleanupEvents.indexOf("release")).toBeGreaterThan(
         cleanupEvents.indexOf("log:result-written"),
       );
       expect(cleanupEvents).toEqual(
@@ -145,7 +145,7 @@ describe("runFullPipelineJob", () => {
     const sandboxLogPath = join(outputRoot, "full-run", "sandbox-log.jsonl");
     const cleanupEvents: string[] = [];
     const preparationWorkspace = fakePreparationWorkspaceHandle();
-    preparationWorkspace.destroy = async () => {
+    preparationWorkspace.release = async () => {
       throw new Error("provider cleanup unavailable");
     };
 
@@ -273,7 +273,7 @@ describe("runFullPipelineJob", () => {
   it("fails before capture when Capture Path Validation did not produce a browser URL", async () => {
     const preparationWorkspace = fakePreparationWorkspaceHandle();
     let destroyCount = 0;
-    preparationWorkspace.destroy = async () => {
+    preparationWorkspace.release = async () => {
       destroyCount += 1;
     };
     await expect(
@@ -301,7 +301,7 @@ describe("runFullPipelineJob", () => {
 
   it("preserves the downstream failure when preparation cleanup also fails", async () => {
     const preparationWorkspace = fakePreparationWorkspaceHandle();
-    preparationWorkspace.destroy = async () => {
+    preparationWorkspace.release = async () => {
       throw new Error("cleanup failed");
     };
 
@@ -823,7 +823,7 @@ function orchestratorDependencies(
 
 function fakePreparationWorkspaceHandle() {
   return {
-    async destroy() {},
+    async release() {},
     id: "daytona_workspace",
     workspace: {
       async execute() {

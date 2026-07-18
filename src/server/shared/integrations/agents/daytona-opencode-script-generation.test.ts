@@ -1763,7 +1763,7 @@ function workspaceHandle(
   };
 
   return {
-    async destroy() {},
+    async release() {},
     id: "daytona_workspace",
     workspace,
   };

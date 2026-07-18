@@ -498,10 +498,10 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
           event.execute.includes("opencode run"),
       ),
     ).toHaveLength(2);
-    expect(events.filter(isDestroyEvent)).toHaveLength(1);
+    expect(events.filter(isReleaseEvent)).toHaveLength(1);
     expect(events.filter(isCancelActiveCommandsEvent)).toHaveLength(1);
     const firstCancelIndex = events.findIndex(isCancelActiveCommandsEvent);
-    const firstDestroyIndex = events.findIndex(isDestroyEvent);
+    const firstReleaseIndex = events.findIndex(isReleaseEvent);
     const retryCreateIndex = events.findIndex(
       (event) =>
         typeof event === "object" &&
@@ -509,8 +509,8 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
         "create" in event &&
         event.create === 2,
     );
-    expect(firstCancelIndex).toBeLessThan(firstDestroyIndex);
-    expect(firstDestroyIndex).toBeLessThan(retryCreateIndex);
+    expect(firstCancelIndex).toBeLessThan(firstReleaseIndex);
+    expect(firstReleaseIndex).toBeLessThan(retryCreateIndex);
   });
 
   it("returns the provider-auth blocker when the fresh-workspace retry also fails", async () => {
@@ -544,7 +544,7 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
     });
     expect(JSON.stringify(result)).not.toContain("dtn_secr");
     expect(JSON.stringify(result)).not.toContain("invalid JSON");
-    expect(events.filter(isDestroyEvent)).toHaveLength(2);
+    expect(events.filter(isReleaseEvent)).toHaveLength(2);
     expect(events.filter(isCancelActiveCommandsEvent)).toHaveLength(2);
   });
 
@@ -574,7 +574,7 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
       blockers: ["OpenCode did not return valid preparation JSON."],
       status: "failed",
     });
-    expect(events.filter(isDestroyEvent)).toHaveLength(1);
+    expect(events.filter(isReleaseEvent)).toHaveLength(1);
   });
 
   it("does not retry an invalid provider key that is not a Daytona secret reference", async () => {
@@ -606,7 +606,7 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
       status: "failed",
     });
     expect(JSON.stringify(result)).not.toContain("sk-proj");
-    expect(events.filter(isDestroyEvent)).toHaveLength(1);
+    expect(events.filter(isReleaseEvent)).toHaveLength(1);
   });
 
   it("reports pre-OpenCode git clone failures as Repo Preparation clone blockers", async () => {
@@ -649,7 +649,7 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
       expect.arrayContaining([
         { network: true },
         { network: false },
-        { destroy: "daytona_workspace" },
+        { release: "daytona_workspace" },
       ]),
     );
     expect(events).not.toEqual(
@@ -782,7 +782,7 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
         { network: false },
         { submittedCodeNetwork: true },
         { submittedCodeNetwork: false },
-        { destroy: "daytona_workspace" },
+        { release: "daytona_workspace" },
       ]),
     );
     expect(events).not.toEqual(
@@ -868,7 +868,7 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
     );
   });
 
-  it("waits for clone-failure diagnostics to reach sandbox log sinks before destroying the workspace", async () => {
+  it("waits for clone-failure diagnostics to reach sandbox log sinks before releasing the workspace", async () => {
     const events: unknown[] = [];
     const agent = new DaytonaOpenCodeRepoPreparation({
       modelID: "gpt-5.5",
@@ -896,13 +896,13 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
         (event as { sandboxLog?: { event?: unknown } }).sandboxLog?.event ===
           "clone-failure-diagnostics",
     );
-    const destroyIndex = events.findIndex(
+    const releaseIndex = events.findIndex(
       (event) =>
-        typeof event === "object" && event !== null && "destroy" in event,
+        typeof event === "object" && event !== null && "release" in event,
     );
 
     expect(diagnosticLogIndex).toBeGreaterThanOrEqual(0);
-    expect(destroyIndex).toBeGreaterThan(diagnosticLogIndex);
+    expect(releaseIndex).toBeGreaterThan(diagnosticLogIndex);
   });
 
   it("redacts credentials and bounds clone failure output in blockers", async () => {
@@ -1528,7 +1528,7 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
       ]),
     );
     expect(events).toEqual(
-      expect.arrayContaining([{ destroy: "daytona_workspace" }]),
+      expect.arrayContaining([{ release: "daytona_workspace" }]),
     );
   });
 
@@ -1575,7 +1575,7 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
             stage: "repo-preparation",
           }),
         },
-        { destroy: "daytona_workspace" },
+        { release: "daytona_workspace" },
       ]),
     );
     expect(events).not.toEqual(
@@ -1814,7 +1814,7 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
             stage: "repo-preparation",
           }),
         },
-        { destroy: "daytona_workspace" },
+        { release: "daytona_workspace" },
       ]),
     );
   });
@@ -2495,8 +2495,8 @@ function fakeProvider(
   return {
     async create() {
       return {
-        async destroy() {
-          events.push({ destroy: "daytona_workspace" });
+        async release() {
+          events.push({ release: "daytona_workspace" });
         },
         id: "daytona_workspace",
         workspace: fakeWorkspace(events, workspaceInput),
@@ -2906,8 +2906,8 @@ function providerInvalidApiKeyFailure(
   };
 }
 
-function isDestroyEvent(event: unknown): boolean {
-  return typeof event === "object" && event !== null && "destroy" in event;
+function isReleaseEvent(event: unknown): boolean {
+  return typeof event === "object" && event !== null && "release" in event;
 }
 
 function isCancelActiveCommandsEvent(event: unknown): boolean {

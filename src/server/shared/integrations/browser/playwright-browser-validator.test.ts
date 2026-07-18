@@ -215,7 +215,7 @@ describe("PlaywrightBrowserValidator", () => {
 
     const result = await validator.validate({
       preparationWorkspace: {
-        async destroy() {},
+        async release() {},
         id: "workspace_123",
         workspace: {
           async execute() {
@@ -273,7 +273,7 @@ describe("PlaywrightBrowserValidator", () => {
       await expect(
         validator.validate({
           preparationWorkspace: {
-            async destroy() {},
+            async release() {},
             id: "workspace_123",
             workspace: {
               async execute() {
@@ -341,7 +341,7 @@ describe("PlaywrightBrowserValidator", () => {
       await expect(
         validator.validate({
           preparationWorkspace: {
-            async destroy() {},
+            async release() {},
             id: "workspace_123",
             workspace: {
               async execute() {
@@ -409,7 +409,7 @@ describe("PlaywrightBrowserValidator", () => {
 
     const result = await validator.validate({
       preparationWorkspace: {
-        async destroy() {},
+        async release() {},
         id: "workspace_123",
         workspace: {
           async execute() {
@@ -460,7 +460,7 @@ describe("PlaywrightBrowserValidator", () => {
 
     const result = await validator.validate({
       preparationWorkspace: {
-        async destroy() {},
+        async release() {},
         id: "workspace_123",
         workspace: {
           async execute() {
@@ -502,7 +502,7 @@ describe("PlaywrightBrowserValidator", () => {
     await expect(
       validator.validate({
         preparationWorkspace: {
-          async destroy() {},
+          async release() {},
           id: "workspace_123",
           workspace: {
             async execute() {
@@ -560,7 +560,7 @@ describe("PlaywrightBrowserValidator", () => {
     await expect(
       validator.validate({
         preparationWorkspace: {
-          async destroy() {},
+          async release() {},
           id: "workspace_123",
           workspace: {
             async execute() {

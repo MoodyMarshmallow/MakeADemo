@@ -65,7 +65,7 @@ export class DaytonaOpenCodeAgent
           {
             browserValidator: new PlaywrightBrowserValidator(),
             sandboxRunner: new DaytonaSandboxRunner({
-              destroyWorkspaceOnCleanup: false,
+              releaseWorkspaceOnCleanup: false,
             }),
           },
         ),

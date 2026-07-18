@@ -1,7 +1,12 @@
 import type { PreparationWorkspace } from "./preparation-workspace.interface";
 
 export type PreparationWorkspaceHandle = {
-  destroy(): Promise<void>;
+  /**
+   * Releases a usable Repo Preparation workspace exactly once. Implementations
+   * must cancel active work, delete any linked submitted-code sandbox, then
+   * stop and archive (never delete) the primary workspace.
+   */
+  release(): Promise<void>;
   id: string;
   workspace: PreparationWorkspace;
 };
@@ -40,7 +45,7 @@ export async function runInPreparationWorkspace<T>(input: {
       status: "failed",
     };
   } finally {
-    await handle.destroy();
+    await handle.release();
   }
 }
 

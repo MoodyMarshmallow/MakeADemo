@@ -14,20 +14,20 @@ import type {
 import type { PipelineEventLogger } from "../../logging/pipeline-event-logger";
 
 export class DaytonaSandboxRunner implements SandboxRunner {
-  private readonly destroyWorkspaceOnCleanup: boolean;
+  private readonly releaseWorkspaceOnCleanup: boolean;
   private readonly logger: PipelineEventLogger | undefined;
   private readonly readinessPollIntervalMs: number;
   private readonly readinessTimeoutMs: number;
 
   constructor(
     options: {
-      destroyWorkspaceOnCleanup?: boolean;
+      releaseWorkspaceOnCleanup?: boolean;
       logger?: PipelineEventLogger;
       readinessPollIntervalMs?: number;
       readinessTimeoutMs?: number;
     } = {},
   ) {
-    this.destroyWorkspaceOnCleanup = options.destroyWorkspaceOnCleanup ?? false;
+    this.releaseWorkspaceOnCleanup = options.releaseWorkspaceOnCleanup ?? false;
     this.logger = options.logger;
     this.readinessPollIntervalMs = options.readinessPollIntervalMs ?? 1_000;
     this.readinessTimeoutMs = options.readinessTimeoutMs ?? 30_000;
@@ -226,8 +226,8 @@ export class DaytonaSandboxRunner implements SandboxRunner {
   }
 
   private async cleanup(handle: PreparationWorkspaceHandle): Promise<void> {
-    if (this.destroyWorkspaceOnCleanup) {
-      await handle.destroy();
+    if (this.releaseWorkspaceOnCleanup) {
+      await handle.release();
     }
   }
 

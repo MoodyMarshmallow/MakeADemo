@@ -619,7 +619,7 @@ function workspaceHandle(
   sandboxLogs: Array<Record<string, unknown>>,
 ): PreparationWorkspaceHandle {
   return {
-    async destroy() {},
+    async release() {},
     id: "workspace_123",
     workspace: {
       async execute() {
@@ -643,7 +643,7 @@ function workspaceHandle(
 
 function hangingLogWorkspaceHandle(): PreparationWorkspaceHandle {
   return {
-    async destroy() {},
+    async release() {},
     id: "workspace_123",
     workspace: {
       async execute() {

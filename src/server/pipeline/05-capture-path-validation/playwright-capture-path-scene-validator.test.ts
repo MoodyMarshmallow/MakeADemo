@@ -114,7 +114,7 @@ describe("DefaultCapturePathSceneValidator", () => {
     const executedCommands: string[] = [];
     const uploadedDestinations: string[] = [];
     const preparationWorkspace: PreparationWorkspaceHandle = {
-      async destroy() {},
+      async release() {},
       id: "workspace_123",
       workspace: {
         async execute() {
@@ -192,7 +192,7 @@ describe("DefaultCapturePathSceneValidator", () => {
   it("makes validator-owned Playwright available to prepared-workspace dry-run scripts", async () => {
     const validator = new DefaultCapturePathSceneValidator();
     const preparationWorkspace: PreparationWorkspaceHandle = {
-      async destroy() {},
+      async release() {},
       id: "workspace_123",
       workspace: {
         async execute() {
@@ -247,7 +247,7 @@ describe("DefaultCapturePathSceneValidator", () => {
   it("reports missing prepared-workspace Playwright as a MakeADemo validator dependency failure", async () => {
     const validator = new DefaultCapturePathSceneValidator();
     const preparationWorkspace: PreparationWorkspaceHandle = {
-      async destroy() {},
+      async release() {},
       id: "workspace_123",
       workspace: {
         async execute() {
@@ -299,7 +299,7 @@ describe("DefaultCapturePathSceneValidator", () => {
   it("reports the active SDK action and screenshot path when a prepared workspace dry-run scene fails", async () => {
     const validator = new DefaultCapturePathSceneValidator();
     const preparationWorkspace: PreparationWorkspaceHandle = {
-      async destroy() {},
+      async release() {},
       id: "workspace_123",
       workspace: {
         async execute() {
@@ -374,7 +374,7 @@ describe("DefaultCapturePathSceneValidator", () => {
   it("reports blocked runtime network from prepared-workspace dry-runs", async () => {
     const validator = new DefaultCapturePathSceneValidator();
     const preparationWorkspace: PreparationWorkspaceHandle = {
-      async destroy() {},
+      async release() {},
       id: "workspace_123",
       workspace: {
         async execute() {
@@ -433,7 +433,7 @@ describe("DefaultCapturePathSceneValidator", () => {
     const validator = new DefaultCapturePathSceneValidator();
     const executedCommands: string[] = [];
     const preparationWorkspace: PreparationWorkspaceHandle = {
-      async destroy() {},
+      async release() {},
       id: "workspace_123",
       workspace: {
         async execute() {

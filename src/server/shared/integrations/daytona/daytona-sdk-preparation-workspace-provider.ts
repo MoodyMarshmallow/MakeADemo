@@ -34,6 +34,7 @@ type DaytonaSdkClient = {
 };
 
 type DaytonaSdkSandbox = {
+  archive(): Promise<void>;
   fs: {
     downloadFiles(
       files: Array<{ destination: string; source: string }>,
@@ -54,6 +55,7 @@ type DaytonaSdkSandbox = {
   ): Promise<{ url?: string }>;
   id?: string;
   name?: string;
+  stop(): Promise<void>;
   process: {
     createPty(options: {
       id: string;
@@ -221,7 +223,7 @@ export class DaytonaSdkPreparationWorkspaceProvider
     const createOptions = { timeout: this.sandboxCreateTimeoutSeconds };
     const sandbox = await this.createSandboxWithConnectionRetry(
       {
-        autoDeleteInterval: 0,
+        autoDeleteInterval: -1,
         autoStopInterval: 15,
         disk: this.diskGB,
         ...(this.secrets === undefined ? {} : { secrets: this.secrets }),
@@ -231,6 +233,7 @@ export class DaytonaSdkPreparationWorkspaceProvider
     );
     const id = sandbox.id ?? sandbox.name;
     if (id === undefined || id.trim() === "") {
+      await this.client.delete(sandbox);
       throw new Error("Daytona did not return a sandbox id.");
     }
 
@@ -318,10 +321,10 @@ function createPreparationWorkspaceHandle(input: {
     input.sandboxLogSinks ?? [],
   );
 
-  let destroyPromise: Promise<void> | undefined;
+  let releasePromise: Promise<void> | undefined;
   return {
-    destroy() {
-      destroyPromise ??= (async () => {
+    release() {
+      releasePromise ??= (async () => {
         let firstError: unknown;
         try {
           await workspace.cancelActiveCommands();
@@ -335,16 +338,25 @@ function createPreparationWorkspaceHandle(input: {
             firstError ??= error;
           }
         }
+        let stopped = false;
         try {
-          await input.client.delete(input.sandbox);
+          await input.sandbox.stop();
+          stopped = true;
         } catch (error) {
           firstError ??= error;
+        }
+        if (stopped) {
+          try {
+            await input.sandbox.archive();
+          } catch (error) {
+            firstError ??= error;
+          }
         }
         if (firstError !== undefined) {
           throw firstError;
         }
       })();
-      return destroyPromise;
+      return releasePromise;
     },
     id: input.id,
     workspace,

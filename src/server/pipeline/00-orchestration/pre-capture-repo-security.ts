@@ -12,7 +12,7 @@ import type {
 } from "../03-repo-preparation/preparation-workspace-runner";
 import type { PreparationWorkspace } from "../03-repo-preparation/preparation-workspace.interface";
 
-const defaultWorkspaceDestroyTimeoutMs = 30_000;
+const defaultWorkspaceReleaseTimeoutMs = 30_000;
 const defaultCloneAttemptTimeoutMs = 120_000;
 const defaultCloneWorkspaceRetryDelaysMs = [250, 500];
 const maxCloneWorkspaceRetries = 2;
@@ -23,7 +23,7 @@ export async function readRepoSecurityInput(
   options: {
     cloneWorkspaceRetryDelaysMs?: number[];
     commitSha?: string;
-    destroyTimeoutMs?: number;
+    releaseTimeoutMs?: number;
     logger?: PipelineEventLogger;
   } = {},
 ): Promise<RepoSecurityInput> {
@@ -55,7 +55,7 @@ export async function readRepoSecurityInput(
         error,
       });
 
-      await destroyWorkspace(handle, options);
+      await releaseWorkspace(handle, options);
       if (
         attempt < maxCloneWorkspaceRetries &&
         isCloneWorkspaceRetryableError(error)
@@ -127,21 +127,21 @@ export async function readRepoSecurityInput(
         throw error;
       }
     } finally {
-      await destroyWorkspace(handle, options);
+      await releaseWorkspace(handle, options);
     }
   }
 }
 
-async function destroyWorkspace(
+async function releaseWorkspace(
   handle: PreparationWorkspaceHandle,
-  options: { destroyTimeoutMs?: number; logger?: PipelineEventLogger },
+  options: { releaseTimeoutMs?: number; logger?: PipelineEventLogger },
 ) {
   const timeoutMs =
-    options.destroyTimeoutMs ?? defaultWorkspaceDestroyTimeoutMs;
+    options.releaseTimeoutMs ?? defaultWorkspaceReleaseTimeoutMs;
   const startedAt = Date.now();
-  await logDestroyEvent(options.logger, "started", handle.id);
-  const result = await runDestroyWithTimeout(handle.destroy(), timeoutMs);
-  await logDestroyEvent(options.logger, result.status, handle.id, {
+  await logReleaseEvent(options.logger, "started", handle.id);
+  const result = await runReleaseWithTimeout(handle.release(), timeoutMs);
+  await logReleaseEvent(options.logger, result.status, handle.id, {
     durationMs: Date.now() - startedAt,
     ...(result.status === "failed" ? { error: result.error } : {}),
     ...(result.status === "timeout" ? { timeoutMs } : {}),
@@ -152,17 +152,17 @@ async function destroyWorkspace(
   }
 }
 
-async function runDestroyWithTimeout(
-  destroyPromise: Promise<void>,
+async function runReleaseWithTimeout(
+  releasePromise: Promise<void>,
   timeoutMs: number,
 ): Promise<
   { error: unknown; status: "failed" } | { status: "succeeded" | "timeout" }
 > {
-  destroyPromise.catch(() => undefined);
+  releasePromise.catch(() => undefined);
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      destroyPromise.then(
+      releasePromise.then(
         () => ({ status: "succeeded" }) as const,
         (error: unknown) => ({ error, status: "failed" }) as const,
       ),
@@ -247,7 +247,7 @@ async function logStatsEvent(
   }
 }
 
-async function logDestroyEvent(
+async function logReleaseEvent(
   logger: PipelineEventLogger | undefined,
   status: "failed" | "started" | "succeeded" | "timeout",
   workspaceId: string,
@@ -278,12 +278,12 @@ async function logDestroyEvent(
         ...(metadata.timeoutMs === undefined
           ? {}
           : { timeoutMs: metadata.timeoutMs }),
-        event: `repo-security-screen.workspace_destroy.${status}`,
-        externalCall: "daytona.workspace_destroy",
+        event: `repo-security-screen.workspace_release.${status}`,
+        externalCall: "daytona.workspace_release",
         stage: "repo-security-screen",
         workspaceId,
       },
-      `Daytona workspace destroy ${status}.`,
+      `Daytona workspace release ${status}.`,
     );
   } catch {
     // Logging must never interrupt Repo Security Screen execution.

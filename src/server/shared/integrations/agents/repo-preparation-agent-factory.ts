@@ -73,7 +73,7 @@ export function createRepoPreparationAgent(
         {
           browserValidator: new PlaywrightBrowserValidator(),
           sandboxRunner: new DaytonaSandboxRunner({
-            destroyWorkspaceOnCleanup: false,
+            releaseWorkspaceOnCleanup: false,
           }),
         },
       ),

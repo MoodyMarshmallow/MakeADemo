@@ -11,6 +11,7 @@
 - **Normalized Supporting Document**: A text artifact extracted from a Supporting Document before Repo Preparation begins, preserving source metadata while giving agent and non-agent stages a consistent document representation.
 - **Repo Security Screen**: The non-agent, deterministic pipeline stage that performs a fast, static-only rough safety pass on a cloned submitted repo before any agent or runtime preparation work begins.
 - **Repo Preparation**: The pipeline stage where MakeADemo works in a locked-down ephemeral cloud workspace to discover existing demo setup, prepare a deterministic demo runtime, and gather context for later script and capture stages without modifying the maker's source repo.
+- **Preparation Workspace Release**: The idempotent cleanup of a usable Daytona Repo Preparation workspace: active commands are cancelled, its linked submitted-code Sandbox is permanently deleted when present, and the primary Sandbox is stopped then archived rather than deleted.
 - **Preparation Fallback Prompt**: A targeted prompt generated when Repo Preparation fails, giving the maker and the maker's coding agent the blockers and context needed to prepare the demo manually.
 - **Demo Runtime Preflight**: The project-level checks inside Capture Path Validation that verify the prepared app can start, load in a browser, remain basically interactable, and satisfy Runtime Network Lockdown before generated Browser Actions or Capture Scripts run.
 - **Demo Run Contract**: The requirement that the prepared app can start a deterministic browser-accessible demo inside an isolated sandbox, with no inbound or outbound network communication across the sandbox boundary after dependency installation.
@@ -48,6 +49,7 @@
 - **Repo Security Screen** does not install dependencies or execute submitted repo code.
 - **Repo Security Screen** inventories committed dotenv paths without reading dotenv contents and does not reject a repo solely because `.env*` files are present.
 - **Repo Preparation** happens in an ephemeral cloud workspace and does not modify the maker's source repo.
+- **Preparation Workspace Release** preserves the usable primary workspace as an archived audit artifact after it stops; its linked submitted-code Sandbox remains ephemeral and is deleted on release.
 - During **Repo Preparation**, the preparation agent may edit and execute the ephemeral workspace, but the prepared output must still pass non-agent **Capture Path Validation** before Footage Capture trusts it.
 - During **Repo Preparation**, the preparation agent may use controlled network access for setup and research, but the prepared app runtime must pass **Runtime Network Lockdown** before Footage Capture trusts it.
 - The preparation agent can invoke **Runtime Network Lockdown** as an iterative tool/check; app runtime network attempts return structured tool-call failures so the agent can mock or remove dependencies before retrying.

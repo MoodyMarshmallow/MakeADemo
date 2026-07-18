@@ -162,7 +162,7 @@ describe("captureScenesFromScript", () => {
     const downloadedSources: string[] = [];
     const trimEvents: string[] = [];
     const preparationWorkspace: PreparationWorkspaceHandle = {
-      async destroy() {},
+      async release() {},
       id: "daytona_workspace",
       workspace: {
         async downloadFiles() {
@@ -309,7 +309,7 @@ describe("captureScenesFromScript", () => {
     const submittedCommands: string[] = [];
     const downloadedSources: string[] = [];
     const preparationWorkspace: PreparationWorkspaceHandle = {
-      async destroy() {},
+      async release() {},
       id: "daytona_workspace",
       workspace: {
         async downloadFiles(files) {
@@ -386,7 +386,7 @@ describe("captureScenesFromScript", () => {
     const submittedCommands: string[] = [];
     const downloadedSources: string[] = [];
     const preparationWorkspace: PreparationWorkspaceHandle = {
-      async destroy() {},
+      async release() {},
       id: "daytona_workspace",
       workspace: {
         async downloadFiles() {},
@@ -434,7 +434,7 @@ describe("captureScenesFromScript", () => {
     const tempRoot = join(workspace, "runs");
     const submittedCommands: string[] = [];
     const preparationWorkspace: PreparationWorkspaceHandle = {
-      async destroy() {},
+      async release() {},
       id: "daytona_workspace",
       workspace: {
         async downloadFiles() {},

@@ -370,7 +370,7 @@ async function cleanupPreparationWorkspaces(input: {
 
     const startedAt = Date.now();
     try {
-      await handle.destroy();
+      await handle.release();
       await logCleanupEvent(input.log, {
         durationMs: Date.now() - startedAt,
         event: "preparation-workspace-cleanup.succeeded",

@@ -680,7 +680,7 @@ function scriptPackage(input: {
 
 function fakeWorkspaceHandle() {
   return {
-    async destroy() {},
+    async release() {},
     id: "daytona_workspace",
     workspace: {
       async execute() {

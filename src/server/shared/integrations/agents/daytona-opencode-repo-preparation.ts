@@ -166,7 +166,7 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
         event: "preparation-error",
       });
       await cancelActiveCommandsQuietly(handle);
-      await destroyQuietly(handle);
+      await releaseQuietly(handle);
       return {
         assumptions: [],
         blockers: [readErrorMessage(error)],
@@ -185,7 +185,7 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
         reason: result.reason,
       });
       await cancelActiveCommandsQuietly(handle);
-      await destroyQuietly(handle);
+      await releaseQuietly(handle);
       return {
         assumptions: [],
         blockers: [result.reason],
@@ -210,7 +210,7 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
           event: "preparation-error",
         });
         await cancelActiveCommandsQuietly(handle);
-        await destroyQuietly(handle);
+        await releaseQuietly(handle);
         return {
           assumptions: [],
           blockers: [readErrorMessage(error)],
@@ -222,12 +222,12 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
       }
       if (isProviderSecretReferenceAuthFailure(loopResult)) {
         await cancelActiveCommandsQuietly(handle);
-        await destroyQuietly(handle);
+        await releaseQuietly(handle);
         return loopResult;
       }
       const parsedResult = parseCommandResult(loopResult, handle);
       if (parsedResult.status === "failed") {
-        await destroyQuietly(handle);
+        await releaseQuietly(handle);
       }
 
       return parsedResult;
@@ -235,7 +235,7 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
 
     const parsedResult = parseCommandResult(result.value.result, handle);
     if (parsedResult.status === "failed") {
-      await destroyQuietly(handle);
+      await releaseQuietly(handle);
     }
 
     return parsedResult;
@@ -1082,11 +1082,11 @@ function raceWithTimeout<T>(
   });
 }
 
-async function destroyQuietly(
+async function releaseQuietly(
   handle: PreparationWorkspaceHandle,
 ): Promise<void> {
   try {
-    await handle.destroy();
+    await handle.release();
   } catch {
     // Preserve the original Repo Preparation failure.
   }

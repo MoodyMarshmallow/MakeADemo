@@ -135,9 +135,9 @@ try {
       );
     } finally {
       console.log(
-        `Deleting secret-mounted Daytona workspace ${secretMountedHandle.id}...`,
+        `Releasing and archiving secret-mounted Daytona workspace ${secretMountedHandle.id}...`,
       );
-      await secretMountedHandle.destroy();
+      await secretMountedHandle.release();
     }
   }
 
@@ -151,8 +151,8 @@ try {
       await handle.workspace.setSubmittedCodeNetworkAccess(false);
     }
   } finally {
-    console.log(`Deleting Daytona workspace ${handle.id}...`);
-    await handle.destroy();
+    console.log(`Releasing and archiving Daytona workspace ${handle.id}...`);
+    await handle.release();
   }
 }
 

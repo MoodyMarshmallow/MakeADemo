@@ -131,7 +131,7 @@ describe("readRepoSecurityInput", () => {
     expect(result.repoStats).toEqual({ fileCount: 1, sizeBytes: 17 });
     expect(firstWorkspace.networkAccessChanges).toEqual([true, false]);
     expect(secondWorkspace.networkAccessChanges).toEqual([true, false]);
-    expect(provider.destroyedWorkspaceIds).toEqual([
+    expect(provider.releasedWorkspaceIds).toEqual([
       "workspace-1",
       "workspace-2",
     ]);
@@ -171,7 +171,7 @@ describe("readRepoSecurityInput", () => {
     expect(result.repoStats).toEqual({ fileCount: 1, sizeBytes: 17 });
     expect(firstWorkspace.networkAccessChanges).toEqual([true, false]);
     expect(secondWorkspace.networkAccessChanges).toEqual([true, false]);
-    expect(provider.destroyedWorkspaceIds).toEqual([
+    expect(provider.releasedWorkspaceIds).toEqual([
       "workspace-1",
       "workspace-2",
     ]);
@@ -202,7 +202,7 @@ describe("readRepoSecurityInput", () => {
     );
 
     expect(result.repoStats).toEqual({ fileCount: 1, sizeBytes: 17 });
-    expect(provider.destroyedWorkspaceIds).toEqual([
+    expect(provider.releasedWorkspaceIds).toEqual([
       "workspace-1",
       "workspace-2",
     ]);
@@ -307,7 +307,7 @@ describe("readRepoSecurityInput", () => {
     );
   });
 
-  it("logs and bounds workspace destroy timeouts after repo stats succeed", async () => {
+  it("logs and bounds workspace release timeouts after repo stats succeed", async () => {
     const lines: string[] = [];
     const logger = createPipelineEventLogger({
       base: { component: "repo-security-screen" },
@@ -317,29 +317,29 @@ describe("readRepoSecurityInput", () => {
 
     const result = await readRepoSecurityInput(
       new FakePreparationWorkspaceProvider(new FakePreparationWorkspace(), {
-        destroy: () => new Promise(() => undefined),
+        release: () => new Promise(() => undefined),
       }),
       "https://github.com/example/app",
-      { destroyTimeoutMs: 1, logger },
+      { releaseTimeoutMs: 1, logger },
     );
 
     expect(result.repoStats).toEqual({ fileCount: 1, sizeBytes: 17 });
     expect(lines.map((line) => JSON.parse(line))).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          event: "repo-security-screen.workspace_destroy.started",
-          externalCall: "daytona.workspace_destroy",
+          event: "repo-security-screen.workspace_release.started",
+          externalCall: "daytona.workspace_release",
           level: "info",
-          message: "Daytona workspace destroy started.",
+          message: "Daytona workspace release started.",
           stage: "repo-security-screen",
           workspaceId: "workspace-1",
         }),
         expect.objectContaining({
           durationMs: expect.any(Number),
-          event: "repo-security-screen.workspace_destroy.timeout",
-          externalCall: "daytona.workspace_destroy",
+          event: "repo-security-screen.workspace_release.timeout",
+          externalCall: "daytona.workspace_release",
           level: "warn",
-          message: "Daytona workspace destroy timeout.",
+          message: "Daytona workspace release timeout.",
           stage: "repo-security-screen",
           timeoutMs: 1,
           workspaceId: "workspace-1",
@@ -350,7 +350,7 @@ describe("readRepoSecurityInput", () => {
 });
 
 class FakePreparationWorkspaceProvider implements PreparationWorkspaceProvider {
-  readonly destroyedWorkspaceIds: string[] = [];
+  readonly releasedWorkspaceIds: string[] = [];
 
   constructor(
     private readonly input:
@@ -358,7 +358,7 @@ class FakePreparationWorkspaceProvider implements PreparationWorkspaceProvider {
       | PreparationWorkspace[]
       | string[] = new FakePreparationWorkspace(),
     private readonly options: {
-      destroy?: () => Promise<void>;
+      release?: () => Promise<void>;
     } = {},
   ) {}
 
@@ -374,9 +374,9 @@ class FakePreparationWorkspaceProvider implements PreparationWorkspaceProvider {
     this.createCount += 1;
 
     return {
-      destroy: async () => {
-        this.destroyedWorkspaceIds.push(id);
-        await this.options.destroy?.();
+      release: async () => {
+        this.releasedWorkspaceIds.push(id);
+        await this.options.release?.();
       },
       id,
       workspace,

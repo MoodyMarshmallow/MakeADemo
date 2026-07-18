@@ -107,7 +107,7 @@ describe("validateCapturePath", () => {
     const fallbackWarnings: Array<Record<string, unknown>> = [];
     let serializedWrites = Promise.resolve();
     const workspace = {
-      async destroy() {},
+      async release() {},
       id: "workspace_handle_123",
       workspace: {
         async execute() {
@@ -841,7 +841,7 @@ function workspaceHandle(
   executedCommands: string[] = [],
 ) {
   return {
-    async destroy() {},
+    async release() {},
     id: "workspace_handle_123",
     workspace: {
       async execute(command: string) {
@@ -862,7 +862,7 @@ function workspaceHandle(
 
 function hangingLogWorkspaceHandle() {
   return {
-    async destroy() {},
+    async release() {},
     id: "workspace_handle_123",
     workspace: {
       async execute() {
@@ -882,7 +882,7 @@ function hangingLogWorkspaceHandle() {
 
 function failingLogWorkspaceHandle() {
   return {
-    async destroy() {},
+    async release() {},
     id: "workspace_handle_123",
     workspace: {
       async execute() {
@@ -914,7 +914,7 @@ function controlledVerboseDiagnosticsWorkspaceHandle(
     },
     verboseDiagnosticsStarted,
     handle: {
-      async destroy() {},
+      async release() {},
       id: "workspace_handle_123",
       workspace: {
         async execute() {

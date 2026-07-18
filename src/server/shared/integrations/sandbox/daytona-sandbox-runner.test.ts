@@ -49,7 +49,7 @@ describe("DaytonaSandboxRunner", () => {
 
     await result.cleanup?.();
 
-    expect(workspace.destroyed).toBe(false);
+    expect(workspace.released).toBe(false);
   });
 
   it("skips inferred dependency installation when the manifest says it is not required", async () => {
@@ -278,7 +278,7 @@ describe("DaytonaSandboxRunner", () => {
     expect(result.runtimeExitCode).toBe(1);
     expect(workspace.submittedCommands[0]).toContain("find /workspace");
     expect(workspace.submittedCommands[1]).toBe("npm ci");
-    expect(workspace.destroyed).toBe(false);
+    expect(workspace.released).toBe(false);
   });
 
   it("closes outbound network and destroys the workspace when install execution throws", async () => {
@@ -296,7 +296,7 @@ describe("DaytonaSandboxRunner", () => {
     ).rejects.toThrow("npm ci exploded");
 
     expect(workspace.submittedNetworkAccess).toEqual([true, false]);
-    expect(workspace.destroyed).toBe(false);
+    expect(workspace.released).toBe(false);
   });
 
   it("starts long-running demo commands without waiting for the server to exit", async () => {
@@ -571,7 +571,7 @@ describe("DaytonaSandboxRunner", () => {
 
 class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
   commands: string[] = [];
-  destroyed = false;
+  released = false;
   id = "daytona_workspace";
   networkAccess: boolean[] = [];
   previewPorts: number[] = [];
@@ -635,8 +635,8 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
     },
   };
 
-  async destroy() {
-    this.destroyed = true;
+  async release() {
+    this.released = true;
   }
 
   private runCommand(command: string) {

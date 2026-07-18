@@ -7,7 +7,7 @@ import {
 import type { PreparationWorkspace } from "./preparation-workspace.interface";
 
 describe("runInPreparationWorkspace", () => {
-  it("creates a workspace, returns the agent result, and destroys the workspace", async () => {
+  it("creates a workspace, returns the agent result, and releases the workspace", async () => {
     const events: string[] = [];
     const provider = fakeProvider(events);
 
@@ -21,10 +21,10 @@ describe("runInPreparationWorkspace", () => {
     });
 
     expect(result).toEqual({ status: "succeeded", value: "prepared" });
-    expect(events).toEqual(["create", "run:workspace_123", "destroy"]);
+    expect(events).toEqual(["create", "run:workspace_123", "release"]);
   });
 
-  it("blocks network and destroys the workspace when the agent run times out", async () => {
+  it("blocks network and releases the workspace when the agent run times out", async () => {
     const events: string[] = [];
     const provider = fakeProvider(events);
     const result = await runInPreparationWorkspace({
@@ -37,7 +37,7 @@ describe("runInPreparationWorkspace", () => {
       reason: "Repo Preparation agent timed out after 0ms.",
       status: "timed-out",
     });
-    expect(events).toEqual(["create", "network:blocked", "destroy"]);
+    expect(events).toEqual(["create", "network:blocked", "release"]);
   });
 });
 
@@ -46,8 +46,8 @@ function fakeProvider(events: string[]): PreparationWorkspaceProvider {
     async create() {
       events.push("create");
       return {
-        async destroy() {
-          events.push("destroy");
+        async release() {
+          events.push("release");
         },
         id: "workspace_123",
         workspace: fakeWorkspace(events),

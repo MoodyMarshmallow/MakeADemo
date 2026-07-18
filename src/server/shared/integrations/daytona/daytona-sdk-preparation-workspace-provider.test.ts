@@ -34,12 +34,39 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(handle.id).toBe("sandbox_123");
     expect(calls[0]).toEqual({
       create: {
-        autoDeleteInterval: 0,
+        autoDeleteInterval: -1,
         autoStopInterval: 15,
         disk: 3,
         snapshot: "makeademo-opencode",
       },
     });
+  });
+
+  it("deletes an ID-less primary sandbox before rejecting creation", async () => {
+    const calls: unknown[] = [];
+    const { id: _id, ...sandbox } = fakeLinkedSandbox(
+      calls,
+      "primary_sandbox",
+      "ok",
+    );
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: {
+        async create(input: unknown) {
+          calls.push({ create: input });
+          return sandbox;
+        },
+        async delete(input: { id?: string; name?: string }) {
+          calls.push({ delete: input.id ?? input.name });
+        },
+      },
+    });
+
+    await expect(provider.create()).rejects.toThrow(
+      "Daytona did not return a sandbox id.",
+    );
+    expect(calls).toContainEqual({ delete: undefined });
+    expect(calls).not.toContainEqual({ stop: "primary_sandbox" });
+    expect(calls).not.toContainEqual({ archive: "primary_sandbox" });
   });
 
   it("uses a bounded Daytona sandbox create timeout", async () => {
@@ -61,7 +88,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     await provider.create();
 
     expect(calls[0]).toEqual({
-      create: { autoDeleteInterval: 0, autoStopInterval: 15, disk: 3 },
+      create: { autoDeleteInterval: -1, autoStopInterval: 15, disk: 3 },
       options: { timeout: 180 },
     });
   });
@@ -93,11 +120,11 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(handle.id).toBe("sandbox_123");
     expect(calls.slice(0, 2)).toEqual([
       {
-        create: { autoDeleteInterval: 0, autoStopInterval: 15, disk: 3 },
+        create: { autoDeleteInterval: -1, autoStopInterval: 15, disk: 3 },
         options: { timeout: 180 },
       },
       {
-        create: { autoDeleteInterval: 0, autoStopInterval: 15, disk: 3 },
+        create: { autoDeleteInterval: -1, autoStopInterval: 15, disk: 3 },
         options: { timeout: 180 },
       },
     ]);
@@ -114,7 +141,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
 
     expect(calls[0]).toEqual({
       create: {
-        autoDeleteInterval: 0,
+        autoDeleteInterval: -1,
         autoStopInterval: 15,
         disk: 3,
         secrets: { OPENAI_API_KEY: "makeademo-openai" },
@@ -258,7 +285,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     ]);
   });
 
-  it("executes commands, updates network settings, and deletes the sandbox", async () => {
+  it("executes commands, updates network settings, stops, and archives the sandbox", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeClient(calls),
@@ -267,13 +294,14 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
 
     const result = await handle.workspace.execute("opencode run hello");
     await handle.workspace.setOutboundNetworkAccess(false);
-    await handle.destroy();
+    await handle.release();
 
     expect(result).toEqual({ exitCode: 0, stderr: "", stdout: "ok" });
     expect(calls.slice(1)).toEqual([
       { executeCommand: "opencode run hello" },
       { updateNetworkSettings: { networkBlockAll: true } },
-      { delete: "sandbox_123" },
+      { stop: "sandbox_123" },
+      { archive: "sandbox_123" },
     ]);
   });
 
@@ -608,7 +636,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     ).rejects.toThrow("Daytona sandbox log write did not finish within 1ms.");
   });
 
-  it("disconnects active streaming commands before deleting the sandbox", async () => {
+  it("disconnects active streaming commands before archiving the sandbox", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeClient(calls, {
@@ -621,15 +649,18 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       onStdout: () => {},
     });
     await Promise.resolve();
-    await handle.destroy();
+    await handle.release();
 
     await expect(execution).resolves.toMatchObject({ exitCode: 7 });
     expect(calls).toEqual(
-      expect.arrayContaining([{ disconnect: true }, { delete: "sandbox_123" }]),
+      expect.arrayContaining([
+        { disconnect: true },
+        { archive: "sandbox_123" },
+      ]),
     );
     expect(
       calls.findIndex((call) => "disconnect" in Object(call)),
-    ).toBeLessThan(calls.findIndex((call) => "delete" in Object(call)));
+    ).toBeLessThan(calls.findIndex((call) => "archive" in Object(call)));
   });
 
   it("kills active streaming commands before disconnecting so cancellation settles", async () => {
@@ -927,7 +958,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(calls.slice(0, 2)).toEqual([
       {
         create: {
-          autoDeleteInterval: 0,
+          autoDeleteInterval: -1,
           autoStopInterval: 15,
           disk: 3,
           snapshot: "makeademo-opencode",
@@ -992,7 +1023,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(calls.slice(0, 2)).toEqual([
       {
         create: {
-          autoDeleteInterval: 0,
+          autoDeleteInterval: -1,
           autoStopInterval: 15,
           disk: 3,
           secrets: { OPENAI_API_KEY: "makeademo-openai" },
@@ -1436,7 +1467,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     );
   });
 
-  it("deletes the linked submitted-code sandbox before deleting the parent sandbox", async () => {
+  it("releases a linked workspace by deleting the child, stopping, then archiving the primary", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeLinkedClient(calls),
@@ -1444,15 +1475,17 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
     const handle = await provider.create();
 
-    await handle.destroy();
+    await handle.release();
 
-    expect(calls.slice(-2)).toEqual([
+    expect(calls.slice(-3)).toEqual([
       { delete: "submitted_sandbox" },
-      { delete: "parent_sandbox" },
+      { stop: "parent_sandbox" },
+      { archive: "parent_sandbox" },
     ]);
+    expect(calls).not.toContainEqual({ delete: "parent_sandbox" });
   });
 
-  it("still attempts parent deletion when linked submitted-code deletion fails", async () => {
+  it("still stops and archives the primary when linked submitted-code deletion fails", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: {
@@ -1468,14 +1501,57 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
     const handle = await provider.create();
 
-    await expect(handle.destroy()).rejects.toThrow("child delete failed");
-    expect(calls.slice(-2)).toEqual([
+    await expect(handle.release()).rejects.toThrow("child delete failed");
+    expect(calls.slice(-3)).toEqual([
       { delete: "submitted_sandbox" },
-      { delete: "parent_sandbox" },
+      { stop: "parent_sandbox" },
+      { archive: "parent_sandbox" },
     ]);
   });
 
-  it("performs destruction at most once when called repeatedly", async () => {
+  it("does not archive when stopping the primary fails", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient(calls, { failStop: true }),
+    });
+    const handle = await provider.create();
+
+    await expect(handle.release()).rejects.toThrow("primary stop failed");
+    expect(calls).toContainEqual({ stop: "parent_sandbox" });
+    expect(calls).not.toContainEqual({ archive: "parent_sandbox" });
+  });
+
+  it("reports an archive failure after stopping the primary", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient(calls, { failArchive: true }),
+    });
+    const handle = await provider.create();
+
+    await expect(handle.release()).rejects.toThrow("primary archive failed");
+    expect(calls.slice(-2)).toEqual([
+      { stop: "parent_sandbox" },
+      { archive: "parent_sandbox" },
+    ]);
+  });
+
+  it("releases an unlinked workspace without deleting the primary", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient(calls),
+    });
+    const handle = await provider.create();
+
+    await handle.release();
+
+    expect(calls.slice(-2)).toEqual([
+      { stop: "parent_sandbox" },
+      { archive: "parent_sandbox" },
+    ]);
+    expect(calls).not.toContainEqual({ delete: "parent_sandbox" });
+  });
+
+  it("releases at most once when called concurrently", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeLinkedClient(calls),
@@ -1483,10 +1559,15 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
     const handle = await provider.create();
 
-    await Promise.all([handle.destroy(), handle.destroy()]);
+    await Promise.all([handle.release(), handle.release()]);
     expect(calls.filter((call) => "delete" in Object(call))).toEqual([
       { delete: "submitted_sandbox" },
-      { delete: "parent_sandbox" },
+    ]);
+    expect(calls.filter((call) => "stop" in Object(call))).toEqual([
+      { stop: "parent_sandbox" },
+    ]);
+    expect(calls.filter((call) => "archive" in Object(call))).toEqual([
+      { archive: "parent_sandbox" },
     ]);
   });
 });
@@ -1499,7 +1580,9 @@ function fakeLinkedClient(
     downloadFilesNeverResolves?: boolean;
     executeCommandNeverResolves?: boolean;
     failParentArchive?: boolean;
+    failArchive?: boolean;
     failSubmittedRestore?: boolean;
+    failStop?: boolean;
     remoteCleanupNeverResolves?: boolean;
   } = {},
 ) {
@@ -1560,6 +1643,9 @@ function fakeCommandTimeoutClient(calls: unknown[]) {
 
 function fakeCommandTimeoutSandbox(calls: unknown[], id: string) {
   return {
+    async archive() {
+      calls.push({ archive: id });
+    },
     fs: {
       async downloadFiles(
         files: Array<{ destination: string; source: string }>,
@@ -1569,6 +1655,9 @@ function fakeCommandTimeoutSandbox(calls: unknown[], id: string) {
       async uploadFiles() {},
     },
     id,
+    async stop() {
+      calls.push({ stop: id });
+    },
     async getSignedPreviewUrl(port: number) {
       return { url: `https://${id}.example.test:${port}` };
     },
@@ -1643,6 +1732,9 @@ function fakeLocalShellSandbox(
   workspacePath: string,
 ) {
   return {
+    async archive() {
+      calls.push({ archive: id });
+    },
     fs: {
       async downloadFiles(
         files: Array<{ destination: string; source: string }>,
@@ -1668,6 +1760,9 @@ function fakeLocalShellSandbox(
       },
     },
     id,
+    async stop() {
+      calls.push({ stop: id });
+    },
     async getSignedPreviewUrl(port: number) {
       return { url: `https://local-shell.example.test:${port}` };
     },
@@ -1772,12 +1867,20 @@ function fakeLinkedSandbox(
     downloadFilesNeverResolves?: boolean;
     executeCommandNeverResolves?: boolean;
     failParentArchive?: boolean;
+    failArchive?: boolean;
     failSubmittedRestore?: boolean;
+    failStop?: boolean;
     remoteCleanupNeverResolves?: boolean;
   } = {},
 ) {
   let archiveAuthFailures = options.archiveAuthFailuresBeforeSuccess ?? 0;
   return {
+    async archive() {
+      calls.push({ archive: id });
+      if (options.failArchive === true && id === "parent_sandbox") {
+        throw new Error("primary archive failed");
+      }
+    },
     fs: {
       async downloadFiles(
         files: Array<{ destination: string; source: string }>,
@@ -1794,6 +1897,12 @@ function fakeLinkedSandbox(
       },
     },
     id,
+    async stop() {
+      calls.push({ stop: id });
+      if (options.failStop === true && id === "parent_sandbox") {
+        throw new Error("primary stop failed");
+      }
+    },
     async getSignedPreviewUrl(port: number, ttl?: number) {
       calls.push({ getSignedPreviewUrl: { port, sandbox: id, ttl } });
       return {
@@ -1899,6 +2008,9 @@ function fakeClient(
   let ptyConnectionFailures = 0;
   const stalePtyIds = new Set<string>();
   const sandbox = {
+    async archive() {
+      calls.push({ archive: "sandbox_123" });
+    },
     fs: {
       async downloadFiles(
         files: Array<{ destination: string; source: string }>,
@@ -1930,6 +2042,9 @@ function fakeClient(
       },
     },
     id: "sandbox_123",
+    async stop() {
+      calls.push({ stop: "sandbox_123" });
+    },
     async getSignedPreviewUrl(port: number, ttl?: number) {
       calls.push({ getSignedPreviewUrl: { port, ttl } });
       if (options.previewNeverResolves === true) {
