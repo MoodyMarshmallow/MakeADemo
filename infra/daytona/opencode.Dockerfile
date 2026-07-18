@@ -15,7 +15,8 @@ RUN mkdir -p /opt/makeademo
 
 COPY submitted-code-node-browser.Dockerfile /opt/makeademo/submitted-code-node-browser.Dockerfile
 COPY preload-submitted-code-image.sh /usr/local/bin/makeademo-preload-submitted-code-image
-RUN chmod +x /usr/local/bin/makeademo-preload-submitted-code-image
+COPY inspect-submitted-code-toolchain.mjs /usr/local/bin/makeademo-inspect-submitted-code-toolchain
+RUN chmod +x /usr/local/bin/makeademo-preload-submitted-code-image /usr/local/bin/makeademo-inspect-submitted-code-toolchain
 
 RUN curl -fsSL https://bun.sh/install | bash -s "bun-v1.2.5" \
   && ln -sf /root/.bun/bin/bun /usr/local/bin/bun \
