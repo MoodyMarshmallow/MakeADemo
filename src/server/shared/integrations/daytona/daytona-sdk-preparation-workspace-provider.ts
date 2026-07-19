@@ -482,7 +482,7 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
   }
 
   async writeSandboxLog(entry: PreparationWorkspaceLogEntry): Promise<void> {
-    const { source, timestamp, workspaceId, ...fields } = entry;
+    const { level: _level, source, timestamp, workspaceId, ...fields } = entry;
     await this.sandboxLogger[readSandboxLogLevel(entry)](
       {
         ...fields,
@@ -1383,7 +1383,10 @@ function escapeRegExp(value: string): string {
 
 function readSandboxLogLevel(
   entry: PreparationWorkspaceLogEntry,
-): "error" | "info" | "warn" {
+): "debug" | "error" | "info" | "warn" {
+  if (entry.level !== undefined) {
+    return entry.level;
+  }
   const event = typeof entry.event === "string" ? entry.event : "";
   if (event.includes("failed") || event.includes("invalid")) {
     return "error";

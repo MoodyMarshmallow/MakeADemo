@@ -171,6 +171,7 @@ export class DaytonaOpenCodeScriptGeneration
           attempt,
           event: "script-generation.opencode-attempt.failed",
           exitCode: result.exitCode,
+          level: scriptGenerationAttemptFailureLevel(attempt, this.maxAttempts),
           reason: lastFailure,
         });
         this.writeStatus(
@@ -199,6 +200,7 @@ export class DaytonaOpenCodeScriptGeneration
         await writeScriptGenerationSandboxLog(this.logger, input, {
           attempt,
           event: "script-generation.artifact.missing",
+          level: scriptGenerationAttemptFailureLevel(attempt, this.maxAttempts),
           reason: lastFailure,
         });
         this.writeStatus(
@@ -229,6 +231,7 @@ export class DaytonaOpenCodeScriptGeneration
         await writeScriptGenerationSandboxLog(this.logger, input, {
           attempt,
           event: "script-generation.script-package.invalid",
+          level: scriptGenerationAttemptFailureLevel(attempt, this.maxAttempts),
           reason: lastFailure,
         });
         this.writeStatus(
@@ -284,6 +287,13 @@ function isTransientDaytonaSocketClosedError(error: unknown): boolean {
 
 function wait(delayMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+function scriptGenerationAttemptFailureLevel(
+  attempt: number,
+  maxAttempts: number,
+): "error" | "warn" {
+  return attempt < maxAttempts ? "warn" : "error";
 }
 
 function withTimeout<T>(
@@ -392,6 +402,7 @@ async function writeScriptGenerationRetryLog(
   await writeScriptGenerationSandboxLog(logger, input, {
     attempt: retry.attempt,
     event: "script-generation.retrying",
+    level: "warn",
     nextAttempt: retry.attempt + 1,
     reason: retry.reason,
   });

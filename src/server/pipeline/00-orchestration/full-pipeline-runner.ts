@@ -111,9 +111,12 @@ type FullPipelineLogEntry = {
   time: string;
 } & Record<string, unknown>;
 
+type FullPipelineLogSeverity = "debug" | "error" | "info" | "warn";
+
 type FullPipelineLogInput = {
   event: string;
   message: string;
+  severity?: FullPipelineLogSeverity;
 } & Record<string, unknown>;
 
 export type FullPipelineRunnerOptions = PipelineOrchestratorOptions & {
@@ -174,6 +177,7 @@ export async function runFullPipelineJob(
       return result;
     },
   };
+  let terminalFailureLogged = false;
 
   try {
     await log({
@@ -183,6 +187,7 @@ export async function runFullPipelineJob(
       repoUrl: input.repoUrl,
       runDirectory,
       runId,
+      severity: "info",
       workspaceId: input.workspaceId,
     });
 
@@ -196,6 +201,7 @@ export async function runFullPipelineJob(
           await log({
             event: "stage-progress",
             message: `${event.stage} ${event.status}.`,
+            severity: severityForPipelineStageStatus(event.status),
             stage: event.stage,
             status: event.status,
           });
@@ -217,8 +223,10 @@ export async function runFullPipelineJob(
       await log({
         event: "pipeline-failed",
         message: `Pipeline failed with status ${initialPreparedDemo.status}.`,
+        severity: "error",
         status: initialPreparedDemo.status,
       });
+      terminalFailureLogged = true;
       await writeFile(
         resultPath,
         `${JSON.stringify(failureSummary, null, 2)}\n`,
@@ -227,6 +235,7 @@ export async function runFullPipelineJob(
         event: "result-written",
         message: "Full pipeline failure result written.",
         resultPath,
+        severity: "info",
       });
       throw new FullPipelineStageFailure({
         failure: failureSummary.failure,
@@ -245,7 +254,9 @@ export async function runFullPipelineJob(
       await log({
         event: "pipeline-failed",
         message: "Capture Path Validation did not return a browser URL.",
+        severity: "error",
       });
+      terminalFailureLogged = true;
       throw new Error("Capture Path Validation did not return a browser URL.");
     }
 
@@ -289,6 +300,7 @@ export async function runFullPipelineJob(
     await log({
       event: "pipeline-succeeded",
       message: "Full pipeline succeeded.",
+      severity: "info",
       viewUrl: finalVideo.viewUrl,
     });
     const resultPath = join(runDirectory, "full-pipeline-result.json");
@@ -335,6 +347,7 @@ export async function runFullPipelineJob(
       event: "result-written",
       message: "Full pipeline result written.",
       resultPath,
+      severity: "info",
     });
     return {
       captureManifest,
@@ -349,6 +362,17 @@ export async function runFullPipelineJob(
       preparedDemo,
       status: "succeeded",
     };
+  } catch (error) {
+    if (!terminalFailureLogged) {
+      await log({
+        error: readErrorMessage(error),
+        event: "pipeline-failed",
+        message: "Full pipeline failed unexpectedly.",
+        severity: "error",
+      });
+      terminalFailureLogged = true;
+    }
+    throw error;
   } finally {
     await cleanupPreparationWorkspaces({
       handles: preparationWorkspaces,
@@ -365,6 +389,7 @@ async function cleanupPreparationWorkspaces(input: {
     await logCleanupEvent(input.log, {
       event: "preparation-workspace-cleanup.started",
       message: "Preparation workspace cleanup started.",
+      severity: "info",
       workspaceId: handle.id,
     });
 
@@ -375,6 +400,7 @@ async function cleanupPreparationWorkspaces(input: {
         durationMs: Date.now() - startedAt,
         event: "preparation-workspace-cleanup.succeeded",
         message: "Preparation workspace cleanup succeeded.",
+        severity: "info",
         workspaceId: handle.id,
       });
     } catch (error) {
@@ -383,6 +409,7 @@ async function cleanupPreparationWorkspaces(input: {
         error: readErrorMessage(error),
         event: "preparation-workspace-cleanup.failed",
         message: "Preparation workspace cleanup failed.",
+        severity: "warn",
         workspaceId: handle.id,
       });
     }
@@ -434,6 +461,7 @@ async function persistGeneratedScript(input: {
       sceneCount: input.scriptSummary.sceneCount,
       scriptId: input.scriptPackage.scriptId,
       scriptPath,
+      severity: "info",
       title: input.scriptPackage.title,
     });
 
@@ -456,6 +484,7 @@ async function persistGeneratedScript(input: {
     message: scriptGeneratedMessage(input.scriptSummary),
     sceneCount: input.scriptSummary.sceneCount,
     scriptId: input.scriptPackage.scriptId,
+    severity: "info",
     title: input.scriptPackage.title,
   });
 
@@ -493,8 +522,21 @@ function createPipelineLogger(
   });
 
   return async (entry: FullPipelineLogInput) => {
-    await logger.info(entry, entry.message);
+    const { severity = "info", ...fields } = entry;
+    await logger[severity](fields, entry.message);
   };
+}
+
+function severityForPipelineStageStatus(
+  status: "failed" | "retrying" | "started" | "succeeded",
+): FullPipelineLogSeverity {
+  if (status === "failed") {
+    return "error";
+  }
+  if (status === "retrying") {
+    return "warn";
+  }
+  return "info";
 }
 
 function summarizeScriptPackage(

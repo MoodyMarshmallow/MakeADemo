@@ -86,6 +86,7 @@ describe("readRepoSecurityInput", () => {
   });
 
   it("does not retry deterministic git clone failures", async () => {
+    const lines: string[] = [];
     const workspace = new FakePreparationWorkspace({
       cloneResults: [
         {
@@ -101,9 +102,21 @@ describe("readRepoSecurityInput", () => {
       readRepoSecurityInput(
         new FakePreparationWorkspaceProvider(workspace),
         "https://github.com/example/missing",
+        {
+          logger: createPipelineEventLogger({
+            base: { component: "repo-security-screen" },
+            sinks: [{ write: (line) => void lines.push(line) }],
+          }),
+        },
       ),
     ).rejects.toThrow("Repository not found");
     expect(workspace.cloneAttempts).toBe(1);
+    expect(lines.map((line) => JSON.parse(line))).toContainEqual(
+      expect.objectContaining({
+        event: "repo-security-screen.clone.failed",
+        level: "error",
+      }),
+    );
   });
 
   it("logs thrown Daytona clone timeouts and retries in a fresh workspace", async () => {
@@ -145,7 +158,7 @@ describe("readRepoSecurityInput", () => {
         errorMessage: "Daytona command did not finish within 600000ms",
         errorType: "Error",
         event: "repo-security-screen.clone.failed",
-        level: "error",
+        level: "warn",
         repoUrl: "https://github.com/example/app",
       }),
     );

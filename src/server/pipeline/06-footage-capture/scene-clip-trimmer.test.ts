@@ -58,10 +58,15 @@ describe("SceneClipTrimmer", () => {
 
   it("rejects a clip whose duration drifts beyond one source frame", async () => {
     const commands: string[] = [];
-    const trimmer = createSceneClipTrimmerForTest(commands, {
-      durationSeconds: 1.1,
-      firstFrameSsim: 1,
-    });
+    const logs: Array<Record<string, unknown>> = [];
+    const trimmer = createSceneClipTrimmerForTest(
+      commands,
+      {
+        durationSeconds: 1.1,
+        firstFrameSsim: 1,
+      },
+      logs,
+    );
 
     await expect(
       trimmer.trimClip({
@@ -74,6 +79,10 @@ describe("SceneClipTrimmer", () => {
     ).rejects.toThrow(/duration drifted .* exceeding one source frame/);
     expect(commands[0]).toBe("ffmpeg");
     expect(commands).toEqual(["ffmpeg", "ffprobe", "ffprobe"]);
+    expect(logs.at(-1)).toMatchObject({
+      event: "scene-clip-trim-failed",
+      severity: "error",
+    });
   });
 
   it("rejects a clip whose first frame does not match its marker frame", async () => {
@@ -97,8 +106,12 @@ describe("SceneClipTrimmer", () => {
 function createSceneClipTrimmerForTest(
   commands: string[],
   output: { durationSeconds: number; firstFrameSsim: number },
+  logs: Array<Record<string, unknown>> = [],
 ) {
   return createSceneClipTrimmer({
+    log: async (entry) => {
+      logs.push(entry);
+    },
     async runCommand(command, args) {
       commands.push(command);
       if (args.some((arg) => arg.includes("ssim"))) {

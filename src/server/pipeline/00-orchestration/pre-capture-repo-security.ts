@@ -50,16 +50,17 @@ export async function readRepoSecurityInput(
       }
       await logCloneEvent(options.logger, "succeeded", repoUrl);
     } catch (error) {
+      const retryable =
+        attempt < maxCloneWorkspaceRetries &&
+        isCloneWorkspaceRetryableError(error);
       await logCloneEvent(options.logger, "failed", repoUrl, {
         durationMs: Date.now() - cloneStartedAt,
         error,
+        level: retryable ? "warn" : "error",
       });
 
       await releaseWorkspace(handle, options);
-      if (
-        attempt < maxCloneWorkspaceRetries &&
-        isCloneWorkspaceRetryableError(error)
-      ) {
+      if (retryable) {
         await delay(cloneWorkspaceRetryDelaysMs[attempt] ?? 0);
         continue;
       }
@@ -294,14 +295,18 @@ async function logCloneEvent(
   logger: PipelineEventLogger | undefined,
   status: "failed" | "started" | "succeeded",
   repoUrl: string,
-  metadata: { durationMs?: number; error?: unknown } = {},
+  metadata: {
+    durationMs?: number;
+    error?: unknown;
+    level?: "error" | "warn";
+  } = {},
 ) {
   if (logger === undefined) {
     return;
   }
 
   try {
-    await logger[status === "failed" ? "error" : "info"](
+    await logger[status === "failed" ? (metadata.level ?? "error") : "info"](
       {
         ...(metadata.durationMs === undefined
           ? {}

@@ -7,7 +7,7 @@ import {
 
 type WorkerPipelineProgress = {
   stage: string;
-  status: string;
+  status: "failed" | "retrying" | "started" | "succeeded";
 };
 
 type WorkerJobProcessed = {
@@ -64,7 +64,7 @@ export function createProjectDemoGenerationWorkerLogger(
       );
     },
     pipelineProgress(event) {
-      return logger.info(
+      return logger[workerProgressSeverity(event.status)](
         {
           event: "stage-progress",
           stage: event.stage,
@@ -80,6 +80,18 @@ export function createProjectDemoGenerationWorkerLogger(
       );
     },
   };
+}
+
+function workerProgressSeverity(
+  status: WorkerPipelineProgress["status"],
+): "error" | "info" | "warn" {
+  if (status === "failed") {
+    return "error";
+  }
+  if (status === "retrying") {
+    return "warn";
+  }
+  return "info";
 }
 
 function createWorkerStdoutLogSink(): PipelineLogSink {

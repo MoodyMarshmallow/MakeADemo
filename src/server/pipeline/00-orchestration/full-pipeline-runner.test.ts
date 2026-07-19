@@ -418,6 +418,31 @@ describe("runFullPipelineJob", () => {
         },
         status: "preparation-failed",
       });
+
+      const logEntries = (
+        await readFile(
+          join(outputRoot, "failed-run", "pipeline-log.jsonl"),
+          "utf8",
+        )
+      )
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(logEntries).toContainEqual(
+        expect.objectContaining({
+          event: "pipeline-failed",
+          level: "error",
+          status: "preparation-failed",
+        }),
+      );
+      expect(logEntries).toContainEqual(
+        expect.objectContaining({
+          event: "stage-progress",
+          level: "error",
+          stage: "repo-preparation",
+          status: "failed",
+        }),
+      );
     } finally {
       await rm(outputRoot, { force: true, recursive: true });
     }
@@ -564,6 +589,24 @@ describe("runFullPipelineJob", () => {
       await expect(
         readdir(join(outputRoot, "scriptgen-fails")),
       ).resolves.toEqual(["pipeline-log.jsonl"]);
+      const logEntries = (
+        await readFile(
+          join(outputRoot, "scriptgen-fails", "pipeline-log.jsonl"),
+          "utf8",
+        )
+      )
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(
+        logEntries.filter((entry) => entry.event === "pipeline-failed"),
+      ).toEqual([
+        expect.objectContaining({
+          error: "ScriptGen stalled before artifact output",
+          level: "error",
+          message: "Full pipeline failed unexpectedly.",
+        }),
+      ]);
     } finally {
       await rm(outputRoot, { force: true, recursive: true });
     }

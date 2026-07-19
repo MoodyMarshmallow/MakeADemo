@@ -31,7 +31,10 @@ export type PreparationWorkspaceExecuteOptions = {
   timeoutMs?: number;
 };
 
-export type PreparationWorkspaceLogEntry = Record<string, unknown>;
+/** Structured sandbox audit entry; level overrides legacy event-name inference. */
+export type PreparationWorkspaceLogEntry = Record<string, unknown> & {
+  level?: "debug" | "error" | "info" | "warn";
+};
 
 /**
  * A project-owned command paired with its pre-network resolved toolchain plan.

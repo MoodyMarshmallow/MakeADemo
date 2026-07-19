@@ -936,6 +936,7 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
     await this.writeSandboxLog(input.handle.workspace, {
       failureReason: validation.failureReason,
       event: "preparation-preflight.finished",
+      level: validation.status === "failed" ? "warn" : "info",
       status: validation.status,
     });
     const writeValidationResultRun = await raceWithTimeout(
@@ -1285,6 +1286,7 @@ async function writeRepoPreparationRetryLog(
 ): Promise<void> {
   await writePreparationSandboxLog(logger, workspace, {
     event: "repo-preparation.retrying",
+    level: "warn",
     nextAttempt: input.nextAttempt,
     reason: input.reason,
   });

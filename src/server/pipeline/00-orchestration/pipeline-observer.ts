@@ -83,7 +83,7 @@ export function createRecordingPipelineObserver() {
 export type JsonPipelineObserverOptions = {
   now?: () => string;
   service?: string;
-  write: (line: string) => void;
+  write: (line: string) => Promise<void> | void;
 };
 
 export function createJsonPipelineObserver(
@@ -98,14 +98,28 @@ export function createJsonPipelineObserver(
   return {
     record(event) {
       try {
-        void logger[event.status === "failed" ? "error" : "info"](
+        void logger[severityForPipelineObservation(event.status)](
           toJsonLogEvent(event),
-        );
+        ).catch(() => {
+          // Observability must never interrupt Pipeline Job execution.
+        });
       } catch {
         // Observability must never interrupt Pipeline Job execution.
       }
     },
   };
+}
+
+function severityForPipelineObservation(
+  status: PipelineObservabilityEvent["status"],
+): "error" | "info" | "warn" {
+  if (status === "failed") {
+    return "error";
+  }
+  if (status === "retrying") {
+    return "warn";
+  }
+  return "info";
 }
 
 export function sanitizeObservabilityError(error: unknown) {

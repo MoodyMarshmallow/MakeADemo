@@ -235,12 +235,25 @@ function logEvidenceUpload(
   entry: EvidenceEvent,
 ): void {
   try {
-    void logger
-      .info({ ...entry, stage: "draft-composite-review" })
-      .catch(() => undefined);
+    void logger[evidenceUploadSeverity(entry.event)]({
+      ...entry,
+      stage: "draft-composite-review",
+    }).catch(() => undefined);
   } catch {
     // Evidence logging is best effort and must not block review.
   }
+}
+
+function evidenceUploadSeverity(
+  event: EvidenceEvent["event"],
+): "error" | "info" | "warn" {
+  if (event === "draft-composite-review.evidence-upload.failed") {
+    return "error";
+  }
+  if (event === "draft-composite-review.evidence-upload.retrying") {
+    return "warn";
+  }
+  return "info";
 }
 
 async function uploadWithRetry(input: {

@@ -111,6 +111,38 @@ describe("createProjectDemoGenerationWorkerLogger", () => {
     });
   });
 
+  it("maps worker pipeline progress statuses to operational Pino levels", async () => {
+    const lines: string[] = [];
+    const logger = createProjectDemoGenerationWorkerLogger({
+      sinks: [{ write: (line) => void lines.push(line) }],
+      timestamp: () => "2026-07-04T00:00:00.000Z",
+    });
+
+    await logger.pipelineProgress({
+      stage: "repo-preparation",
+      status: "started",
+    });
+    await logger.pipelineProgress({
+      stage: "repo-preparation",
+      status: "retrying",
+    });
+    await logger.pipelineProgress({
+      stage: "repo-preparation",
+      status: "failed",
+    });
+    await logger.pipelineProgress({
+      stage: "repo-preparation",
+      status: "succeeded",
+    });
+
+    expect(lines.map((line) => JSON.parse(line).level)).toEqual([
+      "info",
+      "warn",
+      "error",
+      "info",
+    ]);
+  });
+
   it("creates child pipeline loggers for worker integration seams", async () => {
     const lines: string[] = [];
     const logger = createProjectDemoGenerationWorkerLogger({

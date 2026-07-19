@@ -320,6 +320,15 @@ async function writeProjectValidationSandboxLog(
 ) {
   const write = input.preparationWorkspace.workspace.writeSandboxLog?.({
     ...entry,
+    level:
+      entry.level === "debug" ||
+      entry.level === "error" ||
+      entry.level === "info" ||
+      entry.level === "warn"
+        ? entry.level
+        : typeof entry.event === "string" && entry.event.includes("failed")
+          ? "warn"
+          : "info",
     repoUrl: input.preparationManifest.repoUrl,
     stage: "project-validation",
     workspaceId: input.preparationManifest.workspaceId,

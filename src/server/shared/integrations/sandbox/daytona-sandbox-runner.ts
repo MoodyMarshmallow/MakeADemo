@@ -64,7 +64,8 @@ export class DaytonaSandboxRunner implements SandboxRunner {
     const writeSandboxLog = (entry: Record<string, unknown>) =>
       writeSandboxLogBestEffort({
         entry: {
-          ...entry,
+          ...sanitizeSandboxLogEntry(entry),
+          level: readValidationLogLevel(entry),
           repoUrl: input.repoUrl,
           stage: "project-validation",
           workspaceId: input.preparationManifest.workspaceId,
@@ -434,7 +435,8 @@ async function writeDemoServerLog(
 
   await writeSandboxLog({
     event: "project-validation.demo-server-log",
-    log: output,
+    level: "debug",
+    log: boundValidationEvidence(output, validationEvidenceCaps.server).text,
   });
 }
 
@@ -451,6 +453,52 @@ async function writeSandboxLogBestEffort(input: {
   } catch (error) {
     warnSandboxLogWriteFailed(input, error);
   }
+}
+
+function readValidationLogLevel(entry: Record<string, unknown>) {
+  if (
+    entry.level === "debug" ||
+    entry.level === "error" ||
+    entry.level === "info" ||
+    entry.level === "warn"
+  ) {
+    return entry.level;
+  }
+  const event = typeof entry.event === "string" ? entry.event : "";
+  if (event.includes("demo-server-log")) {
+    return "debug";
+  }
+  return event.includes("failed") ? "warn" : "info";
+}
+
+function sanitizeSandboxLogEntry(
+  entry: Record<string, unknown>,
+): Record<string, unknown> {
+  return sanitizeSandboxLogValue(entry, "") as Record<string, unknown>;
+}
+
+function sanitizeSandboxLogValue(value: unknown, key: string): unknown {
+  if (typeof value === "string") {
+    if (/data:image\/|screenshot:|^[A-Za-z0-9+/]{512,}={0,2}$/i.test(value)) {
+      return "[binary diagnostic omitted]";
+    }
+    return boundValidationEvidence(
+      value,
+      key === "log" ? validationEvidenceCaps.server : 2 * 1024,
+    ).text;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeSandboxLogValue(item, key));
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([nestedKey, nestedValue]) => [
+        nestedKey,
+        sanitizeSandboxLogValue(nestedValue, nestedKey),
+      ]),
+    );
+  }
+  return value;
 }
 
 function warnSandboxLogWriteFailed(

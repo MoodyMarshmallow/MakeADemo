@@ -29,7 +29,11 @@ export type SceneClipCommandRunner = (
 ) => Promise<SceneClipCommandResult>;
 
 export type SceneClipTrimLogger = (
-  entry: { event: string; message: string } & Record<string, unknown>,
+  entry: {
+    event: string;
+    message: string;
+    severity?: "debug" | "error" | "info" | "warn";
+  } & Record<string, unknown>,
 ) => Promise<void>;
 
 /**
@@ -57,6 +61,7 @@ export function createSceneClipTrimmer(options: {
         requestedDurationMs: input.durationMs,
         requestedStartMs: input.startMs,
         sceneId: input.sceneId,
+        severity: "info",
         stage: "footage-capture",
       });
 
@@ -104,6 +109,7 @@ export function createSceneClipTrimmer(options: {
           requestedDurationMs: input.durationMs,
           requestedStartMs: input.startMs,
           sceneId: input.sceneId,
+          severity: "info",
           stage: "footage-capture",
         });
         return result;
@@ -115,6 +121,7 @@ export function createSceneClipTrimmer(options: {
           requestedDurationMs: input.durationMs,
           requestedStartMs: input.startMs,
           sceneId: input.sceneId,
+          severity: "error",
           stage: "footage-capture",
         });
         throw error;

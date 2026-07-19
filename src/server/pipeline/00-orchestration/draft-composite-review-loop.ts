@@ -70,7 +70,11 @@ export type DraftCompositeReviewLoopInput = {
   dependencies: PipelineOrchestratorDependencies;
   input: PipelineJobInput;
   log: (
-    entry: { event: string; message: string } & Record<string, unknown>,
+    entry: {
+      event: string;
+      message: string;
+      severity?: "debug" | "error" | "info" | "warn";
+    } & Record<string, unknown>,
   ) => Promise<void>;
   options: DraftCompositeReviewLoopOptions;
   persistScript: (
@@ -138,6 +142,7 @@ export async function runDraftCompositeReviewLoop(
         baseUrl: captureBaseUrl,
         event: "capture-started",
         message: "Footage Capture started.",
+        severity: "info",
         ...(scriptPersistence.scriptPath === undefined
           ? { generatedScriptDemoRequestId: scriptPersistence.demoRequestId }
           : { scriptPath: scriptPersistence.scriptPath }),
@@ -166,6 +171,7 @@ export async function runDraftCompositeReviewLoop(
           error: readErrorMessage(error),
           event: "capture-failed",
           message: "Footage Capture failed.",
+          severity: "warn",
         });
         throw error;
       }
@@ -187,6 +193,7 @@ export async function runDraftCompositeReviewLoop(
         message: `Footage Capture succeeded: ${captureManifest.scenes.length} scene video(s).`,
         runDirectory: captureManifest.runDirectory,
         sceneCount: captureManifest.scenes.length,
+        severity: "info",
       });
 
       phase = "composite";
@@ -195,6 +202,7 @@ export async function runDraftCompositeReviewLoop(
         captureManifestPath: captureManifest.manifestPath,
         event: "compositing-started",
         message: "Compositing started.",
+        severity: "info",
         ...(scriptPersistence.scriptPath === undefined
           ? { generatedScriptDemoRequestId: scriptPersistence.demoRequestId }
           : { scriptPath: scriptPersistence.scriptPath }),
@@ -222,6 +230,7 @@ export async function runDraftCompositeReviewLoop(
           error: readErrorMessage(error),
           event: "compositing-failed",
           message: "Compositing failed.",
+          severity: "warn",
         });
         throw error;
       }
@@ -255,6 +264,7 @@ export async function runDraftCompositeReviewLoop(
         message: "Compositing succeeded.",
         outputVideoPath: finalVideo.outputVideoPath,
         renderPlanPath: finalVideo.renderPlanPath,
+        severity: "info",
         viewUrl: finalVideo.viewUrl,
       });
 
@@ -272,6 +282,7 @@ export async function runDraftCompositeReviewLoop(
         artifacts: evidenceArtifacts,
         event: "draft-composite-evidence-started",
         message: "Draft Composite evidence generation started.",
+        severity: "info",
       });
       let draftEvidence: DraftCompositeEvidence;
       try {
@@ -289,6 +300,7 @@ export async function runDraftCompositeReviewLoop(
           error: readErrorMessage(error),
           event: "draft-composite-evidence-failed",
           message: "Draft Composite evidence generation failed.",
+          severity: "warn",
         });
         throw error;
       }
@@ -308,6 +320,7 @@ export async function runDraftCompositeReviewLoop(
           draftEvidence.staticProbeFailedSceneIds?.length ?? 0,
         ffmpegFindingCount: draftEvidence.ffmpegFindings.length,
         message: "Draft Composite evidence generation succeeded.",
+        severity: "info",
         staticSceneCount: draftEvidence.staticSceneIds.length,
       });
       latestFindings = collectDraftCompositeQualityFindings({
@@ -330,6 +343,7 @@ export async function runDraftCompositeReviewLoop(
         artifacts: reviewerArtifacts,
         event: "draft-composite-reviewer-started",
         message: "Draft Composite reviewer started.",
+        severity: "info",
       });
       let agentDecision: DraftCompositeReviewDecision;
       try {
@@ -373,6 +387,7 @@ export async function runDraftCompositeReviewLoop(
           error: readErrorMessage(error),
           event: "draft-composite-reviewer-failed",
           message: "Draft Composite reviewer failed.",
+          severity: "warn",
         });
         throw error;
       }
@@ -383,6 +398,7 @@ export async function runDraftCompositeReviewLoop(
         durationMs: elapsedMs(reviewerStartedAt),
         event: "draft-composite-reviewer-succeeded",
         message: "Draft Composite reviewer succeeded.",
+        severity: "info",
       });
       const decision: DraftCompositeReviewDecision =
         latestFindings.length > 0
@@ -399,6 +415,7 @@ export async function runDraftCompositeReviewLoop(
         event: "draft-composite-review-completed",
         findingCount: latestFindings.length,
         message: `Draft Composite review ${decision.decision}.`,
+        severity: decision.decision === "repair" ? "warn" : "info",
         ...(decision.decision === "repair"
           ? { reason: decision.reason, repairScope: decision.repairScope }
           : { reason: decision.reason }),
@@ -528,11 +545,13 @@ export async function runDraftCompositeReviewLoop(
       message:
         "Draft Composite review aborted; returning the last valid draft.",
       phase: abortedReviewFailure.phase,
+      severity: "warn",
     });
   }
   await input.log({
     event: "draft-composite-review-exhausted",
     message: warnings[0] as string,
+    severity: "warn",
     warningCount: warnings.length,
     warnings,
   });

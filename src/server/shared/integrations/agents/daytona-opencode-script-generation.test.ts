@@ -646,6 +646,7 @@ describe("DaytonaOpenCodeScriptGeneration", () => {
         {
           sandboxLog: expect.objectContaining({
             event: "script-generation.opencode-attempt.failed",
+            level: "warn",
             reason: expect.stringContaining("very verbose stderr"),
             stage: "script-generation",
           }),
@@ -656,6 +657,36 @@ describe("DaytonaOpenCodeScriptGeneration", () => {
             nextAttempt: 2,
             reason: "OpenCode Script Generation exited with 1.",
             stage: "script-generation",
+          }),
+        },
+      ]),
+    );
+  });
+
+  it("marks the final Script Generation attempt failure as an error", async () => {
+    const events: unknown[] = [];
+    const agent = new DaytonaOpenCodeScriptGeneration({
+      maxAttempts: 1,
+      modelID: "gpt-5.5",
+      providerID: "openai",
+    });
+
+    await expect(
+      agent.generateScriptPackage({
+        ...scriptGenerationInput(),
+        opencodeSessionID: "session_prepare_123",
+        preparationWorkspace: workspaceHandle(events, [interactivePackage()], {
+          firstOpenCodeFailure: { stderr: "terminal stderr", stdout: "" },
+        }),
+      }),
+    ).rejects.toThrow("OpenCode Script Generation exited with 1");
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        {
+          sandboxLog: expect.objectContaining({
+            event: "script-generation.opencode-attempt.failed",
+            level: "error",
           }),
         },
       ]),
@@ -1298,6 +1329,7 @@ describe("DaytonaOpenCodeScriptGeneration", () => {
       expect.arrayContaining([
         expect.objectContaining({
           event: "draft-composite-review.evidence-upload.retrying",
+          level: "warn",
           uploadAttempt: 1,
           nextAttempt: 2,
           delayMs: 250,
@@ -1349,6 +1381,7 @@ describe("DaytonaOpenCodeScriptGeneration", () => {
           bytes: 26,
           event: "draft-composite-review.evidence-upload.failed",
           fileCount: 2,
+          level: "error",
           reason: "Draft Composite review evidence upload timed out after 5ms.",
           stage: "draft-composite-review",
         }),

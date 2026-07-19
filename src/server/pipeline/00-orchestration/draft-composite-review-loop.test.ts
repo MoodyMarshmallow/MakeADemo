@@ -137,9 +137,13 @@ describe("runDraftCompositeReviewLoop", () => {
     const root = await mkdtemp(join(tmpdir(), "makeademo-review-"));
     const previous = process.env.MAKEADEMO_DRAFT_COMPOSITE_REVIEW_ATTEMPTS;
     process.env.MAKEADEMO_DRAFT_COMPOSITE_REVIEW_ATTEMPTS = "1";
+    const logEntries: Array<Record<string, unknown>> = [];
     try {
       const result = await runDraftCompositeReviewLoop(
         loopInput(root, {
+          log: async (entry) => {
+            logEntries.push(entry);
+          },
           reviewDraftComposite: async () => ({
             decision: "repair",
             reason: "Still unclear.",
@@ -156,6 +160,15 @@ describe("runDraftCompositeReviewLoop", () => {
           "Draft Composite review requested repair: Still unclear.",
         ],
       });
+      expect(
+        logEntries
+          .filter(
+            (entry) =>
+              entry.event === "draft-composite-review-completed" ||
+              entry.event === "draft-composite-review-exhausted",
+          )
+          .map((entry) => entry.severity),
+      ).toEqual(["warn", "warn", "warn"]);
     } finally {
       if (previous === undefined)
         Reflect.deleteProperty(
@@ -220,7 +233,7 @@ function loopInput(
       repoUrl: "https://github.com/example/app",
       workspaceId: "workspace_123",
     },
-    log: async () => {},
+    log: overrides.log ?? (async () => {}),
     options,
     persistScript:
       overrides.persistScript ??
