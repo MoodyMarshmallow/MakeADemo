@@ -30,6 +30,8 @@ type RepoPreparationAgentResult =
       blockers: string[];
       status: "failed";
       suggestedChanges: string[];
+      /** The final bounded preflight verdict, when Repo Preparation exhausted repairs. */
+      validation?: ProjectValidationResult;
     };
 
 /**

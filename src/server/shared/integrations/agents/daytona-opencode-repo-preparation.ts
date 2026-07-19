@@ -78,6 +78,8 @@ const requestArtifactReadMinTimeoutMs = 50;
 const defaultInactivityTimeoutMs = 600_000;
 const defaultHardTimeoutMs = 1_800_000;
 const openCodeHardCapGraceMs = 30_000;
+const validationRepairAttemptLimit = 8;
+const maximumOpenCodeTurns = validationRepairAttemptLimit * 2;
 export type DaytonaOpenCodeRepoPreparationOptions = {
   /**
    * Non-secret provider configuration copied into clone-failure diagnostics.
@@ -323,8 +325,9 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
   ): Promise<OpenCodeLoopResult> {
     let prompt = initialPrompt;
     let currentSessionID: string | undefined;
+    let validationRepairAttempts = 0;
     const hardDeadlineAt = Date.now() + this.hardTimeoutMs;
-    for (let attempt = 0; attempt < 8; attempt += 1) {
+    for (let attempt = 0; attempt < maximumOpenCodeTurns; attempt += 1) {
       const initialDeadlineAt = Math.min(
         Date.now() + this.timeoutMs,
         hardDeadlineAt,
@@ -424,14 +427,17 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
         if (validationRequest !== undefined) {
           const validationOutcome = await this.processValidationRequest({
             attempt,
+            canExecuteRetry: attempt + 1 < maximumOpenCodeTurns,
             currentSessionID,
             deadlineAt,
             handle,
             input,
             baselineSourceControlledPaths,
+            validationRepairAttempts,
             validationRequest,
           });
           if (validationOutcome.status === "retry") {
+            validationRepairAttempts += 1;
             prompt = validationOutcome.prompt;
             continue;
           }
@@ -463,14 +469,17 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
         if (validationRequestResult.value !== undefined) {
           const validationOutcome = await this.processValidationRequest({
             attempt,
+            canExecuteRetry: attempt + 1 < maximumOpenCodeTurns,
             currentSessionID,
             deadlineAt,
             handle,
             input,
             baselineSourceControlledPaths,
+            validationRepairAttempts,
             validationRequest: validationRequestResult.value,
           });
           if (validationOutcome.status === "retry") {
+            validationRepairAttempts += 1;
             prompt = validationOutcome.prompt;
             continue;
           }
@@ -584,6 +593,18 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
           stderrLength: installResult.stderr.length,
           stdoutLength: installResult.stdout.length,
         });
+        if (attempt + 1 >= maximumOpenCodeTurns) {
+          return {
+            assumptions: [],
+            blockers: [
+              "Repo Preparation reached its total OpenCode turn limit after dependency installation.",
+            ],
+            status: "failed" as const,
+            suggestedChanges: [
+              "Retry Repo Preparation in a fresh Daytona workspace.",
+            ],
+          };
+        }
         await writeRepoPreparationRetryLog(this.logger, handle.workspace, {
           nextAttempt: attempt + 2,
           reason:
@@ -616,14 +637,17 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
       if (validationRequest !== undefined) {
         const validationOutcome = await this.processValidationRequest({
           attempt,
+          canExecuteRetry: attempt + 1 < maximumOpenCodeTurns,
           currentSessionID,
           deadlineAt,
           handle,
           input,
           baselineSourceControlledPaths,
+          validationRepairAttempts,
           validationRequest,
         });
         if (validationOutcome.status === "retry") {
+          validationRepairAttempts += 1;
           prompt = validationOutcome.prompt;
           continue;
         }
@@ -870,10 +894,12 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
   private async processValidationRequest(input: {
     attempt: number;
     baselineSourceControlledPaths: string[];
+    canExecuteRetry: boolean;
     currentSessionID: string | undefined;
     deadlineAt: number;
     handle: PreparationWorkspaceHandle;
     input: RepoPreparationInput;
+    validationRepairAttempts: number;
     validationRequest: ValidationRequest;
   }): Promise<
     | { prompt: string; status: "retry" }
@@ -990,6 +1016,15 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
           validation,
           workspace: input.handle,
         },
+        status: "done",
+      };
+    }
+    if (
+      input.validationRepairAttempts >= validationRepairAttemptLimit ||
+      !input.canExecuteRetry
+    ) {
+      return {
+        result: validationRepairExhaustedFailure(validation),
         status: "done",
       };
     }
@@ -1309,6 +1344,24 @@ function readRetryReason(reason: string | undefined): string {
   return reason === undefined || reason.trim().length === 0
     ? "validation-failed"
     : reason;
+}
+
+function validationRepairExhaustedFailure(
+  validation: ProjectValidationResult,
+): RepoPreparationResult {
+  const failureReason = readRetryReason(validation.failureReason);
+  return {
+    assumptions: [],
+    blockers: [failureReason],
+    status: "failed",
+    suggestedChanges:
+      validation.warnings.length === 0
+        ? [
+            "Repair the reported validation failure before retrying Repo Preparation.",
+          ]
+        : validation.warnings,
+    validation,
+  };
 }
 
 function readNonRetryablePreflightFailure(

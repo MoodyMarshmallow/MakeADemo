@@ -1289,6 +1289,256 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
     );
   });
 
+  it("reserves validation repairs after a successful dependency install handoff", async () => {
+    const events: unknown[] = [];
+    const validationFailures = [
+      "Initial validation failure.",
+      "Second validation failure.",
+      "Third validation failure.",
+      "Fourth validation failure.",
+      "Fifth validation failure.",
+      "Sixth validation failure.",
+      "Final actionable validation failure.",
+    ];
+    const agent = new DaytonaOpenCodeRepoPreparation({
+      modelID: "gpt-5.5",
+      provider: fakeProvider(events, {
+        commandOutputChunksByRun: [
+          [
+            {
+              channel: "stdout",
+              chunk: `${JSON.stringify({
+                args: { command: "bun install" },
+                toolName: "makeademo_dependency_request_install",
+                type: "tool-call",
+              })}\n`,
+            },
+          ],
+          ...validationFailures.map(() => [
+            {
+              channel: "stdout" as const,
+              chunk: `${JSON.stringify({
+                input: {
+                  manifestPath:
+                    "/tmp/makeademo/submitted-code/preparation-manifest.json",
+                },
+                toolName: "makeademo_validate_preparation",
+                type: "tool-call",
+              })}\n`,
+            },
+          ]),
+          [
+            {
+              channel: "stdout",
+              chunk: `${JSON.stringify({
+                input: {
+                  manifestPath:
+                    "/tmp/makeademo/submitted-code/preparation-manifest.json",
+                },
+                toolName: "makeademo_validate_preparation",
+                type: "tool-call",
+              })}\n`,
+            },
+          ],
+        ],
+      }),
+      providerID: "openai",
+      timeoutMs: 1_000,
+      validatePreparation: async () => {
+        const failureReason = validationFailures.shift();
+        return failureReason === undefined
+          ? validationArtifact().validation
+          : {
+              blockedNetworkAttempts: [],
+              evidence: {
+                browser: {
+                  text: "The repair target is visible in the browser.",
+                },
+              },
+              failureKind: "browser-not-interactable" as const,
+              failureReason,
+              logs: [failureReason],
+              status: "failed" as const,
+              warnings: ["Repair the observed browser state."],
+            };
+      },
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result).toMatchObject({
+      status: "succeeded",
+      validation: { status: "succeeded" },
+    });
+    const retries = events
+      .filter(
+        (
+          event,
+        ): event is {
+          sandboxLog: { event: string; level?: string; nextAttempt: number };
+        } =>
+          typeof event === "object" &&
+          event !== null &&
+          "sandboxLog" in event &&
+          typeof (event as { sandboxLog?: unknown }).sandboxLog === "object" &&
+          (event as { sandboxLog: { event?: unknown } }).sandboxLog.event ===
+            "repo-preparation.retrying",
+      )
+      .map((event) => event.sandboxLog);
+    expect(retries).toHaveLength(8);
+    expect(retries.map((entry) => entry.nextAttempt)).toEqual([
+      2, 3, 4, 5, 6, 7, 8, 9,
+    ]);
+    expect(retries.every((entry) => entry.level === "warn")).toBe(true);
+    expect(
+      events.filter(
+        (event): event is { sandboxLog: { event?: unknown } } =>
+          typeof event === "object" &&
+          event !== null &&
+          "sandboxLog" in event &&
+          typeof (event as { sandboxLog?: unknown }).sandboxLog === "object" &&
+          (event as { sandboxLog: { event?: unknown } }).sandboxLog.event ===
+            "opencode-started",
+      ),
+    ).toHaveLength(9);
+  });
+
+  it("returns the final typed validation verdict without logging an impossible repair", async () => {
+    const events: unknown[] = [];
+    const finalValidation = {
+      blockedNetworkAttempts: [],
+      evidence: {
+        browser: {
+          text: "The settings panel remains unavailable after the repair.",
+        },
+      },
+      failureKind: "browser-not-interactable" as const,
+      failureReason: "The settings panel is not interactable.",
+      logs: ["Settings panel did not become interactable."],
+      status: "failed" as const,
+      warnings: ["Repair the settings panel interaction state."],
+    };
+    const agent = new DaytonaOpenCodeRepoPreparation({
+      modelID: "gpt-5.5",
+      provider: fakeProvider(events, {
+        commandOutputChunksByRun: Array.from({ length: 9 }, () => [
+          {
+            channel: "stdout" as const,
+            chunk: `${JSON.stringify({
+              input: {
+                manifestPath:
+                  "/tmp/makeademo/submitted-code/preparation-manifest.json",
+              },
+              toolName: "makeademo_validate_preparation",
+              type: "tool-call",
+            })}\n`,
+          },
+        ]),
+      }),
+      providerID: "openai",
+      timeoutMs: 1_000,
+      validatePreparation: async () => finalValidation,
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result).toMatchObject({
+      blockers: ["The settings panel is not interactable."],
+      status: "failed",
+      suggestedChanges: ["Repair the settings panel interaction state."],
+      validation: finalValidation,
+    });
+    const retries = events
+      .filter(
+        (
+          event,
+        ): event is {
+          sandboxLog: { event: string; level?: string; nextAttempt: number };
+        } =>
+          typeof event === "object" &&
+          event !== null &&
+          "sandboxLog" in event &&
+          typeof (event as { sandboxLog?: unknown }).sandboxLog === "object" &&
+          (event as { sandboxLog: { event?: unknown } }).sandboxLog.event ===
+            "repo-preparation.retrying",
+      )
+      .map((event) => event.sandboxLog);
+    expect(retries.map((entry) => entry.nextAttempt)).toEqual([
+      2, 3, 4, 5, 6, 7, 8, 9,
+    ]);
+    expect(retries.every((entry) => entry.level === "warn")).toBe(true);
+    expect(
+      events.filter(
+        (
+          event,
+        ): event is { sandboxLog: { event?: unknown; level?: unknown } } =>
+          typeof event === "object" &&
+          event !== null &&
+          "sandboxLog" in event &&
+          typeof (event as { sandboxLog?: unknown }).sandboxLog === "object" &&
+          (event as { sandboxLog: { event?: unknown } }).sandboxLog.event ===
+            "preparation-preflight.finished" &&
+          (event as { sandboxLog: { level?: unknown } }).sandboxLog.level ===
+            "warn",
+      ),
+    ).toHaveLength(9);
+  });
+
+  it("does not log a retry after the total OpenCode safety bound", async () => {
+    const events: unknown[] = [];
+    const agent = new DaytonaOpenCodeRepoPreparation({
+      modelID: "gpt-5.5",
+      provider: fakeProvider(events, {
+        commandOutputChunksByRun: Array.from({ length: 16 }, () => [
+          {
+            channel: "stdout" as const,
+            chunk: `${JSON.stringify({
+              args: { command: "bun install" },
+              toolName: "makeademo_dependency_request_install",
+              type: "tool-call",
+            })}\n`,
+          },
+        ]),
+      }),
+      providerID: "openai",
+      timeoutMs: 1_000,
+    });
+
+    await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    const retries = events
+      .filter(
+        (
+          event,
+        ): event is { sandboxLog: { event: string; nextAttempt: number } } =>
+          typeof event === "object" &&
+          event !== null &&
+          "sandboxLog" in event &&
+          typeof (event as { sandboxLog?: unknown }).sandboxLog === "object" &&
+          (event as { sandboxLog: { event?: unknown } }).sandboxLog.event ===
+            "repo-preparation.retrying",
+      )
+      .map((event) => event.sandboxLog.nextAttempt);
+    expect(retries).toEqual([
+      2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+    ]);
+  });
+
   it("tells OpenCode to repair only observed runtime network requests before rerunning preflight", async () => {
     const events: unknown[] = [];
     const agent = new DaytonaOpenCodeRepoPreparation({
