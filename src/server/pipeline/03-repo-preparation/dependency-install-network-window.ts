@@ -1,64 +1,25 @@
-import {
-  type DependencyNetworkDecision,
-  evaluateDependencyNetworkRequest,
-} from "./dependency-network-gate";
 import type {
   PreparationWorkspace,
   PreparationWorkspaceCommandResult,
 } from "./preparation-workspace.interface";
 import {
-  executeSubmittedCode,
   executeSubmittedProject,
   setSubmittedCodeNetworkAccess,
 } from "./submitted-code-execution";
 import type { SubmittedCodeToolchainPlan } from "./submitted-code-toolchain.schema";
 
-export type DependencyInstallNetworkWindowInput = {
-  command: string;
-  workspace: PreparationWorkspace;
-};
-
-export async function runDependencyInstallWithNetworkWindow(
-  input: DependencyInstallNetworkWindowInput,
-): Promise<PreparationWorkspaceCommandResult> {
-  const decision = evaluateDependencyNetworkRequest({
-    command: input.command,
-    reason: "dependency-install",
-  });
-  assertNetworkAllowed(decision);
-
-  writeSandboxLogBestEffort(input.workspace, {
-    command: input.command,
-    event: "submitted-code-network.opening",
-    reason: "dependency-install",
-  });
-  await setSubmittedCodeNetworkAccess(input.workspace, true);
-  try {
-    writeSandboxLogBestEffort(input.workspace, {
-      command: input.command,
-      event: "submitted-code-network.opened",
-      reason: "dependency-install",
-    });
-    return await executeSubmittedCode(input.workspace, input.command);
-  } finally {
-    writeSandboxLogBestEffort(input.workspace, {
-      command: input.command,
-      event: "submitted-code-network.closing",
-      reason: "dependency-install",
-    });
-    await setSubmittedCodeNetworkAccess(input.workspace, false);
-    writeSandboxLogBestEffort(input.workspace, {
-      command: input.command,
-      event: "submitted-code-network.closed",
-      reason: "dependency-install",
-    });
-  }
-}
-
 export type PlannedDependencyInstallNetworkWindowInput = {
   toolchainPlan: SubmittedCodeToolchainPlan;
   workspace: PreparationWorkspace;
 };
+
+/** Raised when submitted-code outbound network access cannot be proven closed. */
+export class SubmittedCodeNetworkResealError extends Error {
+  constructor(cause: unknown) {
+    super("Submitted-code network access could not be resealed.", { cause });
+    this.name = "SubmittedCodeNetworkResealError";
+  }
+}
 
 /**
  * Runs a backend-resolved, plan-owned dependency install with temporary network
@@ -69,6 +30,12 @@ export async function runPlannedDependencyInstallWithNetworkWindow(
   input: PlannedDependencyInstallNetworkWindowInput,
 ): Promise<PreparationWorkspaceCommandResult> {
   const install = input.toolchainPlan.install;
+  if (install === undefined) {
+    const blocker = input.toolchainPlan.installBlocker;
+    throw new Error(
+      `Submitted code toolchain cannot install dependencies (${blocker?.code ?? "missing_immutable_install"}): ${blocker?.reason ?? "No catalog-owned immutable install is available."}`,
+    );
+  }
 
   writeSandboxLogBestEffort(input.workspace, {
     argv: install.argv,
@@ -76,19 +43,24 @@ export async function runPlannedDependencyInstallWithNetworkWindow(
     executable: install.executable,
     reason: "dependency-install",
   });
-  await setSubmittedCodeNetworkAccess(input.workspace, true);
+  let executionError: unknown;
+  let result: PreparationWorkspaceCommandResult | undefined;
+  let resealError: SubmittedCodeNetworkResealError | undefined;
   try {
+    await setSubmittedCodeNetworkAccess(input.workspace, true);
     writeSandboxLogBestEffort(input.workspace, {
       argv: install.argv,
       event: "submitted-code-network.opened",
       executable: install.executable,
       reason: "dependency-install",
     });
-    return await executeSubmittedProject(input.workspace, {
+    result = await executeSubmittedProject(input.workspace, {
       argv: install.argv,
       executable: install.executable,
       plan: input.toolchainPlan,
     });
+  } catch (error) {
+    executionError = error;
   } finally {
     writeSandboxLogBestEffort(input.workspace, {
       argv: install.argv,
@@ -96,14 +68,41 @@ export async function runPlannedDependencyInstallWithNetworkWindow(
       executable: install.executable,
       reason: "dependency-install",
     });
-    await setSubmittedCodeNetworkAccess(input.workspace, false);
-    writeSandboxLogBestEffort(input.workspace, {
-      argv: install.argv,
-      event: "submitted-code-network.closed",
-      executable: install.executable,
-      reason: "dependency-install",
-    });
+    try {
+      await setSubmittedCodeNetworkAccess(input.workspace, false);
+    } catch (firstFailure) {
+      try {
+        await setSubmittedCodeNetworkAccess(input.workspace, false);
+      } catch {
+        resealError = new SubmittedCodeNetworkResealError(firstFailure);
+      }
+    }
+    if (resealError === undefined) {
+      writeSandboxLogBestEffort(input.workspace, {
+        argv: install.argv,
+        event: "submitted-code-network.closed",
+        executable: install.executable,
+        reason: "dependency-install",
+      });
+    } else {
+      writeSandboxLogBestEffort(input.workspace, {
+        argv: install.argv,
+        event: "submitted-code-network.reseal-failed",
+        executable: install.executable,
+        level: "error",
+        reason: "dependency-install",
+        resealAttempts: 2,
+      });
+    }
   }
+  if (resealError !== undefined) throw resealError;
+  if (executionError !== undefined) throw executionError;
+  if (result === undefined) {
+    throw new Error(
+      "Planned dependency installation did not produce a result.",
+    );
+  }
+  return result;
 }
 
 function writeSandboxLogBestEffort(
@@ -118,13 +117,5 @@ function writeSandboxLogBestEffort(
   } catch {
     // Sandbox audit logging is best-effort for this network window; never let
     // log transport failures gate product flow or network resealing.
-  }
-}
-
-function assertNetworkAllowed(
-  decision: DependencyNetworkDecision,
-): asserts decision is { status: "allowed" } {
-  if (decision.status === "denied") {
-    throw new Error(decision.reason);
   }
 }

@@ -28,24 +28,10 @@ describe("createDaytonaFreshCaptureStatePreparer", () => {
       },
     ]);
   });
-
-  it("fails when production fresh capture wiring lacks the prepared workspace", async () => {
-    const prepareFreshCaptureState = createDaytonaFreshCaptureStatePreparer();
-
-    await expect(
-      prepareFreshCaptureState({
-        attempt: 1,
-        browserUrl: "https://preview.example.test/",
-        preparedDemo: succeededPreparedDemo(),
-      }),
-    ).rejects.toThrow(
-      "Fresh Footage Capture state requires the prepared workspace.",
-    );
-  });
 });
 
 function succeededPreparedDemo(
-  preparationWorkspace?: PreparationWorkspaceHandle,
+  preparationWorkspace: PreparationWorkspaceHandle,
 ) {
   const acceptedDemoScript = {
     assumptions: [],
@@ -80,7 +66,7 @@ function succeededPreparedDemo(
     demoScriptPackage: acceptedDemoScript,
     opencodeSessionID: "session_123",
     preparationManifest: preparationManifest(),
-    ...(preparationWorkspace === undefined ? {} : { preparationWorkspace }),
+    preparationWorkspace,
     repoSecurity: { rejections: [], status: "passed" as const, warnings: [] },
     status: "succeeded" as const,
   };

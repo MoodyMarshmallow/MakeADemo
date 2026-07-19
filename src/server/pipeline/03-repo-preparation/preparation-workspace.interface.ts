@@ -46,6 +46,13 @@ export type SubmittedProjectExecutionRequest = {
   plan: SubmittedCodeToolchainPlan;
 };
 
+/** A backend-validated demo runtime command paired with its catalog plan. */
+export type SubmittedProjectRuntimeRequest = {
+  /** Complete backend wrapper command; provider implementations must shell-quote it. */
+  command: string;
+  plan: SubmittedCodeToolchainPlan;
+};
+
 /**
  * Executes commands and network-policy changes inside a Repo Preparation workspace.
  * Implementations must scope destructive work to the ephemeral workspace copy and
@@ -73,6 +80,14 @@ export interface PreparationWorkspace {
    */
   executeSubmittedProject?(
     request: SubmittedProjectExecutionRequest,
+    options?: PreparationWorkspaceExecuteOptions,
+  ): Promise<PreparationWorkspaceCommandResult>;
+  /**
+   * Starts a backend-validated project runtime with the selected catalog Node.
+   * Implementations must preserve /workspace cwd and reject a tampered plan.
+   */
+  executeSubmittedRuntime?(
+    request: SubmittedProjectRuntimeRequest,
     options?: PreparationWorkspaceExecuteOptions,
   ): Promise<PreparationWorkspaceCommandResult>;
   getPreviewUrl(port: number): Promise<string>;

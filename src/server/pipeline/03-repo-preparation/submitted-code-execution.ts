@@ -3,6 +3,7 @@ import type {
   PreparationWorkspaceCommandResult,
   PreparationWorkspaceExecuteOptions,
   SubmittedProjectExecutionRequest,
+  SubmittedProjectRuntimeRequest,
 } from "./preparation-workspace.interface";
 
 /**
@@ -52,6 +53,19 @@ export async function executeSubmittedProject(
   }
 
   return await workspace.executeSubmittedProject(request, options);
+}
+
+/** Starts a backend-validated runtime using the already resolved catalog plan. */
+export async function executeSubmittedRuntime(
+  workspace: PreparationWorkspace,
+  request: SubmittedProjectRuntimeRequest,
+  options: PreparationWorkspaceExecuteOptions = {},
+): Promise<PreparationWorkspaceCommandResult> {
+  if (workspace.executeSubmittedRuntime === undefined) {
+    throw new Error("Preparation workspace cannot execute submitted runtimes.");
+  }
+
+  return await workspace.executeSubmittedRuntime(request, options);
 }
 
 export async function setSubmittedCodeNetworkAccess(

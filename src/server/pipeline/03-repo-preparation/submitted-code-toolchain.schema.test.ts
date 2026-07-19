@@ -248,30 +248,25 @@ describe("resolveSubmittedCodeToolchain", () => {
     );
   });
 
-  it("returns a structured missing-lockfile blocker before planning a frozen install", () => {
-    let error: unknown;
-    try {
-      resolveSubmittedCodeToolchain({
-        candidates: [
-          {
-            files: {
-              "package.json": JSON.stringify({
-                packageManager: "pnpm@10.27.0",
-              }),
-            },
-            projectRoot: ".",
+  it("keeps a catalog runtime while blocking immutable install without a lockfile", () => {
+    const plan = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "package.json": JSON.stringify({
+              packageManager: "pnpm@10.27.0",
+            }),
           },
-        ],
-      });
-    } catch (caught) {
-      error = caught;
-    }
+          projectRoot: ".",
+        },
+      ],
+    });
 
-    expect(error).toBeInstanceOf(SubmittedCodeToolchainResolutionError);
-    expect(error).toMatchObject({ code: "missing_lockfile" });
-    expect((error as Error).message).toContain(
-      "pnpm requires canonical lock artifact pnpm-lock.yaml",
-    );
+    expect(plan).toMatchObject({
+      installBlocker: { code: "missing_lockfile" },
+      node: { version: "22.23.1" },
+    });
+    expect(plan.install).toBeUndefined();
   });
 
   it("rejects traversal segments in a submitted project root", () => {

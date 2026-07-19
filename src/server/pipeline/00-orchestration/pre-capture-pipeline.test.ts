@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import type { PreparationWorkspaceHandle } from "../03-repo-preparation/preparation-workspace-runner";
 import type { RepoPreparationAgent } from "../03-repo-preparation/repo-preparation-agent.interface";
 import type { ScriptGenerationAgent } from "../04-script-generation/script-generation-agent.interface";
 import type { CapturePathRepairer } from "../05-capture-path-validation/capture-path-repairer.interface";
@@ -36,6 +37,7 @@ describe("createPreCapturePipelineDependencies", () => {
             workspaceId: "workspace_123",
           },
           status: "succeeded",
+          workspace: preparationWorkspaceHandle(),
         };
       },
     };
@@ -170,6 +172,43 @@ function manifest() {
     status: "created-new-demo" as const,
     url: "http://localhost:3000",
     workspaceId: "workspace_123",
+  };
+}
+
+function preparationWorkspaceHandle(): PreparationWorkspaceHandle {
+  return {
+    async release() {},
+    id: "workspace_123",
+    workspace: {
+      async execute(command) {
+        if (command === "makeademo-inspect-submitted-code-toolchain") {
+          return {
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify({
+              candidates: [
+                {
+                  files: {
+                    "package.json": JSON.stringify({
+                      engines: { node: "22" },
+                      packageManager: "pnpm@11.13.0",
+                    }),
+                    "pnpm-lock.yaml": "",
+                  },
+                  projectRoot: ".",
+                },
+              ],
+            }),
+          };
+        }
+        return { exitCode: 0, stderr: "", stdout: "" };
+      },
+      async getPreviewUrl() {
+        return "https://preview.example.test";
+      },
+      async setOutboundNetworkAccess() {},
+      async uploadFiles() {},
+    },
   };
 }
 

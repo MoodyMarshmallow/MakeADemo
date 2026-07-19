@@ -1,4 +1,5 @@
 import type { PreparationWorkspace } from "./preparation-workspace.interface";
+import type { SubmittedCodeToolchainPlan } from "./submitted-code-toolchain.schema";
 
 export type PreparationWorkspaceHandle = {
   /**
@@ -8,6 +9,8 @@ export type PreparationWorkspaceHandle = {
    */
   release(): Promise<void>;
   id: string;
+  /** Backend-owned catalog selection attached once after trusted inspection. */
+  toolchainPlan?: SubmittedCodeToolchainPlan;
   workspace: PreparationWorkspace;
 };
 

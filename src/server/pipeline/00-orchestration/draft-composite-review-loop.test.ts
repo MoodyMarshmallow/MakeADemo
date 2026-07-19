@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import type { PreparationWorkspaceHandle } from "../03-repo-preparation/preparation-workspace-runner";
 import type { CaptureManifest } from "../06-footage-capture/capture-scenes";
 import type { CompositedVideoManifest } from "../07-compositing/composite-video";
 import {
@@ -242,6 +243,7 @@ function loopDependencies(
       return {
         manifest: succeededPreparedDemo().preparationManifest,
         opencodeSessionID: "session_prepare_123",
+        workspace: preparationWorkspaceHandle(),
         status: "succeeded",
       };
     },
@@ -350,7 +352,25 @@ function succeededPreparedDemo(): DraftCompositeReviewLoopInput["preparedDemo"] 
       url: "http://localhost:3000/",
       workspaceId: "workspace_123",
     },
+    preparationWorkspace: preparationWorkspaceHandle(),
     status: "succeeded",
+  };
+}
+
+function preparationWorkspaceHandle(): PreparationWorkspaceHandle {
+  return {
+    async release() {},
+    id: "workspace_123",
+    workspace: {
+      async execute() {
+        return { exitCode: 0, stderr: "", stdout: "" };
+      },
+      async getPreviewUrl() {
+        return "https://preview.example.test";
+      },
+      async setOutboundNetworkAccess() {},
+      async uploadFiles() {},
+    },
   };
 }
 

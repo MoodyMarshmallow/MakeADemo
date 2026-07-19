@@ -132,10 +132,7 @@ export async function runDraftCompositeReviewLoop(
         preparedDemo,
       });
       browserUrl = freshState?.browserUrl ?? browserUrl;
-      const captureBaseUrl =
-        preparedDemo.preparationWorkspace === undefined
-          ? browserUrl
-          : preparedDemo.preparationManifest.url;
+      const captureBaseUrl = preparedDemo.preparationManifest.url;
       await input.log({
         attempt,
         baseUrl: captureBaseUrl,
@@ -159,9 +156,7 @@ export async function runDraftCompositeReviewLoop(
           ...(scriptPersistence.scriptPath === undefined
             ? {}
             : { scriptPath: scriptPersistence.scriptPath }),
-          ...(preparedDemo.preparationWorkspace === undefined
-            ? {}
-            : { preparationWorkspace: preparedDemo.preparationWorkspace }),
+          preparationWorkspace: preparedDemo.preparationWorkspace,
           tempRoot: join(input.runDirectory, "capture"),
         });
       } catch (error) {
@@ -455,9 +450,7 @@ export async function runDraftCompositeReviewLoop(
             status: "failed",
             warnings: [],
           },
-          ...(preparedDemo.preparationWorkspace === undefined
-            ? {}
-            : { preparationWorkspace: preparedDemo.preparationWorkspace }),
+          preparationWorkspace: preparedDemo.preparationWorkspace,
           ...(preparedDemo.opencodeSessionID === undefined
             ? {}
             : { opencodeSessionID: preparedDemo.opencodeSessionID }),
@@ -469,9 +462,7 @@ export async function runDraftCompositeReviewLoop(
         const capturePathValidation =
           await input.dependencies.validateCapturePath({
             preparationManifest: repair.preparationManifest,
-            ...(preparedDemo.preparationWorkspace === undefined
-              ? {}
-              : { preparationWorkspace: preparedDemo.preparationWorkspace }),
+            preparationWorkspace: preparedDemo.preparationWorkspace,
             demoScriptCandidate: repair.demoScriptPackage,
             demoScriptPackage: repair.demoScriptPackage,
           });

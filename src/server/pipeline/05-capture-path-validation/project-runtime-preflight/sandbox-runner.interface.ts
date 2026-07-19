@@ -33,7 +33,7 @@ export interface SandboxRunner {
   runValidation(
     input: SandboxValidationInput & {
       preparationManifest: PreparationManifest;
-      preparationWorkspace?: PreparationWorkspaceHandle;
+      preparationWorkspace: PreparationWorkspaceHandle;
     },
   ): Promise<SandboxValidationOutput>;
 }

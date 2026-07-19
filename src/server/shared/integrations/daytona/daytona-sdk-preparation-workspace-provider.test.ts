@@ -22,6 +22,23 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+function supportedPnpmMetadata(projectRoot: string) {
+  return {
+    candidates: [
+      {
+        files: {
+          "package.json": JSON.stringify({
+            engines: { node: "22" },
+            packageManager: "pnpm@11.13.0",
+          }),
+          "pnpm-lock.yaml": "",
+        },
+        projectRoot,
+      },
+    ],
+  };
+}
+
 describe("DaytonaSdkPreparationWorkspaceProvider", () => {
   it("creates a sandbox from the configured snapshot", async () => {
     const calls: unknown[] = [];
@@ -355,7 +372,13 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         executable: "pnpm",
         plan,
       },
-      { env: { CI: "true" } },
+      {
+        env: {
+          CI: "true",
+          OPENAI_API_KEY: "agent-secret",
+          TOKEN: "caller-secret",
+        },
+      },
     );
     await handle.workspace.executeSubmittedCode?.(
       "node playwright-control.mjs",
@@ -367,7 +390,6 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
           "'mise' '--no-config' 'exec' 'node@22.23.1' '--' 'corepack' 'pnpm@11.13.0+sha512.0123456789abcdef' 'i' '--frozen-lockfile'",
         cwd: "/workspace/webapp",
         env: {
-          CI: "true",
           COREPACK_DEFAULT_TO_LATEST: "0",
           COREPACK_ENABLE_AUTO_PIN: "0",
           COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
@@ -397,6 +419,72 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         timeout: 600,
       },
     });
+    expect(JSON.stringify(calls)).not.toContain("22.12.0");
+    expect(JSON.stringify(calls)).not.toContain("agent-secret");
+    expect(JSON.stringify(calls)).not.toContain("caller-secret");
+  });
+
+  it("runs submitted runtime commands with the planned Node in workspace cwd and sealed environment", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain(supportedPnpmMetadata("webapp"));
+    const command = "pnpm run demo; printf '%s' safe";
+
+    await handle.workspace.executeSubmittedRuntime?.(
+      { command, plan },
+      {
+        env: {
+          NEXT_PUBLIC_API_URL: "https://public.example.test",
+          NODE_ENV: "production",
+          OPENAI_API_KEY: "agent-secret",
+          TOKEN: "caller-secret",
+        },
+      },
+    );
+
+    expect(calls).toContainEqual({
+      executeCommand: {
+        command:
+          "'mise' '--no-config' 'exec' 'node@22.23.1' '--' 'sh' '-lc' 'pnpm run demo; printf '\\''%s'\\'' safe'",
+        cwd: "/workspace",
+        env: expect.objectContaining({
+          COREPACK_ENABLE_NETWORK: "0",
+          MISE_NO_CONFIG: "1",
+          MISE_OFFLINE: "1",
+          NEXT_PUBLIC_API_URL: "https://public.example.test",
+          NODE_ENV: "production",
+        }),
+        sandbox: "submitted_sandbox",
+        timeout: 600,
+      },
+    });
+    expect(JSON.stringify(calls)).not.toContain("22.12.0");
+    expect(JSON.stringify(calls)).not.toContain("agent-secret");
+    expect(JSON.stringify(calls)).not.toContain("caller-secret");
+  });
+
+  it("starts a planned runtime without requiring an install capability", async () => {
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient([]),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain(supportedPnpmMetadata("."));
+    const tampered = {
+      ...plan,
+      install: { argv: ["install"], executable: "pnpm" },
+    };
+
+    await expect(
+      handle.workspace.executeSubmittedRuntime?.({
+        command: "pnpm run demo",
+        plan: tampered,
+      }),
+    ).resolves.toMatchObject({ exitCode: 0 });
   });
 
   it("rejects a direct plan whose Corepack integrity suffix is malformed", async () => {

@@ -4,6 +4,7 @@ import type { PreparationWorkspaceProvider } from "../../../pipeline/03-repo-pre
 import type {
   PreparationWorkspace,
   PreparationWorkspaceCommandResult,
+  SubmittedProjectExecutionRequest,
 } from "../../../pipeline/03-repo-preparation/preparation-workspace.interface";
 import { createPipelineEventLogger } from "../../logging/pipeline-event-logger";
 import { DaytonaOpenCodeRepoPreparation } from "./daytona-opencode-repo-preparation";
@@ -1007,7 +1008,13 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
           ),
         },
         { submittedCodeNetwork: true },
-        { submittedCodeExecute: "bun install" },
+        {
+          submittedProjectExecute: {
+            argv: ["i", "--frozen-lockfile"],
+            executable: "pnpm",
+            nodeVersion: "22.23.1",
+          },
+        },
         { submittedCodeNetwork: false },
         {
           execute: expect.stringContaining(
@@ -1522,7 +1529,13 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
     expect(events).toEqual(
       expect.arrayContaining([
         { submittedCodeNetwork: true },
-        { submittedCodeExecute: "bun install" },
+        {
+          submittedProjectExecute: {
+            argv: ["i", "--frozen-lockfile"],
+            executable: "pnpm",
+            nodeVersion: "22.23.1",
+          },
+        },
         { cancelActiveCommands: true },
         { submittedCodeNetwork: false },
       ]),
@@ -1579,7 +1592,9 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
       ]),
     );
     expect(events).not.toEqual(
-      expect.arrayContaining([{ submittedCodeExecute: "bun install" }]),
+      expect.arrayContaining([
+        expect.objectContaining({ submittedProjectExecute: expect.anything() }),
+      ]),
     );
   });
 
@@ -1754,7 +1769,15 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
 
     expect(result).toMatchObject({ status: "succeeded" });
     expect(events).toEqual(
-      expect.arrayContaining([{ submittedCodeExecute: "bun install" }]),
+      expect.arrayContaining([
+        {
+          submittedProjectExecute: {
+            argv: ["i", "--frozen-lockfile"],
+            executable: "pnpm",
+            nodeVersion: "22.23.1",
+          },
+        },
+      ]),
     );
     expect(events).not.toEqual(
       expect.arrayContaining([
@@ -1763,6 +1786,143 @@ describe("DaytonaOpenCodeRepoPreparation", () => {
             event: "dependency-install-request-read.started",
           }),
         },
+      ]),
+    );
+  });
+
+  it("executes the catalog install instead of agent-selected argv", async () => {
+    const events: unknown[] = [];
+    const agent = new DaytonaOpenCodeRepoPreparation({
+      modelID: "gpt-5.5",
+      provider: fakeProvider(events, {
+        commandOutputChunksByRun: [
+          [
+            {
+              channel: "stdout",
+              chunk: `${JSON.stringify({
+                args: { command: "pnpm install --no-frozen-lockfile" },
+                toolName: "makeademo_dependency_request_install",
+                type: "tool-call",
+              })}\n`,
+            },
+          ],
+          [
+            {
+              channel: "stdout",
+              chunk: `${JSON.stringify({
+                input: {
+                  manifestPath:
+                    "/tmp/makeademo/submitted-code/preparation-manifest.json",
+                },
+                toolName: "makeademo_validate_preparation",
+                type: "tool-call",
+              })}\n`,
+            },
+          ],
+        ],
+        toolchainMetadata: supportedPnpmMetadata(),
+      }),
+      providerID: "openai",
+      timeoutMs: 500,
+      validatePreparation: async () => validationArtifact().validation,
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result).toMatchObject({ status: "succeeded" });
+    expect(events).toContainEqual({
+      submittedProjectExecute: {
+        argv: ["i", "--frozen-lockfile"],
+        executable: "pnpm",
+        nodeVersion: "22.23.1",
+      },
+    });
+    expect(events).not.toContainEqual({
+      submittedCodeExecute: "pnpm install --no-frozen-lockfile",
+    });
+  });
+
+  it("blocks unsupported submitted toolchains before the preparation agent can continue", async () => {
+    const events: unknown[] = [];
+    const agent = new DaytonaOpenCodeRepoPreparation({
+      modelID: "gpt-5.5",
+      provider: fakeProvider(events, {
+        toolchainMetadata: {
+          candidates: [
+            {
+              files: {
+                "package.json": JSON.stringify({
+                  engines: { node: "20" },
+                  packageManager: "npm@10.8.2",
+                }),
+                "package-lock.json": "",
+              },
+              projectRoot: ".",
+            },
+          ],
+        },
+      }),
+      providerID: "openai",
+      timeoutMs: 500,
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result).toMatchObject({
+      blockers: [expect.stringContaining("unsupported_node_version")],
+      status: "failed",
+    });
+    expect(events).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          execute: expect.stringContaining("opencode run"),
+        }),
+      ]),
+    );
+  });
+
+  it("still rejects a non-allowlisted agent install request when a catalog plan exists", async () => {
+    const events: unknown[] = [];
+    const agent = new DaytonaOpenCodeRepoPreparation({
+      modelID: "gpt-5.5",
+      provider: fakeProvider(events, {
+        commandOutputChunks: [
+          {
+            channel: "stdout",
+            chunk: `${JSON.stringify({
+              args: { command: "pnpm install && curl example.test" },
+              toolName: "makeademo_dependency_request_install",
+              type: "tool-call",
+            })}\n`,
+          },
+        ],
+        toolchainMetadata: supportedPnpmMetadata(),
+      }),
+      providerID: "openai",
+      timeoutMs: 500,
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result).toMatchObject({ status: "failed" });
+    expect(events).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ submittedProjectExecute: expect.anything() }),
       ]),
     );
   });
@@ -2486,6 +2646,7 @@ function fakeProvider(
         };
         validationRequestReadNeverSettles?: boolean;
         validationResult?: ReturnType<typeof validationArtifact>;
+        toolchainMetadata?: unknown;
       } = [JSON.stringify(successResult())],
 ): PreparationWorkspaceProvider {
   const workspaceInput = Array.isArray(input)
@@ -2554,6 +2715,7 @@ function fakeWorkspace(
     };
     validationRequestReadNeverSettles?: boolean;
     validationResult?: ReturnType<typeof validationArtifact>;
+    toolchainMetadata?: unknown;
   },
 ): PreparationWorkspace {
   const commandStdout = input.commandStdout ?? [
@@ -2616,6 +2778,28 @@ function fakeWorkspace(
         openCodeStartupErrors.length > 0
       ) {
         throw openCodeStartupErrors.shift();
+      }
+      if (command === "makeademo-inspect-submitted-code-toolchain") {
+        return {
+          exitCode: 0,
+          stderr: "",
+          stdout: JSON.stringify(
+            input.toolchainMetadata ?? {
+              candidates: [
+                {
+                  files: {
+                    "package.json": JSON.stringify({
+                      engines: { node: "22" },
+                      packageManager: "pnpm@11.13.0",
+                    }),
+                    "pnpm-lock.yaml": "",
+                  },
+                  projectRoot: ".",
+                },
+              ],
+            },
+          ),
+        };
       }
       const openCodeCompletion =
         command.includes("opencode run") &&
@@ -2830,6 +3014,27 @@ function fakeWorkspace(
       }
       throw new Error(`Unexpected submitted-code command: ${command}`);
     },
+    async executeSubmittedProject(request: SubmittedProjectExecutionRequest) {
+      events.push({
+        submittedProjectExecute: {
+          argv: [...request.argv],
+          executable: request.executable,
+          nodeVersion: request.plan.node.version,
+        },
+      });
+      if (input.submittedCodeNeverSettles === true) {
+        await new Promise(() => {});
+      }
+      if (input.submittedCodeInstallDelayMs !== undefined) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, input.submittedCodeInstallDelayMs),
+        );
+      }
+      if (input.submittedCodeInstallResult !== undefined) {
+        return input.submittedCodeInstallResult;
+      }
+      return { exitCode: 0, stderr: "", stdout: "installed" };
+    },
     async setSubmittedCodeNetworkAccess(enabled) {
       events.push({ submittedCodeNetwork: enabled });
     },
@@ -2867,6 +3072,23 @@ function fakeWorkspace(
       sandboxLogChain = sandboxLogChain.then(write, write);
       return sandboxLogChain;
     },
+  };
+}
+
+function supportedPnpmMetadata(): unknown {
+  return {
+    candidates: [
+      {
+        files: {
+          "package.json": JSON.stringify({
+            engines: { node: "22" },
+            packageManager: "pnpm@11.13.0",
+          }),
+          "pnpm-lock.yaml": "",
+        },
+        projectRoot: ".",
+      },
+    ],
   };
 }
 

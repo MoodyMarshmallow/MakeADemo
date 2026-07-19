@@ -47,12 +47,21 @@ export type SubmittedCodeToolchainMetadata = {
 export type SubmittedCodeToolchainPlan = {
   catalogRevision: typeof catalogRevision;
   evidence: readonly SubmittedCodeToolchainEvidence[];
-  install: {
+  /** Present only when the catalog can perform an immutable install. */
+  install?: {
     argv: readonly string[];
     executable: string;
   };
+  /** A bounded reason an install must be blocked; runtime remains catalog-owned. */
+  installBlocker?: {
+    code: Exclude<
+      SubmittedCodeToolchainResolutionError["code"],
+      "unsupported_node_version"
+    >;
+    reason: string;
+  };
   node: { version: (typeof supportedNodeVersions)[number] };
-  packageManager: {
+  packageManager?: {
     corepackHash?: string;
     name: "pnpm";
     version: (typeof supportedPackageManagerVersions.pnpm)[number];
@@ -63,7 +72,12 @@ export type SubmittedCodeToolchainPlan = {
 
 export class SubmittedCodeToolchainResolutionError extends Error {
   constructor(
-    readonly code: "missing_lockfile",
+    readonly code:
+      | "missing_immutable_install"
+      | "missing_lockfile"
+      | "unsupported_node_version"
+      | "unsupported_package_manager"
+      | "unsupported_package_manager_version",
     message: string,
   ) {
     super(message);
@@ -130,15 +144,40 @@ export function resolveSubmittedCodeToolchain(
   );
   const { version: nodeVersion, warnings } =
     resolveNodeVersion(nodeConstraints);
-  const manager = resolvePackageManager(
-    candidate.files,
-    packageJson,
-    evidence,
-    warnings,
-  );
+  let manager: SubmittedCodeToolchainPlan["packageManager"];
+  try {
+    manager = resolvePackageManager(
+      candidate.files,
+      packageJson,
+      evidence,
+      warnings,
+    );
+  } catch (error) {
+    if (
+      error instanceof SubmittedCodeToolchainResolutionError &&
+      error.code !== "unsupported_node_version"
+    ) {
+      return {
+        catalogRevision,
+        evidence,
+        installBlocker: {
+          code: error.code,
+          reason: installBlockerReason(error.code),
+        },
+        node: { version: nodeVersion },
+        projectRoot: candidate.projectRoot,
+        warnings,
+      };
+    }
+    throw error;
+  }
+  if (manager === undefined) {
+    throw new Error("Submitted toolchain package manager is missing.");
+  }
   const install = resolveCommand(manager.name, "frozen", []);
   if (install === null) {
-    throw new Error(
+    throw new SubmittedCodeToolchainResolutionError(
+      "missing_immutable_install",
       `Package manager ${manager.name} does not define an immutable install command.`,
     );
   }
@@ -152,6 +191,24 @@ export function resolveSubmittedCodeToolchain(
     projectRoot: candidate.projectRoot,
     warnings,
   };
+}
+
+function installBlockerReason(
+  code: Exclude<
+    SubmittedCodeToolchainResolutionError["code"],
+    "unsupported_node_version"
+  >,
+): string {
+  switch (code) {
+    case "missing_immutable_install":
+      return "The selected package manager has no catalog-owned immutable install.";
+    case "missing_lockfile":
+      return "The selected package manager requires its canonical lockfile.";
+    case "unsupported_package_manager":
+      return "The submitted package manager is not available in the active catalog.";
+    case "unsupported_package_manager_version":
+      return "The submitted package-manager version is not available in the active catalog.";
+  }
 }
 
 function selectProjectRoot(
@@ -285,15 +342,18 @@ function resolveNodeVersion(constraints: Constraint[]): {
     };
   }
   const range = validRange(selected.value);
-  const version =
-    range === null
-      ? null
-      : maxSatisfying([...supportedNodeVersions], range, {
-          includePrerelease: false,
-          loose: false,
-        });
-  if (version === null) {
+  if (range === null) {
     throw new Error(
+      `Invalid Node constraint: ${selected.source}=${selected.value}.`,
+    );
+  }
+  const version = maxSatisfying([...supportedNodeVersions], range, {
+    includePrerelease: false,
+    loose: false,
+  });
+  if (version === null) {
+    throw new SubmittedCodeToolchainResolutionError(
+      "unsupported_node_version",
       `Node constraints do not intersect the ${catalogRevision} active catalog (${supportedNodeVersions.join(", ")}): ${selected.source}=${selected.value}.`,
     );
   }
@@ -391,7 +451,8 @@ function resolvePackageManager(
     selectedDeclaration?.name ??
     "npm") as SubmittedCodePackageManager;
   if (name !== "pnpm") {
-    throw new Error(
+    throw new SubmittedCodeToolchainResolutionError(
+      "unsupported_package_manager",
       `Package manager ${name} is not in the ${catalogRevision} active catalog (pnpm 10.27.0, pnpm 11.13.0).`,
     );
   }
@@ -569,6 +630,13 @@ function selectCatalogVersion<T extends string>(
   constraints: readonly Constraint[],
 ): T {
   if (constraints.length === 0) return versions[versions.length - 1] as T;
+  for (const constraint of constraints) {
+    if (validRange(constraint.value) === null) {
+      throw new Error(
+        `Invalid ${tool} constraint: ${constraint.source}=${constraint.value}.`,
+      );
+    }
+  }
   const compatible = versions.filter((version) =>
     constraints.every((constraint) => {
       const range = validRange(constraint.value);
@@ -583,7 +651,8 @@ function selectCatalogVersion<T extends string>(
   );
   const selected = compatible[compatible.length - 1];
   if (selected === undefined) {
-    throw new Error(
+    throw new SubmittedCodeToolchainResolutionError(
+      "unsupported_package_manager_version",
       `${tool} constraints do not intersect the ${catalogRevision} active catalog (${versions.join(", ")}): ${constraints.map((entry) => `${entry.source}=${entry.value}`).join(", ")}.`,
     );
   }

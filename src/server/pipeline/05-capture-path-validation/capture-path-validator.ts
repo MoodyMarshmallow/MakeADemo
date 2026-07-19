@@ -118,9 +118,7 @@ export async function validateCapturePath(
   });
   const projectValidation = await dependencies.validateProject({
     preparationManifest: input.preparationManifest,
-    ...(input.preparationWorkspace === undefined
-      ? {}
-      : { preparationWorkspace: input.preparationWorkspace }),
+    preparationWorkspace: input.preparationWorkspace,
   });
 
   if (projectValidation.status === "failed") {

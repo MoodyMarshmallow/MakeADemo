@@ -8,7 +8,7 @@ import type { NetworkAttempt } from "./project-runtime-preflight/network-isolati
 
 export type CapturePathValidationInput = {
   preparationManifest: PreparationManifest;
-  preparationWorkspace?: PreparationWorkspaceHandle;
+  preparationWorkspace: PreparationWorkspaceHandle;
   demoScriptCandidate: DemoScriptCandidate;
   demoScriptPackage: DemoScriptPackage;
 };

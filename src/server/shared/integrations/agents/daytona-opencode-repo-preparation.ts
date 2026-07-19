@@ -1,4 +1,5 @@
-import { runDependencyInstallWithNetworkWindow } from "../../../pipeline/03-repo-preparation/dependency-install-network-window";
+import { runPlannedDependencyInstallWithNetworkWindow } from "../../../pipeline/03-repo-preparation/dependency-install-network-window";
+import { evaluateDependencyNetworkRequest } from "../../../pipeline/03-repo-preparation/dependency-network-gate";
 import {
   type readPreparationManifest,
   validateNativeVisibleInterfaceProvenance,
@@ -15,6 +16,7 @@ import type {
   RepoPreparationAgent,
   RepoPreparationInput,
 } from "../../../pipeline/03-repo-preparation/repo-preparation-agent.interface";
+import { inspectSubmittedCodeToolchain } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain-inspection";
 import type { ProjectValidationResult } from "../../../pipeline/05-capture-path-validation/project-runtime-preflight/validation-result";
 import {
   type PipelineEventLogger,
@@ -268,6 +270,43 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
       return { result: bootstrap.failure, status: "result" };
     }
 
+    const toolchain = await inspectSubmittedCodeToolchain(handle.workspace);
+    if (toolchain.mode === "unsupported") {
+      await this.writeSandboxLog(handle.workspace, {
+        code: toolchain.code,
+        event: "submitted-code-toolchain.unsupported",
+        reason: toolchain.reason,
+      });
+      return {
+        result: {
+          assumptions: [],
+          blockers: [
+            `Submitted code toolchain is unsupported (${toolchain.code}): ${toolchain.reason}`,
+          ],
+          status: "failed" as const,
+          suggestedChanges: [
+            "Use a supported submitted-code toolchain with an immutable lockfile, then retry Repo Preparation.",
+          ],
+        },
+        status: "result",
+      };
+    }
+    handle.toolchainPlan = toolchain.plan;
+    await this.writeSandboxLog(handle.workspace, {
+      catalogRevision: toolchain.plan.catalogRevision,
+      event: "submitted-code-toolchain.catalog-selected",
+      ...(toolchain.plan.installBlocker === undefined
+        ? {}
+        : { installBlockerCode: toolchain.plan.installBlocker.code }),
+      nodeVersion: toolchain.plan.node.version,
+      ...(toolchain.plan.packageManager === undefined
+        ? {}
+        : {
+            packageManager: `${toolchain.plan.packageManager.name}@${toolchain.plan.packageManager.version}`,
+          }),
+      projectRoot: toolchain.plan.projectRoot,
+    });
+
     return {
       baselineSourceControlledPaths:
         bootstrap.baselineSourceControlledPaths ?? [],
@@ -478,6 +517,13 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
         | DependencyInstallRequest
         | undefined;
       if (dependencyRequest !== undefined) {
+        const dependencyDecision = evaluateDependencyNetworkRequest({
+          command: dependencyRequest.command,
+          reason: "dependency-install",
+        });
+        if (dependencyDecision.status === "denied") {
+          throw new Error(dependencyDecision.reason);
+        }
         await this.writeSandboxLog(handle.workspace, {
           command: dependencyRequest.command,
           event: "dependency-install-requested",
@@ -485,9 +531,31 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
         if (deadlineAt - Date.now() < minimumBackendToolBudgetMs) {
           return backendToolDeadlineFailure("dependency installation");
         }
+        const refreshedToolchain = await inspectSubmittedCodeToolchain(
+          handle.workspace,
+        );
+        if (refreshedToolchain.mode === "unsupported") {
+          throw new Error(
+            `Submitted code toolchain is unsupported (${refreshedToolchain.code}): ${refreshedToolchain.reason}`,
+          );
+        }
+        handle.toolchainPlan = refreshedToolchain.plan;
+        const plannedInstall = handle.toolchainPlan;
+        if (plannedInstall.install === undefined) {
+          const blocker = plannedInstall.installBlocker;
+          throw new Error(
+            `Submitted code toolchain cannot install dependencies (${blocker?.code ?? "missing_immutable_install"}): ${blocker?.reason ?? "No catalog-owned immutable install is available."}`,
+          );
+        }
+        await this.writeSandboxLog(handle.workspace, {
+          event: "dependency-install-catalog-command-selected",
+          executedArgv: plannedInstall.install.argv,
+          executedExecutable: plannedInstall.install.executable,
+          requestedCommand: dependencyRequest.command,
+        });
         const installRun = await raceWithTimeout(
-          runDependencyInstallWithNetworkWindow({
-            command: dependencyRequest.command,
+          runPlannedDependencyInstallWithNetworkWindow({
+            toolchainPlan: plannedInstall,
             workspace: handle.workspace,
           }),
           Math.max(1, deadlineAt - Date.now()),
@@ -834,6 +902,15 @@ export class DaytonaOpenCodeRepoPreparation implements RepoPreparationAgent {
     try {
       const validationRun = await raceWithTimeout(
         (async () => {
+          const refreshedToolchain = await inspectSubmittedCodeToolchain(
+            input.handle.workspace,
+          );
+          if (refreshedToolchain.mode === "unsupported") {
+            throw new Error(
+              `Submitted code toolchain is unsupported (${refreshedToolchain.code}): ${refreshedToolchain.reason}`,
+            );
+          }
+          input.handle.toolchainPlan = refreshedToolchain.plan;
           manifest = await readPreparationManifestFile(
             input.handle.workspace,
             input.validationRequest.manifestPath,

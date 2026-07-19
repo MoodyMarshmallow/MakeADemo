@@ -267,6 +267,7 @@ describe("validateProject", () => {
           demoCommand: "npm run demo",
           url: "http://localhost:5173",
         }),
+        preparationWorkspace: workspaceHandle([]),
       },
       { browserValidator, sandboxRunner },
     );
@@ -276,9 +277,7 @@ describe("validateProject", () => {
       "Runtime network communication across the sandbox boundary is not allowed. Blocked runtime network attempts: api.example.com.",
     );
     expect(result.blockedNetworkAttempts).toHaveLength(1);
-    expect(result.warnings).toEqual([
-      "No lockfile found; npm install may be less deterministic.",
-    ]);
+    expect(result.warnings).toEqual([]);
     expect(cleanedUp).toBe(true);
   });
 
@@ -302,6 +301,7 @@ describe("validateProject", () => {
           demoCommand: "npm run demo",
           url: "http://localhost:5173",
         }),
+        preparationWorkspace: workspaceHandle([]),
       },
       { browserValidator, sandboxRunner },
     );
@@ -338,6 +338,7 @@ describe("validateProject", () => {
           demoCommand: "npm run demo",
           url: "http://localhost:5173",
         }),
+        preparationWorkspace: workspaceHandle([]),
       },
       { browserValidator, sandboxRunner },
     );
@@ -420,6 +421,7 @@ describe("validateProject", () => {
             demoCommand: "npm run demo",
             url: "http://localhost:5173",
           }),
+          preparationWorkspace: workspaceHandle([]),
         },
         { browserValidator, sandboxRunner },
       ),
@@ -454,6 +456,7 @@ describe("validateProject", () => {
           demoCommand: "npm run demo",
           url: "http://localhost:5173",
         }),
+        preparationWorkspace: workspaceHandle([]),
       },
       { browserValidationTimeoutMs: 1, browserValidator, sandboxRunner },
     );
@@ -626,6 +629,7 @@ describe("validateProject", () => {
           demoCommand: "npm run demo",
           url: "http://localhost:5173",
         }),
+        preparationWorkspace: workspaceHandle([]),
       },
       { browserValidator, sandboxRunner },
     );
@@ -640,6 +644,104 @@ describe("validateProject", () => {
       ],
       status: "failed",
     });
+  });
+
+  it("returns Ghost-style server and browser evidence with accessible screenshot metadata", async () => {
+    const result = await validateProject(
+      {
+        preparationManifest: manifest({
+          demoCommand: "npm run demo",
+          url: "http://localhost:5173",
+        }),
+        preparationWorkspace: workspaceHandle([]),
+      },
+      {
+        browserValidator: {
+          async validate() {
+            return {
+              failureKind: "browser-not-interactable",
+              interactable: false,
+              logs: ["Vite Error: token=secret"],
+              screenshot: {
+                mimeType: "image/png",
+                path: "/workspace/.makeademo/validation-screenshot.png",
+              },
+              screenshotArtifactId: "",
+            };
+          },
+        },
+        sandboxRunner: {
+          async runValidation() {
+            return {
+              blockedNetworkAttempts: [],
+              browserUrl: "https://preview.example.test",
+              logs: [],
+              repoFiles: ["package-lock.json", "package.json"],
+              runtimeExitCode: 0,
+              serverLog: "Vite failed token=secret",
+            };
+          },
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      evidence: {
+        browser: { text: "Vite Error: token=[redacted]" },
+        serverLog: { text: "Vite failed token=[redacted]" },
+      },
+      screenshot: { path: "/workspace/.makeademo/validation-screenshot.png" },
+      status: "failed",
+    });
+  });
+
+  it("redacts and bounds lower-priority toolchain metadata warnings", async () => {
+    const secret = "token=supersecret";
+    const result = await validateProject(
+      {
+        preparationManifest: manifest({
+          demoCommand: "npm run demo",
+          url: "http://localhost:5173",
+        }),
+        preparationWorkspace: workspaceHandle([], {
+          candidates: [
+            {
+              files: {
+                ".nvmrc": `${secret}${"x".repeat(2_000)}`,
+                "package.json": JSON.stringify({
+                  engines: { node: "22" },
+                  packageManager: "pnpm@11.13.0",
+                }),
+                "pnpm-lock.yaml": "",
+              },
+              projectRoot: ".",
+            },
+          ],
+        }),
+      },
+      {
+        browserValidator: {
+          async validate() {
+            return { interactable: true, logs: [], screenshotArtifactId: "" };
+          },
+        },
+        sandboxRunner: {
+          async runValidation() {
+            return {
+              blockedNetworkAttempts: [],
+              logs: [],
+              repoFiles: [],
+              runtimeExitCode: 0,
+            };
+          },
+        },
+      },
+    );
+
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).not.toContain(secret);
+    expect(result.warnings[0]).toContain("token=***");
+    expect(result.warnings[0]?.length).toBeLessThanOrEqual(1_000);
   });
 });
 
@@ -664,12 +766,20 @@ function manifest(overrides: { demoCommand: string; url: string }) {
 
 function workspaceHandle(
   sandboxLogs: Array<Record<string, unknown>>,
+  toolchainMetadata: unknown = supportedToolchainMetadata,
 ): PreparationWorkspaceHandle {
   return {
     async release() {},
     id: "workspace_123",
     workspace: {
-      async execute() {
+      async execute(command) {
+        if (command === "makeademo-inspect-submitted-code-toolchain") {
+          return {
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify(toolchainMetadata),
+          };
+        }
         return { exitCode: 0, stderr: "", stdout: "" };
       },
       async executeSubmittedCode() {
@@ -693,7 +803,14 @@ function hangingLogWorkspaceHandle(): PreparationWorkspaceHandle {
     async release() {},
     id: "workspace_123",
     workspace: {
-      async execute() {
+      async execute(command) {
+        if (command === "makeademo-inspect-submitted-code-toolchain") {
+          return {
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify(supportedToolchainMetadata),
+          };
+        }
         return { exitCode: 0, stderr: "", stdout: "" };
       },
       async executeSubmittedCode() {
@@ -711,6 +828,21 @@ function hangingLogWorkspaceHandle(): PreparationWorkspaceHandle {
     },
   };
 }
+
+const supportedToolchainMetadata = {
+  candidates: [
+    {
+      files: {
+        "package.json": JSON.stringify({
+          engines: { node: "22" },
+          packageManager: "pnpm@11.13.0",
+        }),
+        "pnpm-lock.yaml": "",
+      },
+      projectRoot: ".",
+    },
+  ],
+};
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));

@@ -1,11 +1,14 @@
-import { runDependencyInstallWithNetworkWindow } from "../../../pipeline/03-repo-preparation/dependency-install-network-window";
+import { runPlannedDependencyInstallWithNetworkWindow } from "../../../pipeline/03-repo-preparation/dependency-install-network-window";
+import { SubmittedCodeNetworkResealError } from "../../../pipeline/03-repo-preparation/dependency-install-network-window";
 import type { PreparationManifest } from "../../../pipeline/03-repo-preparation/preparation-manifest";
 import type { PreparationWorkspaceHandle } from "../../../pipeline/03-repo-preparation/preparation-workspace-runner";
 import {
   executeSubmittedCode,
+  executeSubmittedRuntime,
   syncSubmittedCodeWorkspace,
 } from "../../../pipeline/03-repo-preparation/submitted-code-execution";
-import { inferInstallPlan } from "../../../pipeline/05-capture-path-validation/project-runtime-preflight/install-plan";
+import { inspectSubmittedCodeToolchain } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain-inspection";
+import type { SubmittedCodeToolchainPlan } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
 import type {
   SandboxRunner,
   SandboxValidationInput,
@@ -48,6 +51,16 @@ export class DaytonaSandboxRunner implements SandboxRunner {
     }
 
     const handle = input.preparationWorkspace;
+    const refreshedToolchain = await inspectSubmittedCodeToolchain(
+      handle.workspace,
+    );
+    if (refreshedToolchain.mode === "unsupported") {
+      throw new Error(
+        `Submitted code toolchain is unsupported (${refreshedToolchain.code}): ${refreshedToolchain.reason}`,
+      );
+    }
+    handle.toolchainPlan = refreshedToolchain.plan;
+    requireToolchainPlan(handle, "Daytona validation");
     const writeSandboxLog = (entry: Record<string, unknown>) =>
       writeSandboxLogBestEffort({
         entry: {
@@ -81,8 +94,7 @@ export class DaytonaSandboxRunner implements SandboxRunner {
         input.preparationManifest.dependencyInstall === "not-required"
           ? { exitCode: 0, stderr: "", stdout: "" }
           : await this.runDependencyInstall({
-              repoFiles,
-              workspace: handle.workspace,
+              handle,
               writeSandboxLog,
             });
       if (input.preparationManifest.dependencyInstall === "not-required") {
@@ -113,10 +125,7 @@ export class DaytonaSandboxRunner implements SandboxRunner {
         handle.workspace,
         createStopDemoCommand(input.demoCommand),
       );
-      const runtimeResult = await executeSubmittedCode(
-        handle.workspace,
-        createStartDemoCommand(input.demoCommand),
-      );
+      const runtimeResult = await executeDemoStart(handle, input.demoCommand);
       await writeSandboxLog({
         event: "project-validation.demo-command.launched",
         exitCode: runtimeResult.exitCode,
@@ -244,6 +253,9 @@ export class DaytonaSandboxRunner implements SandboxRunner {
         runtimeExitCode: runtimeResult.exitCode,
       };
     } catch (error) {
+      if (error instanceof SubmittedCodeNetworkResealError) {
+        await handle.release();
+      }
       await this.cleanup(handle);
       throw error;
     }
@@ -256,23 +268,33 @@ export class DaytonaSandboxRunner implements SandboxRunner {
   }
 
   private async runDependencyInstall(input: {
-    repoFiles: string[];
-    workspace: PreparationWorkspaceHandle["workspace"];
+    handle: PreparationWorkspaceHandle;
     writeSandboxLog: (entry: Record<string, unknown>) => Promise<void>;
   }): Promise<{ exitCode: number; stderr: string; stdout: string }> {
-    const installPlan = inferInstallPlan(input.repoFiles);
+    const toolchainPlan = requireToolchainPlan(
+      input.handle,
+      "Daytona validation",
+    );
+    if (toolchainPlan.install === undefined) {
+      const blocker = toolchainPlan.installBlocker;
+      throw new Error(
+        `Daytona validation cannot install dependencies (${blocker?.code ?? "missing_immutable_install"}): ${blocker?.reason ?? "No catalog-owned immutable install is available."}`,
+      );
+    }
     await input.writeSandboxLog({
-      command: installPlan.command,
+      argv: toolchainPlan.install.argv,
       event: "project-validation.dependency-install.started",
+      executable: toolchainPlan.install.executable,
     });
-    const installResult = await runDependencyInstallWithNetworkWindow({
-      command: installPlan.command,
-      workspace: input.workspace,
+    const installResult = await runPlannedDependencyInstallWithNetworkWindow({
+      toolchainPlan,
+      workspace: input.handle.workspace,
     });
     if (installResult.exitCode !== 0) {
       await input.writeSandboxLog({
-        command: installPlan.command,
+        argv: toolchainPlan.install.argv,
         event: "project-validation.dependency-install.failed",
+        executable: toolchainPlan.install.executable,
         exitCode: installResult.exitCode,
         stderr: installResult.stderr,
         stdout: installResult.stdout,
@@ -280,8 +302,9 @@ export class DaytonaSandboxRunner implements SandboxRunner {
       return installResult;
     }
     await input.writeSandboxLog({
-      command: installPlan.command,
+      argv: toolchainPlan.install.argv,
       event: "project-validation.dependency-install.succeeded",
+      executable: toolchainPlan.install.executable,
       exitCode: installResult.exitCode,
     });
     return installResult;
@@ -294,6 +317,16 @@ export async function restartPreparedDemoForFreshCapture(input: {
   readinessPollIntervalMs?: number;
   readinessTimeoutMs?: number;
 }): Promise<{ browserUrl: string }> {
+  const refreshedToolchain = await inspectSubmittedCodeToolchain(
+    input.preparationWorkspace.workspace,
+  );
+  if (refreshedToolchain.mode === "unsupported") {
+    throw new Error(
+      `Submitted code toolchain is unsupported (${refreshedToolchain.code}): ${refreshedToolchain.reason}`,
+    );
+  }
+  input.preparationWorkspace.toolchainPlan = refreshedToolchain.plan;
+  requireToolchainPlan(input.preparationWorkspace, "Fresh Footage Capture");
   const writeSandboxLog = (entry: Record<string, unknown>) =>
     writeSandboxLogBestEffort({
       entry: {
@@ -331,9 +364,9 @@ export async function restartPreparedDemoForFreshCapture(input: {
   await writeSandboxLog({
     event: "footage-capture.fresh-state.restore.succeeded",
   });
-  const runtimeResult = await executeSubmittedCode(
-    input.preparationWorkspace.workspace,
-    createStartDemoCommand(input.preparationManifest.demoCommand),
+  const runtimeResult = await executeDemoStart(
+    input.preparationWorkspace,
+    input.preparationManifest.demoCommand,
   );
   await writeSandboxLog({
     event: "footage-capture.fresh-state.restart.launched",
@@ -368,6 +401,27 @@ export async function restartPreparedDemoForFreshCapture(input: {
   });
 
   return { browserUrl };
+}
+
+async function executeDemoStart(
+  handle: PreparationWorkspaceHandle,
+  demoCommand: string,
+) {
+  const plan = requireToolchainPlan(handle, "Demo runtime startup");
+  return await executeSubmittedRuntime(handle.workspace, {
+    command: createStartDemoScript(demoCommand),
+    plan,
+  });
+}
+
+function requireToolchainPlan(
+  handle: PreparationWorkspaceHandle,
+  seam: string,
+): SubmittedCodeToolchainPlan {
+  if (handle.toolchainPlan === undefined) {
+    throw new Error(`${seam} requires an authoritative toolchain plan.`);
+  }
+  return handle.toolchainPlan;
 }
 
 async function writeDemoServerLog(

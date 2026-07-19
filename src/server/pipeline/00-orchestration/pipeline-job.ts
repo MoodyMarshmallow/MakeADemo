@@ -37,7 +37,8 @@ export type PipelineJobResult =
   | {
       preparationManifest: PreparationManifest;
       opencodeSessionID?: string;
-      preparationWorkspace?: PreparationWorkspaceHandle;
+      /** Retained authoritative workspace used by validation, capture, and repair. */
+      preparationWorkspace: PreparationWorkspaceHandle;
       capturePathValidation: CapturePathValidationResult;
       status: "succeeded";
       acceptedDemoScript: AcceptedDemoScript;

@@ -19,6 +19,7 @@ import type {
   PreparationWorkspaceUploadFile,
   PreparationWorkspaceUploadOptions,
   SubmittedProjectExecutionRequest,
+  SubmittedProjectRuntimeRequest,
 } from "../../../pipeline/03-repo-preparation/preparation-workspace.interface";
 import { submittedCodeToolchainCatalog } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
 import { resolveSubmittedProjectCwd } from "../../../pipeline/03-repo-preparation/submitted-project-root";
@@ -558,7 +559,7 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     const execution = createSubmittedProjectExecution(request);
     const projectOptions = {
       ...options,
-      env: { ...options.env, ...execution.env },
+      env: execution.env,
     };
     if (options.onStdout !== undefined || options.onStderr !== undefined) {
       return this.executeStreamingInSandbox(
@@ -574,6 +575,44 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
         execution.command,
         execution.cwd,
         projectOptions.env,
+        toSdkTimeoutSeconds(timeoutMs),
+      ),
+      timeoutMs,
+      `Daytona command did not finish within ${timeoutMs}ms.`,
+    );
+    return {
+      exitCode: response.exitCode ?? 0,
+      stderr: response.stderr ?? "",
+      stdout: response.stdout ?? response.result ?? "",
+    };
+  }
+
+  async executeSubmittedRuntime(
+    request: SubmittedProjectRuntimeRequest,
+    options: PreparationWorkspaceExecuteOptions = {},
+  ): Promise<PreparationWorkspaceCommandResult> {
+    if (this.submittedCodeSandbox === undefined) {
+      throw new Error("Submitted-code Daytona sandbox is not configured.");
+    }
+    const execution = createSubmittedRuntimeExecution(request);
+    const runtimeOptions = {
+      ...options,
+      env: createSubmittedRuntimeEnv(options.env),
+    };
+    if (options.onStdout !== undefined || options.onStderr !== undefined) {
+      return this.executeStreamingInSandbox(
+        this.submittedCodeSandbox,
+        execution.command,
+        runtimeOptions,
+        execution.cwd,
+      );
+    }
+    const timeoutMs = options.timeoutMs ?? this.commandTimeoutMs;
+    const response = await withTimeout(
+      this.submittedCodeSandbox.process.executeCommand(
+        execution.command,
+        execution.cwd,
+        runtimeOptions.env,
         toSdkTimeoutSeconds(timeoutMs),
       ),
       timeoutMs,
@@ -1007,34 +1046,12 @@ function createSubmittedProjectExecution(
   request: SubmittedProjectExecutionRequest,
 ): { command: string; cwd: string; env: Record<string, string> } {
   const { plan } = request;
-  if (plan.catalogRevision !== submittedCodeToolchainCatalog.revision) {
-    throw new Error(
-      `Unsupported submitted-code catalog revision: ${plan.catalogRevision}`,
-    );
-  }
-  if (
-    !(submittedCodeToolchainCatalog.node as readonly string[]).includes(
-      plan.node.version,
-    )
-  ) {
-    throw new Error(`Unsupported catalog Node version: ${plan.node.version}`);
-  }
-  const cwd = resolveSubmittedProjectCwd(plan.projectRoot);
-  const manager = plan.packageManager;
-  if (manager.name === "pnpm") {
-    assertCatalogManagerVersion(manager.version);
-  } else {
-    throw new Error(
-      `Unsupported catalog package manager: ${manager.name}@${manager.version}`,
-    );
-  }
+  const { cwd, manager } = validateSubmittedToolchainPlan(plan);
   const install = resolveCommand(manager.name, "frozen", []);
   if (
     install === null ||
     request.executable !== install.command ||
-    plan.install.executable !== install.command ||
-    !sameArgv(request.argv, install.args) ||
-    !sameArgv(plan.install.argv, install.args)
+    !sameArgv(request.argv, install.args)
   ) {
     throw new Error("Submitted project execution is not the catalog install.");
   }
@@ -1053,23 +1070,125 @@ function createSubmittedProjectExecution(
       .map(shellQuote)
       .join(" "),
     cwd,
-    env: {
-      COREPACK_DEFAULT_TO_LATEST: "0",
-      COREPACK_ENABLE_AUTO_PIN: "0",
-      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
-      COREPACK_ENABLE_NETWORK: "0",
-      COREPACK_ENABLE_PROJECT_SPEC: "1",
-      COREPACK_ENABLE_STRICT: "1",
-      COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: "0",
-      COREPACK_ENV_FILE: "0",
-      MISE_LOCKED: "1",
-      MISE_NO_CONFIG: "1",
-      MISE_NO_ENV: "1",
-      MISE_NO_HOOKS: "1",
-      MISE_NOT_FOUND_AUTO_INSTALL: "0",
-      MISE_OFFLINE: "1",
-      MISE_PARANOID: "1",
-    },
+    env: createSubmittedRuntimeEnv(),
+  };
+}
+
+function createSubmittedRuntimeExecution(
+  request: SubmittedProjectRuntimeRequest,
+): { command: string; cwd: string; env: Record<string, string> } {
+  validateSubmittedRuntimePlan(request.plan);
+  return {
+    command: [
+      "mise",
+      "--no-config",
+      "exec",
+      `node@${request.plan.node.version}`,
+      "--",
+      "sh",
+      "-lc",
+      request.command,
+    ]
+      .map(shellQuote)
+      .join(" "),
+    cwd: "/workspace",
+    env: createSubmittedRuntimeEnv(),
+  };
+}
+
+function validateSubmittedToolchainPlan(
+  plan: SubmittedProjectExecutionRequest["plan"],
+): {
+  cwd: string;
+  manager: NonNullable<
+    SubmittedProjectExecutionRequest["plan"]["packageManager"]
+  >;
+} {
+  if (plan.catalogRevision !== submittedCodeToolchainCatalog.revision) {
+    throw new Error(
+      `Unsupported submitted-code catalog revision: ${plan.catalogRevision}`,
+    );
+  }
+  if (
+    !(submittedCodeToolchainCatalog.node as readonly string[]).includes(
+      plan.node.version,
+    )
+  ) {
+    throw new Error(`Unsupported catalog Node version: ${plan.node.version}`);
+  }
+  const cwd = resolveSubmittedProjectCwd(plan.projectRoot);
+  const manager = plan.packageManager;
+  if (manager === undefined || plan.install === undefined) {
+    throw new Error(
+      "Submitted toolchain plan has no catalog install capability.",
+    );
+  }
+  if (manager.name === "pnpm") {
+    assertCatalogManagerVersion(manager.version);
+  } else {
+    throw new Error(
+      `Unsupported catalog package manager: ${manager.name}@${manager.version}`,
+    );
+  }
+  const install = resolveCommand(manager.name, "frozen", []);
+  if (
+    install === null ||
+    plan.install.executable !== install.command ||
+    !sameArgv(plan.install.argv, install.args)
+  ) {
+    throw new Error("Submitted toolchain plan is not the catalog install.");
+  }
+  createCorepackDescriptor(manager);
+  return { cwd, manager };
+}
+
+function validateSubmittedRuntimePlan(
+  plan: SubmittedProjectRuntimeRequest["plan"],
+): void {
+  if (plan.catalogRevision !== submittedCodeToolchainCatalog.revision) {
+    throw new Error(
+      `Unsupported submitted-code catalog revision: ${plan.catalogRevision}`,
+    );
+  }
+  if (
+    !(submittedCodeToolchainCatalog.node as readonly string[]).includes(
+      plan.node.version,
+    )
+  ) {
+    throw new Error(`Unsupported catalog Node version: ${plan.node.version}`);
+  }
+  resolveSubmittedProjectCwd(plan.projectRoot);
+}
+
+function createSubmittedRuntimeEnv(
+  requested: Record<string, string> | undefined = undefined,
+): Record<string, string> {
+  const allowed = Object.fromEntries(
+    Object.entries(requested ?? {}).filter(
+      ([key]) =>
+        key === "NODE_ENV" ||
+        key.startsWith("PUBLIC_") ||
+        key.startsWith("VITE_") ||
+        key.startsWith("NEXT_PUBLIC_"),
+    ),
+  );
+  return {
+    COREPACK_DEFAULT_TO_LATEST: "0",
+    COREPACK_ENABLE_AUTO_PIN: "0",
+    COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
+    COREPACK_ENABLE_NETWORK: "0",
+    COREPACK_ENABLE_PROJECT_SPEC: "1",
+    COREPACK_ENABLE_STRICT: "1",
+    COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: "0",
+    COREPACK_ENV_FILE: "0",
+    MISE_LOCKED: "1",
+    MISE_NO_CONFIG: "1",
+    MISE_NO_ENV: "1",
+    MISE_NO_HOOKS: "1",
+    MISE_NOT_FOUND_AUTO_INSTALL: "0",
+    MISE_OFFLINE: "1",
+    MISE_PARANOID: "1",
+    ...allowed,
   };
 }
 

@@ -174,6 +174,12 @@ export async function runPipelineJob(
       status: "preparation-failed",
     };
   }
+  const preparationWorkspace = preparation.workspace;
+  if (preparationWorkspace === undefined) {
+    throw new Error(
+      "Repo Preparation succeeded without a retained authoritative workspace.",
+    );
+  }
   reportStageFinished("repo-preparation", "succeeded", {
     context,
     createdFileCount: preparation.manifest.createdFiles.length,
@@ -258,7 +264,7 @@ export async function runPipelineJob(
       onProgress: options.onProgress,
       observer,
       preparationManifest,
-      preparationWorkspace: preparation.workspace,
+      preparationWorkspace,
       demoScriptCandidate,
       demoScriptPackage: demoScriptCandidate,
     });
@@ -290,9 +296,7 @@ export async function runPipelineJob(
         ? {}
         : { opencodeSessionID: preparation.opencodeSessionID }),
       preparationManifest,
-      ...(preparation.workspace === undefined
-        ? {}
-        : { preparationWorkspace: preparation.workspace }),
+      preparationWorkspace,
       repoUrl: input.repoUrl,
       demoScriptPackage: demoScriptCandidate,
     });
@@ -308,9 +312,7 @@ export async function runPipelineJob(
     ...(preparation.opencodeSessionID === undefined
       ? {}
       : { opencodeSessionID: preparation.opencodeSessionID }),
-    ...(preparation.workspace === undefined
-      ? {}
-      : { preparationWorkspace: preparation.workspace }),
+    preparationWorkspace,
     status: "succeeded",
     acceptedDemoScript,
     demoScriptPackage: acceptedDemoScript,
@@ -355,9 +357,7 @@ async function runCapturePathValidation(input: {
   try {
     result = await input.dependencies.validateCapturePath({
       preparationManifest: input.preparationManifest,
-      ...(input.preparationWorkspace === undefined
-        ? {}
-        : { preparationWorkspace: input.preparationWorkspace }),
+      preparationWorkspace: input.preparationWorkspace,
       demoScriptCandidate: input.demoScriptCandidate,
       demoScriptPackage: input.demoScriptPackage,
     });

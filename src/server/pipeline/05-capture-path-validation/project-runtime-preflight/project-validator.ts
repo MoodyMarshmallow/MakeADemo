@@ -1,8 +1,8 @@
 import type { PreparationManifest } from "../../03-repo-preparation/preparation-manifest";
 import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
 import { SubmittedCodeWorkspaceSyncError } from "../../03-repo-preparation/submitted-code-execution";
+import { inspectSubmittedCodeToolchain } from "../../03-repo-preparation/submitted-code-toolchain-inspection";
 import type { BrowserValidator } from "./browser-validator.interface";
-import { inferInstallPlan } from "./install-plan";
 import {
   type NetworkAttempt,
   findRuntimeBoundaryViolations,
@@ -17,7 +17,8 @@ import type { ProjectValidationResult } from "./validation-result";
 
 export type ProjectValidationInput = {
   preparationManifest: PreparationManifest;
-  preparationWorkspace?: PreparationWorkspaceHandle;
+  /** Retained workspace carrying the authoritative catalog runtime selection. */
+  preparationWorkspace: PreparationWorkspaceHandle;
 };
 
 export type ProjectValidationDependencies = {
@@ -34,12 +35,17 @@ export async function validateProject(
 ): Promise<ProjectValidationResult> {
   let sandboxResult: Awaited<ReturnType<SandboxRunner["runValidation"]>>;
   try {
+    const inspectedToolchain = await inspectSubmittedCodeToolchain(
+      input.preparationWorkspace.workspace,
+    );
+    if (inspectedToolchain.mode === "unsupported") {
+      throw new Error(inspectedToolchain.reason);
+    }
+    input.preparationWorkspace.toolchainPlan = inspectedToolchain.plan;
     sandboxResult = await dependencies.sandboxRunner.runValidation({
       demoCommand: input.preparationManifest.demoCommand,
       preparationManifest: input.preparationManifest,
-      ...(input.preparationWorkspace === undefined
-        ? {}
-        : { preparationWorkspace: input.preparationWorkspace }),
+      preparationWorkspace: input.preparationWorkspace,
       repoUrl: input.preparationManifest.repoUrl,
       url: input.preparationManifest.url,
     });
@@ -63,7 +69,11 @@ export async function validateProject(
       warnings: [],
     };
   }
-  const installPlan = inferInstallPlan(sandboxResult.repoFiles);
+  const toolchainWarnings =
+    input.preparationWorkspace.toolchainPlan.warnings?.map(
+      ({ reason, source, value }) =>
+        boundToolchainWarning(`${reason} (${source}: ${value})`),
+    ) ?? [];
   const blockedNetworkAttempts = findRuntimeBoundaryViolations(
     sandboxResult.blockedNetworkAttempts,
   );
@@ -79,7 +89,7 @@ export async function validateProject(
         failureReason,
         logs: boundValidationLogs(sandboxResult.logs),
         status: "failed",
-        warnings: installPlan.warnings,
+        warnings: toolchainWarnings,
       };
     }
 
@@ -114,7 +124,7 @@ export async function validateProject(
         ).text,
         logs: boundValidationLogs(sandboxResult.logs),
         status: "failed",
-        warnings: installPlan.warnings,
+        warnings: toolchainWarnings,
       };
     }
 
@@ -127,17 +137,12 @@ export async function validateProject(
     const browserValidationTimeoutMs =
       dependencies.browserValidationTimeoutMs ??
       defaultBrowserValidationTimeoutMs;
-    const browserValidationUrl =
-      input.preparationWorkspace === undefined
-        ? browserUrl
-        : input.preparationManifest.url;
+    const browserValidationUrl = input.preparationManifest.url;
     let browserResult: Awaited<ReturnType<BrowserValidator["validate"]>>;
     try {
       browserResult = await withTimeout(
         dependencies.browserValidator.validate({
-          ...(input.preparationWorkspace === undefined
-            ? {}
-            : { preparationWorkspace: input.preparationWorkspace }),
+          preparationWorkspace: input.preparationWorkspace,
           url: browserValidationUrl,
         }),
         browserValidationTimeoutMs,
@@ -164,7 +169,7 @@ export async function validateProject(
             ? {}
             : { previewUrl: sandboxResult.browserUrl }),
           status: "failed",
-          warnings: installPlan.warnings,
+          warnings: toolchainWarnings,
         };
       }
 
@@ -220,7 +225,7 @@ export async function validateProject(
           browserResult.logs,
         ),
         status: "failed",
-        warnings: installPlan.warnings,
+        warnings: toolchainWarnings,
       };
     }
 
@@ -271,7 +276,7 @@ export async function validateProject(
           browserResult.logs,
         ),
         status: "failed",
-        warnings: installPlan.warnings,
+        warnings: toolchainWarnings,
       };
     }
 
@@ -293,18 +298,27 @@ export async function validateProject(
         : { previewUrl: sandboxResult.browserUrl }),
       screenshotArtifactId: browserResult.screenshotArtifactId,
       status: "succeeded",
-      warnings: installPlan.warnings,
+      warnings: toolchainWarnings,
     };
   } finally {
     await cleanupQuietly(sandboxResult.cleanup);
   }
 }
 
+function boundToolchainWarning(value: string): string {
+  return value
+    .replaceAll(
+      /(^|[?&;\s])((?:token|api[_-]?key|secret|password)=)[^\s&;]+/gi,
+      "$1$2***",
+    )
+    .slice(0, 1_000);
+}
+
 async function writeProjectValidationSandboxLog(
   input: ProjectValidationInput,
   entry: Record<string, unknown>,
 ) {
-  const write = input.preparationWorkspace?.workspace.writeSandboxLog?.({
+  const write = input.preparationWorkspace.workspace.writeSandboxLog?.({
     ...entry,
     repoUrl: input.preparationManifest.repoUrl,
     stage: "project-validation",
