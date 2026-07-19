@@ -38,6 +38,10 @@
 - **Pipeline Stage**: One user-visible step in the MakeADemo Pipeline with clear inputs, outputs, and failure states.
 - **Pipeline Job**: One execution of the MakeADemo Pipeline for a submitted project.
 - **External Seam**: A stable boundary around infrastructure or third-party behavior, such as sandbox execution, browser automation, model calls, artifact storage, auth, or rendering.
+- **Agent Harness**: The provider-neutral execution module that runs agent tasks for Pipeline Stages, combines universal agent policy with a stage task prompt, exposes Global Agent Tools plus the current Stage Agent Tools, preserves session continuity, and owns tool dispatch mechanics without deciding Pipeline outcomes.
+- **Agent Session**: An opaque Agent Harness handle that preserves agent conversation and workspace continuity across Pipeline Stages without exposing provider-specific identifiers such as an OpenCode session ID.
+- **Global Agent Tool**: An Agent Harness capability whose meaning and authorization are identical in every agent task. MakeADemo currently defines no production Global Agent Tools.
+- **Stage Agent Tool**: A capability owned by one Pipeline Stage and exposed only while the Agent Harness runs that stage's task.
 - **Schema Module**: A public runtime validation boundary, named `*.schema.ts`, that exports schemas, codecs, or schema constants used to validate external data before it enters product types.
 
 ## Relationships
@@ -76,6 +80,9 @@
 - Each **Scene Description** has one **Scene**, shown to the user as its **Companion Video** and later used by **Compositing**.
 - **Compositing** produces a **Draft Composite** before final output acceptance, so the full video can be reviewed for narrative, timing, presentation, and capture quality.
 - **Benchmark Demo Verification** runs manually after the MakeADemo Pipeline produces an L5 final video. The benchmark command never invokes an evaluator or writes L6. The external coding agent keeps inconclusive or failing reviews at L5 and reports L6 only for a verified application match with coherent visuals and relevant overlay/footage pairing.
+- The **MakeADemo Pipeline** invokes the **Agent Harness** for agentic stage work while retaining ownership of stage order, deterministic gates, repair eligibility, retry budgets, and accepted outputs.
+- The **Agent Harness** exposes its **Global Agent Tools** together with only the active Pipeline Stage's **Stage Agent Tools**; Stage Agent Tools do not remain available after that task settles.
+- OpenCode implements the Agent Harness runtime protocol, while Daytona remains the external workspace and submitted-code execution seam.
 
 ## Architectural Intent
 
