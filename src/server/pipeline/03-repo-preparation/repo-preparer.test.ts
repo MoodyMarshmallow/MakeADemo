@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { createAgentSession } from "../../test-support/create-agent-session";
 import type { RepoPreparationAgent } from "./repo-preparation-agent.interface";
 import { prepareRepo } from "./repo-preparer";
 
@@ -45,7 +46,8 @@ describe("prepareRepo", () => {
     }
   });
 
-  it("preserves the OpenCode session ID for same-session Script Generation", async () => {
+  it("preserves the Agent Session handle for same-session Script Generation", async () => {
+    const agentSession = createAgentSession();
     const agent: RepoPreparationAgent = {
       async prepare() {
         return {
@@ -65,7 +67,7 @@ describe("prepareRepo", () => {
             url: "http://localhost:3000",
             workspaceId: "workspace_123",
           },
-          opencodeSessionID: "session_prepare_123",
+          agentSession,
           status: "succeeded",
         };
       },
@@ -81,10 +83,10 @@ describe("prepareRepo", () => {
       { agent },
     );
 
-    expect(result).toMatchObject({
-      opencodeSessionID: "session_prepare_123",
-      status: "succeeded",
-    });
+    expect(result.status).toBe("succeeded");
+    if (result.status === "succeeded") {
+      expect(result.agentSession).toBe(agentSession);
+    }
   });
 
   it("returns a fallback prompt when the preparation agent cannot prepare the workspace", async () => {

@@ -371,9 +371,9 @@ export async function runDraftCompositeReviewLoop(
             sampledFramePaths: draftEvidence.sampledFramePaths,
           },
           draftComposite: finalVideo,
-          ...(preparedDemo.opencodeSessionID === undefined
+          ...(preparedDemo.agentSession === undefined
             ? {}
-            : { opencodeSessionID: preparedDemo.opencodeSessionID }),
+            : { agentSession: preparedDemo.agentSession }),
           ...(preparedDemo.preparationWorkspace === undefined
             ? {}
             : { preparationWorkspace: preparedDemo.preparationWorkspace }),
@@ -468,9 +468,9 @@ export async function runDraftCompositeReviewLoop(
             warnings: [],
           },
           preparationWorkspace: preparedDemo.preparationWorkspace,
-          ...(preparedDemo.opencodeSessionID === undefined
+          ...(preparedDemo.agentSession === undefined
             ? {}
-            : { opencodeSessionID: preparedDemo.opencodeSessionID }),
+            : { agentSession: preparedDemo.agentSession }),
           preparationManifest: preparedDemo.preparationManifest,
           repoUrl: input.input.repoUrl,
           demoScriptPackage: preparedDemo.demoScriptPackage,
@@ -596,7 +596,7 @@ async function readDraftCompositeEvidence(input: {
 
 async function defaultDraftReview(): Promise<DraftCompositeReviewDecision> {
   throw new Error(
-    "Draft Composite review requires a configured reviewer; production runs should pass the same-session OpenCode reviewer.",
+    "Draft Composite review requires a configured reviewer; production runs should pass the retained-agent reviewer.",
   );
 }
 

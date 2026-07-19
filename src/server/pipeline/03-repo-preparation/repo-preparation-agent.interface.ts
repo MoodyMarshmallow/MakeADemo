@@ -1,3 +1,4 @@
+import type { AgentSession } from "../../agent-harness/agent-session";
 import type { DemoBrief } from "../01-context-gathering/intake/demo-brief.schema";
 import type { NormalizedSupportingDocument } from "../01-context-gathering/supporting-documents";
 import type { ProjectValidationResult } from "../05-capture-path-validation/project-runtime-preflight/validation-result";
@@ -20,7 +21,7 @@ type RepoPreparationAgentResult =
        */
       baselineSourceControlledPaths?: string[];
       manifest: unknown;
-      opencodeSessionID?: string;
+      agentSession?: AgentSession;
       status: "succeeded";
       validation?: ProjectValidationResult;
       workspace?: PreparationWorkspaceHandle;
@@ -48,7 +49,7 @@ export interface RepoPreparationAgent {
 export type RepoPreparationResult =
   | {
       manifest: PreparationManifest;
-      opencodeSessionID?: string;
+      agentSession?: AgentSession;
       status: "succeeded";
       validation?: ProjectValidationResult;
       workspace?: PreparationWorkspaceHandle;

@@ -1,3 +1,4 @@
+import type { AgentSession } from "../../agent-harness/agent-session";
 import type { DemoBrief } from "../01-context-gathering/intake/demo-brief.schema";
 import type { NormalizedSupportingDocument } from "../01-context-gathering/supporting-documents";
 import type { PreparationManifest } from "../03-repo-preparation/preparation-manifest";
@@ -17,7 +18,7 @@ import { assertCaptureReadyScriptQuality } from "./script-package-quality";
 export type ScriptGenerationInput = {
   demoBrief: DemoBrief;
   normalizedSupportingDocuments: NormalizedSupportingDocument[];
-  opencodeSessionID?: string;
+  agentSession?: AgentSession;
   preparationManifest: PreparationManifest;
   preparationWorkspace?: PreparationWorkspaceHandle;
   repoUrl: string;
@@ -38,16 +39,16 @@ export async function generateDemoScriptPackage(
   if (dependencies.scriptGenerationAgent !== undefined) {
     if (
       input.preparationWorkspace === undefined ||
-      input.opencodeSessionID === undefined
+      input.agentSession === undefined
     ) {
       throw new Error(
-        "Agentic Script Generation requires the validated preparation workspace and OpenCode session ID.",
+        "Agentic Script Generation requires the validated preparation workspace and retained agent session ID.",
       );
     }
 
     return dependencies.scriptGenerationAgent.generateScriptPackage({
       ...input,
-      opencodeSessionID: input.opencodeSessionID,
+      agentSession: input.agentSession,
       preparationWorkspace: input.preparationWorkspace,
     });
   }

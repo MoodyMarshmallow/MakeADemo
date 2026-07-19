@@ -12,9 +12,9 @@ export function formatFullPipelineFailure(error: unknown): string | undefined {
     `Reason: ${readFailureReason(error.failure)}`,
     `Result JSON: ${error.resultPath}`,
     `Pipeline log: ${error.logPath}`,
-    ...(error.rawOpenCodeLogPath === undefined
+    ...(error.agentAuditLogPath === undefined
       ? []
-      : [`Raw OpenCode log: ${error.rawOpenCodeLogPath}`]),
+      : [`Agent audit log: ${error.agentAuditLogPath}`]),
     "",
   ].join("\n");
 }

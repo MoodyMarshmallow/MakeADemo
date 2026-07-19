@@ -33,7 +33,7 @@ export function createPreCapturePipelineDependencies(
   const sandboxRunner = options.sandboxRunner;
   const sceneValidator =
     options.sceneValidator ?? new DefaultCapturePathSceneValidator();
-  const capturePathRepairer = readCapturePathRepairer(options);
+  const capturePathRepairer = options.capturePathRepairer;
 
   return {
     generateScriptPackage(input) {
@@ -70,23 +70,4 @@ export function createPreCapturePipelineDependencies(
       });
     },
   };
-}
-
-function readCapturePathRepairer(
-  options: PreCapturePipelineOptions,
-): CapturePathRepairer | undefined {
-  if (options.capturePathRepairer !== undefined) {
-    return options.capturePathRepairer;
-  }
-
-  if (
-    options.scriptGenerationAgent !== undefined &&
-    "repairCapturePathFailure" in options.scriptGenerationAgent &&
-    typeof options.scriptGenerationAgent.repairCapturePathFailure === "function"
-  ) {
-    return options.scriptGenerationAgent as ScriptGenerationAgent &
-      CapturePathRepairer;
-  }
-
-  return undefined;
 }

@@ -11,7 +11,7 @@ describe("formatFullPipelineFailure", () => {
         suggestedChanges: [],
       },
       logPath: "/runs/failed/pipeline-log.jsonl",
-      rawOpenCodeLogPath: "/runs/failed/opencode-raw-output.jsonl",
+      agentAuditLogPath: "/runs/failed/agent-audit-log.jsonl",
       resultPath: "/runs/failed/full-pipeline-result.json",
       stage: "pipeline",
       status: "preparation-failed",
@@ -29,7 +29,7 @@ describe("formatFullPipelineFailure", () => {
         "Reason: Repo Preparation agent timed out.",
         "Result JSON: /runs/failed/full-pipeline-result.json",
         "Pipeline log: /runs/failed/pipeline-log.jsonl",
-        "Raw OpenCode log: /runs/failed/opencode-raw-output.jsonl",
+        "Agent audit log: /runs/failed/agent-audit-log.jsonl",
         "",
       ].join("\n"),
     );
@@ -46,7 +46,7 @@ describe("formatFullPipelineFailure", () => {
           suggestedChanges: [],
         },
         logPath: "/runs/failed/pipeline-log.jsonl",
-        rawOpenCodeLogPath: "/runs/failed/opencode-raw-output.jsonl",
+        agentAuditLogPath: "/runs/failed/agent-audit-log.jsonl",
         resultPath: "/runs/failed/full-pipeline-result.json",
         stage: "pipeline",
         status: "capture-path-validation-failed",
@@ -62,7 +62,7 @@ describe("formatFullPipelineFailure", () => {
     expect(formatFullPipelineFailure(new Error("boom"))).toBeUndefined();
   });
 
-  it("omits the Raw OpenCode log line when no raw log path is available", () => {
+  it("omits the agent audit log line when no audit log path is available", () => {
     const output = formatFullPipelineFailure(
       new FullPipelineStageFailure({
         failure: {
@@ -70,13 +70,13 @@ describe("formatFullPipelineFailure", () => {
           suggestedChanges: [],
         },
         logPath: "/runs/failed/pipeline-log.jsonl",
-        rawOpenCodeLogPath: undefined,
+        agentAuditLogPath: undefined,
         resultPath: "/runs/failed/full-pipeline-result.json",
         stage: "pipeline",
         status: "preparation-failed",
       }),
     );
 
-    expect(output).not.toContain("Raw OpenCode log:");
+    expect(output).not.toContain("Agent audit log:");
   });
 });

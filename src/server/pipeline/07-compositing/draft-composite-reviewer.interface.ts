@@ -1,3 +1,4 @@
+import type { AgentSession } from "../../agent-harness/agent-session";
 import type { PreparationWorkspaceHandle } from "../03-repo-preparation/preparation-workspace-runner";
 import type { DemoScriptPackage } from "../04-script-generation/demo-script-package";
 import type { CaptureManifest } from "../06-footage-capture/capture-scenes";
@@ -29,7 +30,7 @@ export type DraftCompositeReviewerInput = {
     sampledFramePaths: string[];
   };
   draftComposite: CompositedVideoManifest;
-  opencodeSessionID?: string;
+  agentSession?: AgentSession;
   preparationWorkspace?: PreparationWorkspaceHandle;
   scriptPackage: DemoScriptPackage;
 };

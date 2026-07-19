@@ -211,9 +211,9 @@ export async function runPipelineJob(
   const scriptGenerationInput = {
     demoBrief: input.demoBrief,
     normalizedSupportingDocuments: input.normalizedSupportingDocuments,
-    ...(preparation.opencodeSessionID === undefined
+    ...(preparation.agentSession === undefined
       ? {}
-      : { opencodeSessionID: preparation.opencodeSessionID }),
+      : { agentSession: preparation.agentSession }),
     preparationManifest: preparation.manifest,
     ...(preparation.workspace === undefined
       ? {}
@@ -292,9 +292,9 @@ export async function runPipelineJob(
     const repair = await dependencies.repairCapturePathFailure({
       attempt: attempt + 1,
       failure: capturePathValidation,
-      ...(preparation.opencodeSessionID === undefined
+      ...(preparation.agentSession === undefined
         ? {}
-        : { opencodeSessionID: preparation.opencodeSessionID }),
+        : { agentSession: preparation.agentSession }),
       preparationManifest,
       preparationWorkspace,
       repoUrl: input.repoUrl,
@@ -309,9 +309,9 @@ export async function runPipelineJob(
   return {
     capturePathValidation: requireCapturePathValidation(capturePathValidation),
     preparationManifest,
-    ...(preparation.opencodeSessionID === undefined
+    ...(preparation.agentSession === undefined
       ? {}
-      : { opencodeSessionID: preparation.opencodeSessionID }),
+      : { agentSession: preparation.agentSession }),
     preparationWorkspace,
     status: "succeeded",
     acceptedDemoScript,

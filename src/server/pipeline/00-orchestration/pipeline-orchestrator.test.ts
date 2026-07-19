@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { createAgentSession } from "../../test-support/create-agent-session";
 import { createRecordingPipelineObserver } from "./pipeline-observer";
 import { runPipelineJob } from "./pipeline-orchestrator";
 
@@ -409,8 +410,9 @@ describe("runPipelineJob", () => {
     ]);
   });
 
-  it("carries the preparation OpenCode session into script generation and capture path validation", async () => {
+  it("carries the preparation Agent Session into script generation and capture path validation", async () => {
     const calls: string[] = [];
+    const preparationAgentSession = createAgentSession();
 
     const result = await runPipelineJob(
       {
@@ -424,12 +426,9 @@ describe("runPipelineJob", () => {
         workspaceId: "workspace_123",
       },
       {
-        async generateScriptPackage({
-          opencodeSessionID,
-          preparationWorkspace,
-        }) {
+        async generateScriptPackage({ agentSession, preparationWorkspace }) {
           calls.push("script-generation");
-          expect(opencodeSessionID).toBe("session_prepare_123");
+          expect(agentSession).toBe(preparationAgentSession);
           expect(preparationWorkspace?.id).toBe("daytona_workspace");
           return scriptPackage({ assumptions: [] });
         },
@@ -437,7 +436,7 @@ describe("runPipelineJob", () => {
           calls.push("repo-preparation");
           return {
             manifest: manifest(),
-            opencodeSessionID: "session_prepare_123",
+            agentSession: preparationAgentSession,
             status: "succeeded",
             workspace: fakeWorkspaceHandle(),
           };
@@ -463,7 +462,7 @@ describe("runPipelineJob", () => {
 
     expect(result.status).toBe("succeeded");
     if (result.status === "succeeded") {
-      expect(result.opencodeSessionID).toBe("session_prepare_123");
+      expect(result.agentSession).toBe(preparationAgentSession);
     }
     expect(calls).toEqual([
       "repo-security-screen",
@@ -478,6 +477,8 @@ describe("runPipelineJob", () => {
       process.env.MAKEADEMO_CAPTURE_PATH_REPAIR_ATTEMPTS;
     process.env.MAKEADEMO_CAPTURE_PATH_REPAIR_ATTEMPTS = "1";
     const calls: string[] = [];
+    const preparationAgentSession = createAgentSession();
+    const repairAgentSessions: unknown[] = [];
     const observer = createRecordingPipelineObserver();
 
     try {
@@ -501,14 +502,15 @@ describe("runPipelineJob", () => {
             calls.push("repo-preparation");
             return {
               manifest: manifest(),
-              opencodeSessionID: "session_prepare_123",
+              agentSession: preparationAgentSession,
               status: "succeeded",
               workspace: fakeWorkspaceHandle(),
             };
           },
           async repairCapturePathFailure(input) {
+            repairAgentSessions.push(input.agentSession);
             calls.push(
-              `repair:${input.attempt}:${input.failure.failedSceneId}:${input.opencodeSessionID}`,
+              `repair:${input.attempt}:${input.failure.failedSceneId}`,
             );
             return {
               preparationManifest: input.preparationManifest,
@@ -559,9 +561,10 @@ describe("runPipelineJob", () => {
         "repo-preparation",
         "script-generation",
         "capture-path-validation:script_bad",
-        "repair:1:scene_validation:session_prepare_123",
+        "repair:1:scene_validation",
         "capture-path-validation:script_repaired",
       ]);
+      expect(repairAgentSessions).toEqual([preparationAgentSession]);
       expect(observer.events).toEqual(
         expect.arrayContaining([
           expect.objectContaining({

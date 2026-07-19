@@ -155,7 +155,7 @@ describe("buildBenchmarkPipelineArgs", () => {
         repo,
       }),
     ).toEqual([
-      "src/server/pipeline/00-orchestration/full-pipeline-cli.mts",
+      "src/server/composition/full-pipeline-cli.mts",
       "--output-root",
       ".makeademo-benchmark-runs/run-1",
       "--repo",

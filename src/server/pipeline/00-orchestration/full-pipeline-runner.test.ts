@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { createAgentSession } from "../../test-support/create-agent-session";
 import type { CaptureManifest } from "../06-footage-capture/capture-scenes";
 import type { CompositedVideoManifest } from "../07-compositing/composite-video";
 import { runFullPipelineJob } from "./full-pipeline-runner";
@@ -14,6 +15,8 @@ describe("runFullPipelineJob", () => {
     const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
     const calls: string[] = [];
     const cleanupEvents: string[] = [];
+    const agentSession = createAgentSession();
+    const reviewedAgentSessions: unknown[] = [];
     const preparationWorkspace = fakePreparationWorkspaceHandle();
     preparationWorkspace.release = async () => {
       cleanupEvents.push("release");
@@ -22,7 +25,12 @@ describe("runFullPipelineJob", () => {
     try {
       const result = await runFullPipelineJob(
         fullPipelineInput(),
-        orchestratorDependencies(calls, undefined, preparationWorkspace),
+        orchestratorDependencies(
+          calls,
+          undefined,
+          preparationWorkspace,
+          agentSession,
+        ),
         {
           async captureScenes(input) {
             calls.push(`capture:${input.baseUrl}`);
@@ -72,13 +80,14 @@ describe("runFullPipelineJob", () => {
           onLog(entry) {
             cleanupEvents.push(`log:${entry.event}`);
           },
-          rawOpenCodeLogPath: join(
+          agentAuditLogPath: join(
             outputRoot,
             "full-run",
-            "opencode-raw-output.jsonl",
+            "agent-audit-log.jsonl",
           ),
           async reviewDraftComposite(input) {
-            calls.push(`review:${input.attempt}:${input.opencodeSessionID}`);
+            calls.push(`review:${input.attempt}`);
+            reviewedAgentSessions.push(input.agentSession);
             return acceptDraftComposite();
           },
           runId: "full-run",
@@ -93,8 +102,9 @@ describe("runFullPipelineJob", () => {
         "fresh-capture:https://preview.example.test/",
         "capture:http://localhost:3000/",
         `composite:${join(outputRoot, "capture-manifest.json")}`,
-        "review:1:session_prepare_123",
+        "review:1",
       ]);
+      expect(reviewedAgentSessions).toEqual([agentSession]);
       expect(cleanupEvents.indexOf("release")).toBeGreaterThan(
         cleanupEvents.indexOf("log:result-written"),
       );
@@ -117,10 +127,10 @@ describe("runFullPipelineJob", () => {
           finalVideoPath: join(outputRoot, "final-video.mp4"),
           generatedScriptPath: join(outputRoot, "full-run", "demo-script.json"),
           logPath: join(outputRoot, "full-run", "pipeline-log.jsonl"),
-          rawOpenCodeLogPath: join(
+          agentAuditLogPath: join(
             outputRoot,
             "full-run",
-            "opencode-raw-output.jsonl",
+            "agent-audit-log.jsonl",
           ),
         },
         status: "succeeded",
@@ -367,10 +377,10 @@ describe("runFullPipelineJob", () => {
           },
           {
             outputRoot,
-            rawOpenCodeLogPath: join(
+            agentAuditLogPath: join(
               outputRoot,
               "failed-run",
-              "opencode-raw-output.jsonl",
+              "agent-audit-log.jsonl",
             ),
             runId: "failed-run",
           },
@@ -387,10 +397,10 @@ describe("runFullPipelineJob", () => {
           suggestedChanges: [],
         },
         logPath: join(outputRoot, "failed-run", "pipeline-log.jsonl"),
-        rawOpenCodeLogPath: join(
+        agentAuditLogPath: join(
           outputRoot,
           "failed-run",
-          "opencode-raw-output.jsonl",
+          "agent-audit-log.jsonl",
         ),
         resultPath: join(outputRoot, "failed-run", "full-pipeline-result.json"),
         stage: "pipeline",
@@ -404,10 +414,10 @@ describe("runFullPipelineJob", () => {
       ).resolves.toMatchObject({
         artifacts: {
           logPath: join(outputRoot, "failed-run", "pipeline-log.jsonl"),
-          rawOpenCodeLogPath: join(
+          agentAuditLogPath: join(
             outputRoot,
             "failed-run",
-            "opencode-raw-output.jsonl",
+            "agent-audit-log.jsonl",
           ),
         },
         failure: {
@@ -568,7 +578,7 @@ describe("runFullPipelineJob", () => {
                   url: "http://localhost:3000/",
                   workspaceId: "workspace_123",
                 },
-                opencodeSessionID: "session_prepare_123",
+                agentSession: createAgentSession(),
                 status: "succeeded",
                 workspace: fakePreparationWorkspaceHandle(),
               };
@@ -783,6 +793,7 @@ function orchestratorDependencies(
     musicEnabled: false,
   },
   preparationWorkspace = fakePreparationWorkspaceHandle(),
+  agentSession = createAgentSession(),
 ): PipelineOrchestratorDependencies {
   return {
     async generateScriptPackage() {
@@ -840,7 +851,7 @@ function orchestratorDependencies(
           url: "http://localhost:3000/",
           workspaceId: "workspace_123",
         },
-        opencodeSessionID: "session_prepare_123",
+        agentSession,
         status: "succeeded",
         workspace: preparationWorkspace,
       };

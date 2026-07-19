@@ -104,11 +104,13 @@ describe("createPreCapturePipelineDependencies", () => {
     }
   });
 
-  it("wires Capture Path Validation repair through a repair-capable Script Generation agent", async () => {
-    const scriptGenerationAgent: ScriptGenerationAgent & CapturePathRepairer = {
+  it("wires Capture Path Validation repair through an explicit repair agent", async () => {
+    const scriptGenerationAgent: ScriptGenerationAgent = {
       async generateScriptPackage() {
         return scriptPackage("script_initial");
       },
+    };
+    const capturePathRepairer: CapturePathRepairer = {
       async repairCapturePathFailure(input) {
         return {
           preparationManifest: input.preparationManifest,
@@ -128,6 +130,7 @@ describe("createPreCapturePipelineDependencies", () => {
           throw new Error("not used");
         },
       },
+      capturePathRepairer,
       scriptGenerationAgent,
     });
 

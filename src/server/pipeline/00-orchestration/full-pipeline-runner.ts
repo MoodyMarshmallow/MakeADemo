@@ -47,7 +47,7 @@ export type FullPipelineResult = {
 export type FullPipelineFailureContext = {
   failure: ReturnType<typeof readPipelineFailure>;
   logPath: string;
-  rawOpenCodeLogPath: string | undefined;
+  agentAuditLogPath: string | undefined;
   resultPath: string;
   stage: "pipeline";
   status: Exclude<
@@ -59,7 +59,7 @@ export type FullPipelineFailureContext = {
 export class FullPipelineStageFailure extends Error {
   readonly failure: FullPipelineFailureContext["failure"];
   readonly logPath: string;
-  readonly rawOpenCodeLogPath: string | undefined;
+  readonly agentAuditLogPath: string | undefined;
   readonly resultPath: string;
   readonly stage: "pipeline";
   readonly status: FullPipelineFailureContext["status"];
@@ -69,7 +69,7 @@ export class FullPipelineStageFailure extends Error {
     this.name = "FullPipelineStageFailure";
     this.failure = context.failure;
     this.logPath = context.logPath;
-    this.rawOpenCodeLogPath = context.rawOpenCodeLogPath;
+    this.agentAuditLogPath = context.agentAuditLogPath;
     this.resultPath = context.resultPath;
     this.stage = context.stage;
     this.status = context.status;
@@ -90,7 +90,7 @@ type FullPipelineArtifactSummary = {
     generatedScriptPath?: string;
     logPath: string;
     renderPlanPath: string;
-    scriptGenerationRawOpenCodeLogPath?: string;
+    scriptGenerationAuditLogPath?: string;
     sandboxLogPath?: string;
     viewUrl: string;
   };
@@ -132,7 +132,7 @@ export type FullPipelineRunnerOptions = PipelineOrchestratorOptions & {
   onLog?: (entry: FullPipelineLogEntry) => void;
   logSinks?: PipelineLogSink[];
   outputRoot?: string;
-  rawOpenCodeLogPath?: string;
+  agentAuditLogPath?: string;
   reviewDraftComposite?: DraftCompositeReviewer;
   inspectDraftCompositeEvidence?: (input: {
     captureManifest: CaptureManifest;
@@ -146,7 +146,7 @@ export type FullPipelineRunnerOptions = PipelineOrchestratorOptions & {
   }) => Promise<{ browserUrl?: string }>;
   runId?: string;
   sandboxLogPath?: string;
-  scriptGenerationRawOpenCodeLogPath?: string;
+  scriptGenerationAuditLogPath?: string;
 };
 
 export async function runFullPipelineJob(
@@ -212,12 +212,11 @@ export async function runFullPipelineJob(
       const resultPath = join(runDirectory, "full-pipeline-result.json");
       const failureSummary = createFailureSummary({
         logPath,
-        rawOpenCodeLogPath: options.rawOpenCodeLogPath,
+        agentAuditLogPath: options.agentAuditLogPath,
         runDirectory,
         runId,
         sandboxLogPath,
-        scriptGenerationRawOpenCodeLogPath:
-          options.scriptGenerationRawOpenCodeLogPath,
+        scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
         preparedDemo: initialPreparedDemo,
       });
       await log({
@@ -240,7 +239,7 @@ export async function runFullPipelineJob(
       throw new FullPipelineStageFailure({
         failure: failureSummary.failure,
         logPath,
-        rawOpenCodeLogPath: options.rawOpenCodeLogPath,
+        agentAuditLogPath: options.agentAuditLogPath,
         resultPath,
         stage: "pipeline",
         status: initialPreparedDemo.status,
@@ -316,16 +315,16 @@ export async function runFullPipelineJob(
           ? {}
           : { generatedScriptPath: scriptPersistence.scriptPath }),
         logPath,
-        ...(options.rawOpenCodeLogPath === undefined
+        ...(options.agentAuditLogPath === undefined
           ? {}
-          : { rawOpenCodeLogPath: options.rawOpenCodeLogPath }),
+          : { agentAuditLogPath: options.agentAuditLogPath }),
         renderPlanPath: finalVideo.renderPlanPath,
         ...(sandboxLogPath === undefined ? {} : { sandboxLogPath }),
-        ...(options.scriptGenerationRawOpenCodeLogPath === undefined
+        ...(options.scriptGenerationAuditLogPath === undefined
           ? {}
           : {
-              scriptGenerationRawOpenCodeLogPath:
-                options.scriptGenerationRawOpenCodeLogPath,
+              scriptGenerationAuditLogPath:
+                options.scriptGenerationAuditLogPath,
             }),
         viewUrl: finalVideo.viewUrl,
       },
@@ -552,11 +551,11 @@ function summarizeScriptPackage(
 
 function createFailureSummary(input: {
   logPath: string;
-  rawOpenCodeLogPath: string | undefined;
+  agentAuditLogPath: string | undefined;
   runDirectory: string;
   runId: string;
   sandboxLogPath: string | undefined;
-  scriptGenerationRawOpenCodeLogPath: string | undefined;
+  scriptGenerationAuditLogPath: string | undefined;
   preparedDemo: Exclude<
     Awaited<ReturnType<typeof runPipelineJob>>,
     { status: "succeeded" }
@@ -565,14 +564,13 @@ function createFailureSummary(input: {
   return {
     artifacts: {
       logPath: input.logPath,
-      ...(input.rawOpenCodeLogPath === undefined
+      ...(input.agentAuditLogPath === undefined
         ? {}
-        : { rawOpenCodeLogPath: input.rawOpenCodeLogPath }),
-      ...(input.scriptGenerationRawOpenCodeLogPath === undefined
+        : { agentAuditLogPath: input.agentAuditLogPath }),
+      ...(input.scriptGenerationAuditLogPath === undefined
         ? {}
         : {
-            scriptGenerationRawOpenCodeLogPath:
-              input.scriptGenerationRawOpenCodeLogPath,
+            scriptGenerationAuditLogPath: input.scriptGenerationAuditLogPath,
           }),
       ...(input.sandboxLogPath === undefined
         ? {}

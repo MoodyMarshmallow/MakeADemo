@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createAgentSession } from "../../test-support/create-agent-session";
 import type { PreparationWorkspaceHandle } from "../03-repo-preparation/preparation-workspace-runner";
 import { createDaytonaFreshCaptureStatePreparer } from "./fresh-capture-state";
 
@@ -64,7 +65,7 @@ function succeededPreparedDemo(
       warnings: [],
     },
     demoScriptPackage: acceptedDemoScript,
-    opencodeSessionID: "session_123",
+    agentSession: createAgentSession(),
     preparationManifest: preparationManifest(),
     preparationWorkspace,
     repoSecurity: { rejections: [], status: "passed" as const, warnings: [] },

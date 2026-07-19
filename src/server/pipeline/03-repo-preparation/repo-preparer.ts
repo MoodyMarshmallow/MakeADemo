@@ -35,9 +35,9 @@ export async function prepareRepo(
     );
     return {
       manifest,
-      ...(result.opencodeSessionID === undefined
+      ...(result.agentSession === undefined
         ? {}
-        : { opencodeSessionID: result.opencodeSessionID }),
+        : { agentSession: result.agentSession }),
       status: "succeeded",
       ...(result.validation === undefined
         ? {}

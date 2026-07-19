@@ -1,4 +1,3 @@
-import { defaultOpenCodeModel } from "../../shared/integrations/agents/opencode-model-defaults";
 import type { PreCaptureCliOptions } from "./pre-capture-cli-options";
 
 type PreCaptureCliPrompt = (question: string) => Promise<string>;
@@ -36,8 +35,6 @@ export async function collectPreCaptureCliOptions(
   return {
     docs,
     features,
-    modelID: defaultOpenCodeModel.modelID,
-    providerID: defaultOpenCodeModel.providerID,
     repoUrl,
     workspaceId: createWorkspaceId(repoUrl),
   };

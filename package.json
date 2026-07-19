@@ -18,9 +18,9 @@
     "lint": "biome check .",
     "lsp:typescript": "typescript-language-server --stdio",
     "preview": "vite preview",
-    "pipeline:run": "bun src/server/pipeline/00-orchestration/full-pipeline-cli.mts",
+    "pipeline:run": "bun src/server/composition/full-pipeline-cli.mts",
     "start": "bun src/server/api/server.mts",
-    "worker:demo-generation": "bun src/server/pipeline/00-orchestration/project-demo-generation-worker.mts",
+    "worker:demo-generation": "bun src/server/composition/project-demo-generation-worker.mts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "verify:daytona-image": "bun scripts/verify-daytona-image.mts"

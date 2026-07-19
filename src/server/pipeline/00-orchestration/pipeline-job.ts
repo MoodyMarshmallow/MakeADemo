@@ -1,3 +1,4 @@
+import type { AgentSession } from "../../agent-harness/agent-session";
 import type { DemoBrief } from "../01-context-gathering/intake/demo-brief.schema";
 import type { NormalizedSupportingDocument } from "../01-context-gathering/supporting-documents";
 import type {
@@ -36,7 +37,7 @@ export type PipelineJobResult =
     }
   | {
       preparationManifest: PreparationManifest;
-      opencodeSessionID?: string;
+      agentSession?: AgentSession;
       /** Retained authoritative workspace used by validation, capture, and repair. */
       preparationWorkspace: PreparationWorkspaceHandle;
       capturePathValidation: CapturePathValidationResult;

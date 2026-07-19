@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { createAgentSession } from "../../test-support/create-agent-session";
 import type { PreparationWorkspaceHandle } from "../03-repo-preparation/preparation-workspace-runner";
 import type { CaptureManifest } from "../06-footage-capture/capture-scenes";
 import type { CompositedVideoManifest } from "../07-compositing/composite-video";
@@ -255,7 +256,7 @@ function loopDependencies(
       onPrepare();
       return {
         manifest: succeededPreparedDemo().preparationManifest,
-        opencodeSessionID: "session_prepare_123",
+        agentSession: createAgentSession(),
         workspace: preparationWorkspaceHandle(),
         status: "succeeded",
       };
@@ -348,7 +349,7 @@ function succeededPreparedDemo(): DraftCompositeReviewLoopInput["preparedDemo"] 
       title: "Demo",
       version: 1,
     },
-    opencodeSessionID: "session_prepare_123",
+    agentSession: createAgentSession(),
     preparationManifest: {
       assumptions: [],
       createdFiles: [],

@@ -1,3 +1,4 @@
+import type { AgentSession } from "../../agent-harness/agent-session";
 import type { PreparationManifest } from "../03-repo-preparation/preparation-manifest";
 import type { PreparationWorkspaceHandle } from "../03-repo-preparation/preparation-workspace-runner";
 import type {
@@ -9,7 +10,7 @@ import type { CapturePathValidationResult } from "./capture-path-validator.inter
 export type CapturePathRepairInput = {
   attempt: number;
   failure: CapturePathValidationResult;
-  opencodeSessionID?: string;
+  agentSession?: AgentSession;
   preparationManifest: PreparationManifest;
   preparationWorkspace?: PreparationWorkspaceHandle;
   repoUrl: string;

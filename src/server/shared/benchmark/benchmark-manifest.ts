@@ -64,7 +64,7 @@ export function readBenchmarkManifest(value: unknown): BenchmarkManifest {
 
 export function buildBenchmarkPipelineArgs(input: BenchmarkPipelineArgsInput) {
   const args = [
-    "src/server/pipeline/00-orchestration/full-pipeline-cli.mts",
+    "src/server/composition/full-pipeline-cli.mts",
     "--output-root",
     input.outputRoot,
   ];
