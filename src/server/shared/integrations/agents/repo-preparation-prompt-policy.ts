@@ -1,6 +1,11 @@
 import type { readPreparationManifest } from "../../../pipeline/03-repo-preparation/preparation-manifest";
 import type { PreparationWorkspaceCommandResult } from "../../../pipeline/03-repo-preparation/preparation-workspace.interface";
 import type { RepoPreparationInput } from "../../../pipeline/03-repo-preparation/repo-preparation-agent.interface";
+import {
+  boundValidationEvidence,
+  redactValidationEvidence,
+  validationEvidenceCaps,
+} from "../../../pipeline/05-capture-path-validation/project-runtime-preflight/validation-evidence";
 import type { ProjectValidationResult } from "../../../pipeline/05-capture-path-validation/project-runtime-preflight/validation-result";
 import {
   makeADemoArtifactDirectory,
@@ -259,7 +264,7 @@ export function createValidationFeedbackPrompt(input: {
   remainingBudgetMs: number;
   validation: ProjectValidationResult;
 }): string {
-  return [
+  const prompt = [
     "# MakeADemo Validation Feedback",
     "",
     "Backend-owned preparation preflight ran against your prepared workspace.",
@@ -268,7 +273,7 @@ export function createValidationFeedbackPrompt(input: {
     "",
     "## Preparation Preflight Result",
     "```json",
-    JSON.stringify(input.validation, null, 2),
+    JSON.stringify(createValidationRepairProjection(input.validation), null, 2),
     "```",
     "",
     ...(input.manifest === undefined
@@ -279,7 +284,11 @@ export function createValidationFeedbackPrompt(input: {
       : [
           "## Validated Manifest Draft",
           "```json",
-          JSON.stringify(input.manifest, null, 2),
+          JSON.stringify(
+            createBoundedManifestProjection(input.manifest),
+            null,
+            2,
+          ),
           "```",
         ]),
     "",
@@ -297,6 +306,110 @@ export function createValidationFeedbackPrompt(input: {
     "- If the demo URL did not become ready, make the submitted `demoCommand` start a long-running local server on the manifest `url` port.",
     "- Do not request dependency installation unless a new dependency install is strictly required and the command is allowlisted.",
   ].join("\n");
+
+  return prompt;
+}
+
+function createValidationRepairProjection(validation: ProjectValidationResult) {
+  return {
+    blockedNetworkAttempts: validation.blockedNetworkAttempts
+      .map((attempt) => ({
+        ...attempt,
+        ...(attempt.url === undefined
+          ? {}
+          : { url: redactValidationEvidence(attempt.url) }),
+      }))
+      .filter(
+        (attempt, index, attempts) =>
+          attempts.findIndex(
+            (candidate) =>
+              `${candidate.direction}:${candidate.host}:${candidate.phase}:${candidate.url ?? ""}` ===
+              `${attempt.direction}:${attempt.host}:${attempt.phase}:${attempt.url ?? ""}`,
+          ) === index,
+      )
+      .slice(0, 8),
+    browserUrl: validation.browserUrl,
+    evidence:
+      validation.evidence === undefined
+        ? undefined
+        : {
+            ...(validation.evidence.serverLog === undefined
+              ? {}
+              : {
+                  serverLog: boundValidationEvidence(
+                    validation.evidence.serverLog.text,
+                    2 * 1024,
+                  ),
+                }),
+            ...(validation.evidence.browser === undefined
+              ? {}
+              : {
+                  browser: boundValidationEvidence(
+                    validation.evidence.browser.text,
+                    2 * 1024,
+                  ),
+                }),
+          },
+    failureKind: validation.failureKind,
+    failureReason:
+      validation.failureReason === undefined
+        ? undefined
+        : boundValidationEvidence(
+            validation.failureReason,
+            validationEvidenceCaps.failureReason,
+          ).text,
+    localUrl: validation.localUrl,
+    logs: createRepairLogs(validation.logs),
+    previewUrl: validation.previewUrl,
+    screenshot: validation.screenshot,
+    warnings: [
+      ...new Set(
+        validation.warnings.map(
+          (warning) => boundValidationEvidence(warning, 512).text,
+        ),
+      ),
+    ].slice(0, 8),
+  };
+}
+
+function createRepairLogs(logs: string[]) {
+  const maxLogCount = 4;
+  const maxLogBytes = 6 * 1024;
+  let used = 0;
+  const included: string[] = [];
+
+  for (const log of logs) {
+    if (isInlineBinaryLog(log)) {
+      continue;
+    }
+    const remaining = maxLogBytes - used;
+    if (remaining <= 0 || included.length >= maxLogCount) {
+      break;
+    }
+    const excerpt = boundValidationEvidence(log, Math.min(2 * 1024, remaining));
+    included.push(excerpt.text);
+    used += excerpt.text.length;
+  }
+
+  return included;
+}
+
+function createBoundedManifestProjection(
+  manifest: NonNullable<ReturnType<typeof readPreparationManifest>>,
+) {
+  return {
+    excerpt: boundValidationEvidence(
+      JSON.stringify(manifest, null, 2),
+      4 * 1024,
+    ).text,
+  };
+}
+
+function isInlineBinaryLog(value: string) {
+  return (
+    /^\s*(?:screenshot:|data:)/i.test(value) ||
+    /^[A-Za-z0-9+/]{512,}={0,2}$/.test(value.trim())
+  );
 }
 
 function formatDuration(milliseconds: number): string {

@@ -8,6 +8,11 @@ import {
   findRuntimeBoundaryViolations,
 } from "./network-isolation-policy";
 import type { SandboxRunner } from "./sandbox-runner.interface";
+import {
+  boundValidationEvidence,
+  boundValidationLogs,
+  validationEvidenceCaps,
+} from "./validation-evidence";
 import type { ProjectValidationResult } from "./validation-result";
 
 export type ProjectValidationInput = {
@@ -48,9 +53,12 @@ export async function validateProject(
       blockedNetworkAttempts: [],
       ...(error instanceof SubmittedCodeWorkspaceSyncError
         ? { failureKind: error.failureKind }
-        : {}),
-      failureReason,
-      logs: [failureReason],
+        : { failureKind: "sandbox-execution-failed" }),
+      failureReason: boundValidationEvidence(
+        failureReason,
+        validationEvidenceCaps.failureReason,
+      ).text,
+      logs: boundValidationLogs([failureReason]),
       status: "failed",
       warnings: [],
     };
@@ -67,8 +75,9 @@ export async function validateProject(
       );
       return {
         blockedNetworkAttempts,
+        failureKind: "runtime-network-blocked",
         failureReason,
-        logs: sandboxResult.logs,
+        logs: boundValidationLogs(sandboxResult.logs),
         status: "failed",
         warnings: installPlan.warnings,
       };
@@ -77,8 +86,33 @@ export async function validateProject(
     if (sandboxResult.runtimeExitCode !== 0) {
       return {
         blockedNetworkAttempts: [],
-        failureReason: "Demo command failed inside the sandbox.",
-        logs: sandboxResult.logs,
+        ...(sandboxResult.failureKind === undefined
+          ? {}
+          : { failureKind: sandboxResult.failureKind }),
+        ...(sandboxResult.failureReason === undefined
+          ? {}
+          : {
+              failureReason: boundValidationEvidence(
+                sandboxResult.failureReason,
+                validationEvidenceCaps.failureReason,
+              ).text,
+            }),
+        ...(sandboxResult.serverLog === undefined
+          ? {}
+          : {
+              evidence: {
+                serverLog: boundValidationEvidence(
+                  sandboxResult.serverLog,
+                  validationEvidenceCaps.server,
+                ),
+              },
+            }),
+        failureReason: boundValidationEvidence(
+          sandboxResult.failureReason ??
+            "Demo command failed inside the sandbox.",
+          validationEvidenceCaps.failureReason,
+        ).text,
+        logs: boundValidationLogs(sandboxResult.logs),
         status: "failed",
         warnings: installPlan.warnings,
       };
@@ -119,8 +153,16 @@ export async function validateProject(
         return {
           blockedNetworkAttempts: [],
           browserUrl,
-          failureReason: error.message,
-          logs: [...sandboxResult.logs, error.message],
+          failureKind: "browser-validation-timeout",
+          failureReason: boundValidationEvidence(
+            error.message,
+            validationEvidenceCaps.failureReason,
+          ).text,
+          logs: boundValidationLogs([...sandboxResult.logs, error.message]),
+          localUrl: browserValidationUrl,
+          ...(sandboxResult.browserUrl === undefined
+            ? {}
+            : { previewUrl: sandboxResult.browserUrl }),
           status: "failed",
           warnings: installPlan.warnings,
         };
@@ -148,13 +190,35 @@ export async function validateProject(
         event: "project-validation.browser-validation.failed",
         failureReason,
         screenshotArtifactId: browserResult.screenshotArtifactId,
+        ...(browserResult.screenshot === undefined
+          ? {}
+          : { screenshot: browserResult.screenshot }),
+        evidence: mergeValidationEvidence(
+          sandboxResult.serverLog,
+          browserResult.logs,
+        ),
       });
       return {
         blockedNetworkAttempts: browserNetworkAttempts,
         browserUrl,
+        failureKind: "runtime-network-blocked",
         failureReason,
-        logs: [...sandboxResult.logs, ...browserResult.logs],
+        logs: boundValidationLogs([
+          ...sandboxResult.logs,
+          ...browserResult.logs,
+        ]),
+        localUrl: browserValidationUrl,
+        ...(sandboxResult.browserUrl === undefined
+          ? {}
+          : { previewUrl: sandboxResult.browserUrl }),
         screenshotArtifactId: browserResult.screenshotArtifactId,
+        ...(browserResult.screenshot === undefined
+          ? {}
+          : { screenshot: browserResult.screenshot }),
+        evidence: mergeValidationEvidence(
+          sandboxResult.serverLog,
+          browserResult.logs,
+        ),
         status: "failed",
         warnings: installPlan.warnings,
       };
@@ -169,13 +233,43 @@ export async function validateProject(
         event: "project-validation.browser-validation.failed",
         failureReason,
         screenshotArtifactId: browserResult.screenshotArtifactId,
+        ...(browserResult.screenshot === undefined
+          ? {}
+          : { screenshot: browserResult.screenshot }),
+        evidence: mergeValidationEvidence(
+          sandboxResult.serverLog,
+          browserResult.logs,
+        ),
       });
       return {
         blockedNetworkAttempts: [],
         browserUrl,
-        failureReason,
-        logs: [...sandboxResult.logs, ...browserResult.logs],
+        failureKind:
+          browserResult.failureKind ??
+          (readMakeADemoValidatorDependencyFailure(browserResult.logs) ===
+          undefined
+            ? "browser-not-interactable"
+            : "validator-dependency-failed"),
+        failureReason: boundValidationEvidence(
+          failureReason,
+          validationEvidenceCaps.failureReason,
+        ).text,
+        logs: boundValidationLogs([
+          ...sandboxResult.logs,
+          ...browserResult.logs,
+        ]),
+        localUrl: browserValidationUrl,
+        ...(sandboxResult.browserUrl === undefined
+          ? {}
+          : { previewUrl: sandboxResult.browserUrl }),
         screenshotArtifactId: browserResult.screenshotArtifactId,
+        ...(browserResult.screenshot === undefined
+          ? {}
+          : { screenshot: browserResult.screenshot }),
+        evidence: mergeValidationEvidence(
+          sandboxResult.serverLog,
+          browserResult.logs,
+        ),
         status: "failed",
         warnings: installPlan.warnings,
       };
@@ -185,11 +279,18 @@ export async function validateProject(
       browserUrl,
       event: "project-validation.browser-validation.succeeded",
       screenshotArtifactId: browserResult.screenshotArtifactId,
+      ...(browserResult.screenshot === undefined
+        ? {}
+        : { screenshot: browserResult.screenshot }),
     });
     return {
       blockedNetworkAttempts: [],
       browserUrl,
-      logs: [...sandboxResult.logs, ...browserResult.logs],
+      logs: boundValidationLogs([...sandboxResult.logs, ...browserResult.logs]),
+      localUrl: browserValidationUrl,
+      ...(sandboxResult.browserUrl === undefined
+        ? {}
+        : { previewUrl: sandboxResult.browserUrl }),
       screenshotArtifactId: browserResult.screenshotArtifactId,
       status: "succeeded",
       warnings: installPlan.warnings,
@@ -250,6 +351,30 @@ function formatRuntimeNetworkFailureReason(attempts: NetworkAttempt[]): string {
   }
 
   return `${baseReason} Blocked runtime network attempts: ${locations.join(", ")}.`;
+}
+
+function mergeValidationEvidence(
+  serverLog: string | undefined,
+  browserLogs: string[],
+) {
+  return {
+    ...(serverLog === undefined
+      ? {}
+      : {
+          serverLog: boundValidationEvidence(
+            serverLog,
+            validationEvidenceCaps.server,
+          ),
+        }),
+    ...(browserLogs.length === 0
+      ? {}
+      : {
+          browser: boundValidationEvidence(
+            browserLogs.join("\n"),
+            validationEvidenceCaps.browser,
+          ),
+        }),
+  };
 }
 
 function withTimeout<T>(

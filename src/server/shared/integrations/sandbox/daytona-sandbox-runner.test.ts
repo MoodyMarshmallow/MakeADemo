@@ -1,13 +1,57 @@
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 
 import type { PreparationWorkspaceHandle } from "../../../pipeline/03-repo-preparation/preparation-workspace-runner";
 import type { PipelineEventLogger } from "../../logging/pipeline-event-logger";
 import {
   DaytonaSandboxRunner,
+  createStartDemoScript,
+  parseDemoProcessState,
   restartPreparedDemoForFreshCapture,
 } from "./daytona-sandbox-runner";
 
+const execFileAsync = promisify(execFile);
+
 describe("DaytonaSandboxRunner", () => {
+  it("parses authoritative exit markers before process liveness", () => {
+    expect(parseDemoProcessState("running")).toEqual({ running: true });
+    expect(parseDemoProcessState("exited:0")).toEqual({
+      exitCode: 0,
+      running: false,
+    });
+    expect(parseDemoProcessState("exited:137")).toEqual({
+      exitCode: 137,
+      running: false,
+    });
+  });
+
+  it("runs the exact start wrapper with quoted commands and authoritative exit markers", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "makeademo-wrapper-"));
+    const state = await mkdtemp(join(tmpdir(), "makeademo-state-"));
+    try {
+      await writeFile(join(state, "makeademo-demo.exit-code"), "137\n");
+      const command = createStartDemoScript(
+        "sh -c 'exit 1'",
+        workspace,
+        state,
+        "",
+      );
+      await execFileAsync("sh", ["-lc", command]);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(
+        await readFile(join(state, "makeademo-demo.exit-code"), "utf8"),
+      ).toBe("1\n");
+      expect(createStartDemoScript("true")).toContain("nohup setsid");
+      expect(command).toContain("rm -f");
+    } finally {
+      await rm(workspace, { force: true, recursive: true });
+      await rm(state, { force: true, recursive: true });
+    }
+  });
   it("validates the retained prepared Daytona workspace", async () => {
     const workspace = new FakePreparationWorkspaceHandle();
     const runner = new DaytonaSandboxRunner();

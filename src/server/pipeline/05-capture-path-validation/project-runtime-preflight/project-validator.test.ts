@@ -37,6 +37,7 @@ describe("validateProject", () => {
           demoCommand: "npm run demo",
           url: "http://127.0.0.1:3000",
         }),
+        preparationWorkspace: workspaceHandle([]),
       },
       { browserValidator, sandboxRunner },
     );
@@ -44,12 +45,14 @@ describe("validateProject", () => {
     expect(result).toEqual({
       blockedNetworkAttempts: [],
       browserUrl: "https://preview.example.test",
+      localUrl: "http://127.0.0.1:3000",
       logs: ["installed", "started demo", "loaded app"],
+      previewUrl: "https://preview.example.test",
       screenshotArtifactId: "artifact_screenshot",
       status: "succeeded",
       warnings: [],
     });
-    expect(browserUrls).toEqual(["https://preview.example.test"]);
+    expect(browserUrls).toEqual(["http://127.0.0.1:3000"]);
   });
 
   it("writes browser validation progress to sandbox logs", async () => {
@@ -305,6 +308,7 @@ describe("validateProject", () => {
 
     expect(result).toEqual({
       blockedNetworkAttempts: [],
+      failureKind: "sandbox-execution-failed",
       failureReason: "Daytona command did not finish within 600000ms.",
       logs: ["Daytona command did not finish within 600000ms."],
       status: "failed",
@@ -344,6 +348,49 @@ describe("validateProject", () => {
       logs: ["restore archive failed"],
       status: "failed",
     });
+  });
+
+  it("preserves bounded redacted sandbox evidence with its failure kind", async () => {
+    const sandboxRunner: SandboxRunner = {
+      async runValidation() {
+        return {
+          blockedNetworkAttempts: [],
+          failureKind: "demo-process-exited",
+          failureReason: "Vite failed with token=secret",
+          logs: ["server failed token=secret"],
+          repoFiles: ["package.json"],
+          runtimeExitCode: 1,
+          serverLog: "Vite error: bearer abc.def.ghi",
+        };
+      },
+    };
+
+    const result = await validateProject(
+      {
+        preparationManifest: manifest({
+          demoCommand: "npm run demo",
+          url: "http://localhost:5173",
+        }),
+        preparationWorkspace: workspaceHandle([]),
+      },
+      {
+        browserValidator: {
+          async validate() {
+            throw new Error("must not validate");
+          },
+        },
+        sandboxRunner,
+      },
+    );
+
+    expect(result).toMatchObject({
+      failureKind: "demo-process-exited",
+      failureReason: "Vite failed with token=[redacted]",
+      evidence: { serverLog: { text: "Vite error: bearer [redacted]" } },
+      status: "failed",
+    });
+    expect(JSON.stringify(result)).not.toContain("secret");
+    expect(JSON.stringify(result)).not.toContain("abc.def.ghi");
   });
 
   it("preserves browser validation errors when cleanup also fails", async () => {

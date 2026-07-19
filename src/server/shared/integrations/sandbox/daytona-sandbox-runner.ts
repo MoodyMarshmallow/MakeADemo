@@ -11,6 +11,10 @@ import type {
   SandboxValidationInput,
   SandboxValidationOutput,
 } from "../../../pipeline/05-capture-path-validation/project-runtime-preflight/sandbox-runner.interface";
+import {
+  boundValidationEvidence,
+  validationEvidenceCaps,
+} from "../../../pipeline/05-capture-path-validation/project-runtime-preflight/validation-evidence";
 import type { PipelineEventLogger } from "../../logging/pipeline-event-logger";
 
 export class DaytonaSandboxRunner implements SandboxRunner {
@@ -90,6 +94,8 @@ export class DaytonaSandboxRunner implements SandboxRunner {
         await this.cleanup(handle);
         return {
           blockedNetworkAttempts: [],
+          failureKind: "dependency-install-failed",
+          failureReason: "Dependency installation failed inside the sandbox.",
           logs: [
             ...collectLogs(repoFilesResult),
             ...collectLogs(installResult),
@@ -133,24 +139,33 @@ export class DaytonaSandboxRunner implements SandboxRunner {
           stdout: readinessResult.stdout,
           url: input.url,
         });
-        const demoLogsResult = await executeSubmittedCode(
+        const demoStateResult = await executeSubmittedCode(
           handle.workspace,
-          "if test -f /tmp/makeademo-demo.log; then cat /tmp/makeademo-demo.log; fi",
+          createDemoProcessStateCommand(),
         );
+        const demoLogsResult = await readDemoServerLog(handle);
         await writeDemoServerLog(writeSandboxLog, demoLogsResult.stdout);
+        const serverLog = boundValidationEvidence(
+          demoLogsResult.stdout,
+          validationEvidenceCaps.server,
+        ).text;
 
         return {
           blockedNetworkAttempts: [],
           cleanup: () => this.cleanup(handle),
+          failureKind: readDemoProcessFailureKind(demoStateResult.stdout),
+          failureReason: readDemoProcessFailureReason(demoStateResult.stdout),
           logs: [
             ...collectLogs(repoFilesResult),
             ...collectLogs(installResult),
             ...collectLogs(runtimeResult),
             ...collectLogs(readinessResult),
-            ...collectLogs(demoLogsResult),
+            ...collectLogs(demoStateResult),
           ],
           repoFiles,
-          runtimeExitCode: 1,
+          runtimeExitCode:
+            parseDemoProcessState(demoStateResult.stdout).exitCode ?? 1,
+          ...(serverLog.length === 0 ? {} : { serverLog }),
         };
       }
       await writeSandboxLog({
@@ -173,6 +188,8 @@ export class DaytonaSandboxRunner implements SandboxRunner {
         return {
           blockedNetworkAttempts: [],
           cleanup: () => this.cleanup(handle),
+          failureKind: "fresh-capture-baseline-failed",
+          failureReason: "Fresh Capture baseline could not be created.",
           logs: [
             ...collectLogs(repoFilesResult),
             ...collectLogs(installResult),
@@ -187,10 +204,7 @@ export class DaytonaSandboxRunner implements SandboxRunner {
       await writeSandboxLog({
         event: "project-validation.fresh-capture-baseline.created",
       });
-      const demoLogsResult = await executeSubmittedCode(
-        handle.workspace,
-        "if test -f /tmp/makeademo-demo.log; then cat /tmp/makeademo-demo.log; fi",
-      );
+      const demoLogsResult = await readDemoServerLog(handle);
       await writeDemoServerLog(writeSandboxLog, demoLogsResult.stdout);
       await writeSandboxLog({
         event: "project-validation.browser-preview.started",
@@ -216,6 +230,16 @@ export class DaytonaSandboxRunner implements SandboxRunner {
           ...collectLogs(runtimeResult),
           ...collectLogs(readinessResult),
         ],
+        ...(demoLogsResult.stdout.length === 0
+          ? {}
+          : {
+              serverLog: boundValidationEvidence(
+                demoLogsResult.stdout,
+                validationEvidenceCaps.server,
+              ).text,
+            }),
+        localUrl: input.url,
+        previewUrl: browserUrl,
         repoFiles,
         runtimeExitCode: runtimeResult.exitCode,
       };
@@ -413,7 +437,57 @@ function collectLogs(result: { stderr: string; stdout: string }): string[] {
 }
 
 function createStartDemoCommand(demoCommand: string): string {
-  return `sh -lc ${shellQuote(`cd /workspace && nohup setsid sh -c ${shellQuote(`exec ${demoCommand}`)} > /tmp/makeademo-demo.log 2>&1 & echo $! > /tmp/makeademo-demo.pid && echo $!`)}`;
+  return `sh -lc ${shellQuote(createStartDemoScript(demoCommand))}`;
+}
+
+export function createStartDemoScript(
+  demoCommand: string,
+  workspacePath = "/workspace",
+  stateDirectory = "/tmp",
+  sessionCommand = "setsid",
+): string {
+  const exitCodePath = `${stateDirectory}/makeademo-demo.exit-code`;
+  const logPath = `${stateDirectory}/makeademo-demo.log`;
+  const pidPath = `${stateDirectory}/makeademo-demo.pid`;
+  const sessionPrefix = sessionCommand.length === 0 ? "" : `${sessionCommand} `;
+  return `cd ${shellQuote(workspacePath)} && rm -f ${shellQuote(exitCodePath)} && nohup ${sessionPrefix}sh -c ${shellQuote(`sh -c ${shellQuote(`exec ${demoCommand}`)}; status=$?; echo "$status" > ${shellQuote(exitCodePath)}; exit "$status"`)} > ${shellQuote(logPath)} 2>&1 & echo $! > ${shellQuote(pidPath)} && echo $!`;
+}
+
+function createDemoProcessStateCommand(): string {
+  return 'if test -f /tmp/makeademo-demo.exit-code && grep -Eq "^[0-9]+$" /tmp/makeademo-demo.exit-code; then echo exited:$(cat /tmp/makeademo-demo.exit-code); elif test -f /tmp/makeademo-demo.pid && kill -0 "$(cat /tmp/makeademo-demo.pid 2>/dev/null)" >/dev/null 2>&1; then echo running; else echo exited; fi';
+}
+
+function readDemoProcessFailureKind(
+  output: string,
+): "demo-process-exited" | "demo-readiness-timeout" {
+  return output.trim().startsWith("running")
+    ? "demo-readiness-timeout"
+    : "demo-process-exited";
+}
+
+export function parseDemoProcessState(output: string): {
+  exitCode?: number;
+  running: boolean;
+} {
+  const match = /^exited:(\d+)\s*$/.exec(output.trim());
+  if (match?.[1] !== undefined) {
+    return { exitCode: Number(match[1]), running: false };
+  }
+  return { running: output.trim() === "running" };
+}
+
+function readDemoProcessFailureReason(output: string): string {
+  const state = parseDemoProcessState(output);
+  return state.exitCode === undefined
+    ? "Demo URL did not become ready inside the sandbox."
+    : `Demo process exited with code ${state.exitCode} before becoming ready.`;
+}
+
+async function readDemoServerLog(handle: PreparationWorkspaceHandle) {
+  return await executeSubmittedCode(
+    handle.workspace,
+    "if test -f /tmp/makeademo-demo.log; then tail -c 16384 /tmp/makeademo-demo.log; fi",
+  );
 }
 
 function createStopDemoCommand(demoCommand: string): string {

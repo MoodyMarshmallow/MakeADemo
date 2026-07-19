@@ -1,5 +1,6 @@
 import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
 import type { NetworkAttempt } from "./network-isolation-policy";
+import type { ProjectValidationFailureKind } from "./validation-result";
 
 export type BrowserValidationInput = {
   preparationWorkspace?: PreparationWorkspaceHandle;
@@ -8,8 +9,10 @@ export type BrowserValidationInput = {
 
 export type BrowserValidationOutput = {
   blockedNetworkAttempts?: NetworkAttempt[];
+  failureKind?: ProjectValidationFailureKind;
   interactable: boolean;
   logs: string[];
+  screenshot?: { mimeType: "image/png"; path: string; sizeBytes?: number };
   screenshotArtifactId: string;
 };
 

@@ -1,3 +1,7 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { chromium } from "@playwright/test";
 
 import { executeSubmittedCode } from "../../../pipeline/03-repo-preparation/submitted-code-execution";
@@ -11,6 +15,7 @@ import {
   sanitizeNetworkAttemptUrl,
   sanitizeNetworkAttempts,
 } from "../../../pipeline/05-capture-path-validation/project-runtime-preflight/network-isolation-policy";
+import { boundValidationLogs } from "../../../pipeline/05-capture-path-validation/project-runtime-preflight/validation-evidence";
 
 type BrowserValidationPage = {
   close(): Promise<void>;
@@ -71,6 +76,7 @@ export class PlaywrightBrowserValidator implements BrowserValidator {
     } catch (error) {
       if (error instanceof BrowserValidationTimeoutError) {
         return {
+          failureKind: "browser-validation-timeout",
           interactable: false,
           logs: [
             `Browser validation timed out after ${this.validationTimeoutMs}ms for ${input.url}`,
@@ -105,6 +111,7 @@ export class PlaywrightBrowserValidator implements BrowserValidator {
       );
       if (isMissingSandboxPlaywrightError(logs)) {
         return {
+          failureKind: "validator-dependency-failed",
           interactable: false,
           logs: [
             "MakeADemo validator dependency failure: Playwright is not available inside the submitted-code sandbox.",
@@ -115,6 +122,7 @@ export class PlaywrightBrowserValidator implements BrowserValidator {
       }
 
       return {
+        failureKind: "browser-validation-protocol-failed",
         interactable: false,
         logs: [
           `Browser validation failed inside submitted-code container for ${input.url}`,
@@ -127,6 +135,7 @@ export class PlaywrightBrowserValidator implements BrowserValidator {
     const parsed = tryParseBrowserValidationOutput(result.stdout);
     if (parsed === undefined) {
       return {
+        failureKind: "browser-validation-protocol-failed",
         interactable: false,
         logs: [
           `Browser validation returned malformed output for ${input.url}`,
@@ -136,8 +145,46 @@ export class PlaywrightBrowserValidator implements BrowserValidator {
       };
     }
 
+    const screenshot =
+      parsed.screenshot ??
+      (parsed.screenshotArtifactId.startsWith("screenshot:")
+        ? {
+            mimeType: "image/png" as const,
+            path: "/workspace/.makeademo/validation-screenshot.png",
+          }
+        : undefined);
+    const accessibleScreenshot = await copyScreenshotToRepairWorkspace(
+      preparationWorkspace,
+      screenshot,
+    );
+    const { screenshot: _submittedScreenshot, ...parsedWithoutScreenshot } =
+      parsed;
     return {
-      ...parsed,
+      ...parsedWithoutScreenshot,
+      ...(parsed.interactable
+        ? {}
+        : {
+            failureKind:
+              parsed.failureKind ??
+              (parsed.blockedNetworkAttempts?.length
+                ? "runtime-network-blocked"
+                : "browser-not-interactable"),
+          }),
+      logs: boundValidationLogs(parsed.logs),
+      ...(accessibleScreenshot.screenshot === undefined
+        ? {}
+        : { screenshot: accessibleScreenshot.screenshot }),
+      ...(accessibleScreenshot.diagnostic === undefined
+        ? {}
+        : {
+            logs: boundValidationLogs([
+              ...parsed.logs,
+              accessibleScreenshot.diagnostic,
+            ]),
+          }),
+      ...(parsed.screenshotArtifactId.startsWith("screenshot:")
+        ? { screenshotArtifactId: "" }
+        : {}),
       ...(parsed.blockedNetworkAttempts === undefined
         ? {}
         : {
@@ -199,10 +246,51 @@ export class PlaywrightBrowserValidator implements BrowserValidator {
       ...(blockedNetworkAttempts.length === 0
         ? {}
         : { blockedNetworkAttempts }),
+      ...(interactable ? {} : { failureKind: "browser-not-interactable" }),
       interactable,
       logs: [`Loaded ${input.url}`, "Captured screenshot proof."],
       screenshotArtifactId,
     };
+  }
+}
+
+const repairScreenshotPath =
+  "/tmp/makeademo/submitted-code/project-validation/browser.png";
+
+async function copyScreenshotToRepairWorkspace(
+  handle: NonNullable<BrowserValidationInput["preparationWorkspace"]>,
+  screenshot: BrowserValidationOutput["screenshot"] | undefined,
+): Promise<{
+  diagnostic?: string;
+  screenshot?: BrowserValidationOutput["screenshot"];
+}> {
+  if (screenshot === undefined) {
+    return {};
+  }
+  const download = handle.workspace.downloadSubmittedCodeFiles;
+  if (download === undefined) {
+    return {
+      diagnostic:
+        "Validation screenshot is unavailable to the repair workspace.",
+    };
+  }
+  const directory = await mkdtemp(join(tmpdir(), "makeademo-validation-"));
+  const localPath = join(directory, "browser.png");
+  try {
+    await download([
+      { destinationPath: localPath, sourcePath: screenshot.path },
+    ]);
+    await handle.workspace.uploadFiles([
+      { destinationPath: repairScreenshotPath, sourcePath: localPath },
+    ]);
+    return { screenshot: { ...screenshot, path: repairScreenshotPath } };
+  } catch {
+    return {
+      diagnostic:
+        "Validation screenshot transfer to the repair workspace failed.",
+    };
+  } finally {
+    await rm(directory, { force: true, recursive: true });
   }
 }
 
@@ -273,6 +361,12 @@ async function main() {
   try {
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
+  const consoleErrors = [];
+  const pageErrors = [];
+  page.on?.("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  page.on?.("pageerror", (error) => pageErrors.push(error instanceof Error ? error.message : String(error)));
   await page.route("**/*", async (route) => {
     const requestUrl = route.request().url();
     const host = new URL(requestUrl).hostname;
@@ -294,13 +388,20 @@ async function main() {
     process.exit(0);
   }
   const bodyText = (await page.textContent("body")) ?? "";
-  const screenshot = await page.screenshot({ type: "png" });
-  const screenshotArtifactId = "screenshot:" + screenshot.toString("base64");
+  let screenshotPath = "/workspace/.makeademo/validation-screenshot.png";
+  try {
+    require("node:fs").mkdirSync("/workspace/.makeademo", { recursive: true });
+  } catch {
+    screenshotPath = ".makeademo/validation-screenshot.png";
+    require("node:fs").mkdirSync(".makeademo", { recursive: true });
+  }
+  const screenshot = await page.screenshot({ path: screenshotPath, type: "png" });
   const interactable = bodyText.trim().length > 0 && !/error|exception|stack trace|not found/i.test(bodyText);
   console.log(JSON.stringify({
     interactable,
-    logs: ["Loaded " + targetUrl, "Captured screenshot proof."],
-    screenshotArtifactId,
+    logs: ["Loaded " + targetUrl, "Captured screenshot proof.", ...consoleErrors, ...pageErrors, bodyText.slice(0, 2048)],
+    screenshot: { mimeType: "image/png", path: screenshotPath, sizeBytes: screenshot.length },
+    screenshotArtifactId: "",
   }));
 } catch (error) {
   if (blockedRequests.length > 0) {
@@ -313,6 +414,7 @@ async function main() {
     process.exit(0);
   }
   console.log(JSON.stringify({
+    failureKind: "browser-load-failed",
     interactable: false,
     logs: ["Failed to load " + targetUrl + ": " + (error instanceof Error ? error.message : String(error))],
     screenshotArtifactId: "",
@@ -336,7 +438,12 @@ function tryParseBrowserValidationOutput(
       payload !== null &&
       typeof payload.interactable === "boolean" &&
       Array.isArray(payload.logs) &&
-      typeof payload.screenshotArtifactId === "string"
+      typeof payload.screenshotArtifactId === "string" &&
+      (payload.screenshot === undefined ||
+        (typeof payload.screenshot === "object" &&
+          payload.screenshot !== null &&
+          typeof payload.screenshot.path === "string" &&
+          payload.screenshot.mimeType === "image/png"))
     ) {
       return payload;
     }
@@ -482,6 +589,7 @@ function formatBlockedNetworkResult(
   );
   return {
     blockedNetworkAttempts,
+    failureKind: "runtime-network-blocked",
     interactable: false,
     logs: blockedNetworkAttempts.map(
       (request) => `Blocked forbidden browser request to ${request.host}`,

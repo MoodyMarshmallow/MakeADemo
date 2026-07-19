@@ -80,6 +80,7 @@ describe("PlaywrightBrowserValidator", () => {
           url: "https://api.realworld.io/articles",
         },
       ],
+      failureKind: "runtime-network-blocked",
       interactable: false,
       logs: ["Blocked forbidden browser request to api.realworld.io"],
       screenshotArtifactId: "",
@@ -120,6 +121,7 @@ describe("PlaywrightBrowserValidator", () => {
           url: "https://code.ionicframework.com/ionicons/2.0.1/css/ionicons.min.css",
         },
       ],
+      failureKind: "runtime-network-blocked",
       interactable: false,
       logs: [
         "Blocked forbidden browser request to fonts.googleapis.com",
@@ -182,6 +184,7 @@ describe("PlaywrightBrowserValidator", () => {
           url: "https://api.example.com/user?access_key=%5Bredacted%5D&code=%5Bredacted%5D",
         },
       ],
+      failureKind: "runtime-network-blocked",
       interactable: false,
       logs: ["Blocked forbidden browser request to api.example.com"],
       screenshotArtifactId: "",
@@ -201,6 +204,7 @@ describe("PlaywrightBrowserValidator", () => {
     await expect(
       validator.validate({ url: "http://localhost:3000" }),
     ).resolves.toEqual({
+      failureKind: "browser-validation-timeout",
       interactable: false,
       logs: [
         "Browser validation timed out after 50ms for http://localhost:3000",
@@ -248,8 +252,11 @@ describe("PlaywrightBrowserValidator", () => {
 
     expect(result).toEqual({
       interactable: true,
-      logs: ["Loaded http://localhost:3000"],
-      screenshotArtifactId: "screenshot:inner",
+      logs: [
+        "Loaded http://localhost:3000",
+        "Validation screenshot is unavailable to the repair workspace.",
+      ],
+      screenshotArtifactId: "",
     });
     expect(submittedCommands.join("\n")).toContain("chromium.launch");
     expect(submittedCommands.join("\n")).toContain("npm root -g");
@@ -320,8 +327,13 @@ describe("PlaywrightBrowserValidator", () => {
         }),
       ).resolves.toEqual({
         interactable: true,
-        logs: ["Loaded http://localhost:3000", "Captured screenshot proof."],
-        screenshotArtifactId: "screenshot:ZmFrZQ==",
+        logs: [
+          "Loaded http://localhost:3000",
+          "Captured screenshot proof.",
+          "Demo app loaded",
+          "Validation screenshot is unavailable to the repair workspace.",
+        ],
+        screenshotArtifactId: "",
       });
     } finally {
       await rm(workspacePath, { force: true, recursive: true });
@@ -395,6 +407,7 @@ describe("PlaywrightBrowserValidator", () => {
             url: "https://oauth.example.com/callback?code=%5Bredacted%5D&state=%5Bredacted%5D",
           },
         ],
+        failureKind: "runtime-network-blocked",
         interactable: false,
         logs: ["Blocked forbidden browser request to oauth.example.com"],
         screenshotArtifactId: "",
@@ -450,8 +463,11 @@ describe("PlaywrightBrowserValidator", () => {
 
     expect(result).toEqual({
       interactable: true,
-      logs: ["Loaded http://localhost:3000"],
-      screenshotArtifactId: "screenshot:global-npm-root",
+      logs: [
+        "Loaded http://localhost:3000",
+        "Validation screenshot is unavailable to the repair workspace.",
+      ],
+      screenshotArtifactId: "",
     });
   });
 
@@ -494,6 +510,66 @@ describe("PlaywrightBrowserValidator", () => {
       ]),
       screenshotArtifactId: "",
     });
+  });
+
+  it("returns sandbox screenshot metadata without returning inline screenshot bytes", async () => {
+    const validator = new PlaywrightBrowserValidator();
+    const result = await validator.validate({
+      preparationWorkspace: fakeWorkspace(
+        JSON.stringify({
+          interactable: false,
+          logs: ["Vite Error: token=secret"],
+          screenshotArtifactId: "screenshot:very-secret-base64",
+        }),
+      ),
+      url: "http://localhost:3000",
+    });
+
+    expect(result).toMatchObject({
+      failureKind: "browser-not-interactable",
+      screenshotArtifactId: "",
+    });
+    expect(JSON.stringify(result)).not.toContain("very-secret-base64");
+    expect(JSON.stringify(result)).not.toContain("secret");
+  });
+
+  it("copies submitted validation screenshots into the primary repair workspace", async () => {
+    const downloaded: unknown[] = [];
+    const uploaded: unknown[] = [];
+    const validator = new PlaywrightBrowserValidator();
+    const base = fakeWorkspace(
+      JSON.stringify({
+        interactable: false,
+        logs: ["Vite Error"],
+        screenshot: {
+          mimeType: "image/png",
+          path: "/workspace/.makeademo/validation-screenshot.png",
+          sizeBytes: 4,
+        },
+        screenshotArtifactId: "",
+      }),
+    );
+    const result = await validator.validate({
+      preparationWorkspace: {
+        ...base,
+        workspace: {
+          ...base.workspace,
+          async downloadSubmittedCodeFiles(files) {
+            downloaded.push(...files);
+          },
+          async uploadFiles(files) {
+            uploaded.push(...files);
+          },
+        },
+      },
+      url: "http://localhost:3000",
+    });
+
+    expect(result.screenshot).toMatchObject({
+      path: "/tmp/makeademo/submitted-code/project-validation/browser.png",
+    });
+    expect(downloaded).toHaveLength(1);
+    expect(uploaded).toHaveLength(1);
   });
 
   it("preserves submitted-code browser network-blocking evidence", async () => {
@@ -548,6 +624,7 @@ describe("PlaywrightBrowserValidator", () => {
           phase: "runtime",
         },
       ],
+      failureKind: "runtime-network-blocked",
       interactable: false,
       logs: ["Blocked forbidden browser request to api.example.com"],
       screenshotArtifactId: "",
@@ -662,6 +739,27 @@ function fakePage(input: {
     },
     async textContent() {
       return input.bodyText;
+    },
+  };
+}
+
+function fakeWorkspace(stdout: string) {
+  return {
+    async release() {},
+    id: "workspace_123",
+    workspace: {
+      async execute() {
+        throw new Error("outer workspace execution must not validate browser");
+      },
+      async executeSubmittedCode() {
+        return { exitCode: 0, stderr: "", stdout };
+      },
+      async getPreviewUrl() {
+        return "https://preview.example.test";
+      },
+      async setOutboundNetworkAccess() {},
+      async setSubmittedCodeNetworkAccess() {},
+      async uploadFiles() {},
     },
   };
 }
