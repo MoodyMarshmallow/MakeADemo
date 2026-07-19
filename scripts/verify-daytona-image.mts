@@ -2,7 +2,7 @@ import { createGitCloneCommand } from "../src/server/pipeline/03-repo-preparatio
 import {
   createOpenCodeProviderSandboxSecrets,
   ensureOpenCodeProviderDaytonaSecret,
-} from "../src/server/shared/integrations/agents/opencode-provider-secrets";
+} from "../src/server/shared/integrations/daytona/daytona-opencode-provider-secrets";
 import { DaytonaSdkPreparationWorkspaceProvider } from "../src/server/shared/integrations/daytona/daytona-sdk-preparation-workspace-provider";
 
 const snapshot = process.env.MAKEADEMO_DAYTONA_SNAPSHOT;
@@ -55,6 +55,47 @@ try {
     },
   );
   assertCommandSucceeded("parent Git/CA trust", parentGitTrust);
+
+  console.log(
+    "Verifying pinned OpenCode installation and project-config quarantine...",
+  );
+  const opencodeVerification = await handle.workspace.execute(
+    [
+      "opencode --version",
+      'test "$(opencode --version)" = "1.18.3"',
+      "rm -rf /tmp/makeademo-opencode-quarantine",
+      "mkdir -p /tmp/makeademo-opencode-quarantine/project/.opencode/plugins /tmp/makeademo-opencode-quarantine/explicit-config /tmp/makeademo-opencode-quarantine/empty-config",
+      'printf \'{"model":"PROJECT_CONFIG_SENTINEL","plugin":["/tmp/makeademo-opencode-quarantine/project-plugin.ts"]}\' > /tmp/makeademo-opencode-quarantine/project/opencode.json',
+      'printf \'{"model":"PROJECT_JSONC_SENTINEL","plugin":["/tmp/makeademo-opencode-quarantine/project-plugin.ts"]}\' > /tmp/makeademo-opencode-quarantine/project/opencode.jsonc',
+      'printf \'import { writeFileSync } from "node:fs"; writeFileSync("/tmp/makeademo-project-config-plugin.marker", "PROJECT_CONFIG_PLUGIN_SENTINEL"); export default async () => ({});\' > /tmp/makeademo-opencode-quarantine/project-plugin.ts',
+      'printf \'import { writeFileSync } from "node:fs"; writeFileSync("/tmp/makeademo-project-auto-plugin.marker", "PROJECT_AUTO_PLUGIN_SENTINEL"); export default async () => ({});\' > /tmp/makeademo-opencode-quarantine/project/.opencode/plugins/hostile.ts',
+      'printf \'{"model":"EXPLICIT_CONFIG_SENTINEL","plugin":["/tmp/makeademo-opencode-quarantine/explicit-plugin.ts"]}\' > /tmp/makeademo-opencode-quarantine/explicit-config/opencode.json',
+      'printf \'import { writeFileSync } from "node:fs"; writeFileSync("/tmp/makeademo-explicit-plugin.marker", "EXPLICIT_PLUGIN_SENTINEL"); export default async () => ({});\' > /tmp/makeademo-opencode-quarantine/explicit-plugin.ts',
+      "rm -f /tmp/makeademo-project-config-plugin.marker /tmp/makeademo-project-auto-plugin.marker /tmp/makeademo-explicit-plugin.marker",
+      "cd /tmp/makeademo-opencode-quarantine/project",
+      "OPENCODE_CONFIG_DIR=/tmp/makeademo-opencode-quarantine/empty-config opencode debug config > /tmp/makeademo-opencode-quarantine/debug-config-unquarantined.json",
+      "test -e /tmp/makeademo-project-config-plugin.marker",
+      "grep -q PROJECT_CONFIG_PLUGIN_SENTINEL /tmp/makeademo-project-config-plugin.marker",
+      "test -e /tmp/makeademo-project-auto-plugin.marker",
+      "grep -q PROJECT_AUTO_PLUGIN_SENTINEL /tmp/makeademo-project-auto-plugin.marker",
+      "rm -f /tmp/makeademo-project-config-plugin.marker /tmp/makeademo-project-auto-plugin.marker",
+      "OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_CONFIG_DIR=/tmp/makeademo-opencode-quarantine/explicit-config opencode debug config > /tmp/makeademo-opencode-quarantine/debug-config.json",
+      "! grep -q PROJECT_CONFIG_SENTINEL /tmp/makeademo-opencode-quarantine/debug-config.json",
+      "! grep -q PROJECT_JSONC_SENTINEL /tmp/makeademo-opencode-quarantine/debug-config.json",
+      "grep -q EXPLICIT_CONFIG_SENTINEL /tmp/makeademo-opencode-quarantine/debug-config.json",
+      "! test -e /tmp/makeademo-project-config-plugin.marker",
+      "! test -e /tmp/makeademo-project-auto-plugin.marker",
+      "test -e /tmp/makeademo-explicit-plugin.marker",
+      "grep -q EXPLICIT_PLUGIN_SENTINEL /tmp/makeademo-explicit-plugin.marker",
+    ].join(" && "),
+  );
+  assertCommandSucceeded(
+    "pinned OpenCode installation and project-config quarantine",
+    opencodeVerification,
+  );
+  if (!opencodeVerification.stdout.includes("1.18.3")) {
+    throw new Error("Prepared image did not expose OpenCode 1.18.3.");
+  }
 
   console.log("Verifying parent submitted-project toolchain inspector...");
   const inspector = await handle.workspace.execute(

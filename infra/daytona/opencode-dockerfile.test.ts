@@ -30,6 +30,27 @@ describe("Daytona OpenCode prepared image", () => {
     expect(dockerfile).toContain(
       "git config --system http.sslCAInfo /etc/openshell-tls/ca-bundle.pem",
     );
+    expect(dockerfile).toContain("opencode-ai@1.18.3");
+  });
+
+  it("pins OpenCode and includes the credential-free quarantine verification", async () => {
+    const verifier = await readFile(
+      join(import.meta.dirname, "../../scripts/verify-daytona-image.mts"),
+      "utf8",
+    );
+
+    expect(verifier).toContain("opencode --version");
+    expect(verifier).toContain("1.18.3");
+    expect(verifier).toContain("OPENCODE_DISABLE_PROJECT_CONFIG");
+    expect(verifier).toContain("project-plugin.ts");
+    expect(verifier).toContain(".opencode/plugins/hostile.ts");
+    expect(verifier).toContain("debug-config-unquarantined.json");
+    expect(verifier).toContain("PROJECT_CONFIG_SENTINEL");
+    expect(verifier).toContain("PROJECT_JSONC_SENTINEL");
+    expect(verifier).toContain("PROJECT_CONFIG_PLUGIN_SENTINEL");
+    expect(verifier).toContain("PROJECT_AUTO_PLUGIN_SENTINEL");
+    expect(verifier).toContain("EXPLICIT_CONFIG_SENTINEL");
+    expect(verifier).toContain("EXPLICIT_PLUGIN_SENTINEL");
   });
 
   it("defines the generic Node/browser submitted-code runtime image", async () => {

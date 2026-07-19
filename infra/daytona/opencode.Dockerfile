@@ -25,7 +25,7 @@ RUN curl -fsSL https://bun.sh/install | bash -s "bun-v1.2.5" \
 RUN npm install -g --force pnpm@10.12.1 yarn@1.22.22 \
   && npm cache clean --force
 
-RUN OPENCODE_INSTALL_DIR=/usr/local/bin curl -fsSL https://opencode.ai/install | bash \
-  && ln -sf /root/.opencode/bin/opencode /usr/local/bin/opencode
+RUN npm install -g --force opencode-ai@1.18.3 \
+  && npm cache clean --force
 
 WORKDIR /workspace
