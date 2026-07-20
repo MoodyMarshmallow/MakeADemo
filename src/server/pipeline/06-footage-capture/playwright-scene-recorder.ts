@@ -1,19 +1,14 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { PreparationWorkspaceHandle } from "../03-repo-preparation/preparation-workspace-runner";
-import { uploadSubmittedCodeWorkspaceFiles } from "../03-repo-preparation/preparation-workspace-upload";
 import type { PreparationWorkspace } from "../03-repo-preparation/preparation-workspace.interface";
 import { executeSubmittedCode } from "../03-repo-preparation/submitted-code-execution";
 import {
   type CaptureSdkSceneEvent,
-  parseCaptureSdkBlockedNetworkEvents,
   parseCaptureSdkSceneEvents,
   reduceCaptureSdkSceneEvents,
 } from "./capture-sdk-event.schema";
-import {
-  validateDemoScriptCaptureSdkTypes,
-  writeGeneratedCaptureSdkHarness,
-} from "./capture-sdk-harness";
+import { executeDemoScriptInSandbox } from "./demo-script-sandbox-executor";
 import {
   type SceneClipTrimLogger,
   type SceneClipTrimmer,
@@ -24,7 +19,6 @@ import type {
   RecordedScene,
   SceneRecorder,
 } from "./scene-recorder.interface";
-import { prepareStylizedPlaywrightScript } from "./stylized-playwright-script";
 
 type SceneMarker = CaptureSdkSceneEvent;
 type SceneScriptResult = {
@@ -78,79 +72,38 @@ export class PreparedWorkspacePlaywrightSceneRecorder implements SceneRecorder {
     const remoteVideoScratchDirectory = `${remoteSceneWorkspace}/playwright-videos`;
     const remoteRawScenesDirectory = `${remoteRunDirectory}/raw-scenes`;
     const remoteSceneClipsDirectory = `${remoteRunDirectory}/scene-clips`;
-    const remoteScenePath = `${remoteSceneWorkspace}/demo-script.ts`;
     const remoteRawTakePath = `${remoteRawScenesDirectory}/continuous-take.webm`;
-    const localSceneWorkspace = join(
-      input.runDirectory,
-      "work",
-      "continuous-take",
-    );
     const localRawScenesDirectory = join(input.runDirectory, "raw-scenes");
     const localSceneClipsDirectory = join(input.runDirectory, "scene-clips");
-    const localScenePath = join(localSceneWorkspace, "demo-script.ts");
     const markerLogPath = join(input.runDirectory, "scene-markers.jsonl");
     const localRawTakePath = join(
       localRawScenesDirectory,
       "continuous-take.webm",
     );
 
-    await mkdir(localSceneWorkspace, { recursive: true });
     await mkdir(localRawScenesDirectory, { recursive: true });
     await mkdir(localSceneClipsDirectory, { recursive: true });
-    await writeGeneratedCaptureSdkHarness(localSceneWorkspace);
-    await validateDemoScriptCaptureSdkTypes({
-      demoPlaywrightScript: input.demoPlaywrightScript,
-      directory: localSceneWorkspace,
-    });
-    await writeFile(
-      localScenePath,
-      prepareStylizedPlaywrightScript(input.demoPlaywrightScript, {
-        baseUrl: input.baseUrl,
-        headed: this.headed,
-        pauseAfterSceneMs: this.pauseAfterSceneMs,
-        videoDirectory: remoteVideoScratchDirectory,
-      }),
-    );
 
     await executeSubmittedCode(
       workspace,
-      `mkdir -p ${shellQuote(remoteSceneWorkspace)} ${shellQuote(remoteVideoScratchDirectory)} ${shellQuote(remoteRawScenesDirectory)} ${shellQuote(remoteSceneClipsDirectory)}`,
+      `mkdir -p ${shellQuote(remoteVideoScratchDirectory)} ${shellQuote(remoteRawScenesDirectory)} ${shellQuote(remoteSceneClipsDirectory)}`,
     );
-    await uploadSubmittedCodeWorkspaceFiles({
-      files: [
-        {
-          destinationPath: `${remoteSceneWorkspace}/makeademo-capture-sdk.js`,
-          sourcePath: join(localSceneWorkspace, "makeademo-capture-sdk.js"),
-        },
-        {
-          destinationPath: `${remoteSceneWorkspace}/makeademo-capture-sdk.d.ts`,
-          sourcePath: join(localSceneWorkspace, "makeademo-capture-sdk.d.ts"),
-        },
-        {
-          destinationPath: `${remoteSceneWorkspace}/makeademo-capture-sdk.instructions.md`,
-          sourcePath: join(
-            localSceneWorkspace,
-            "makeademo-capture-sdk.instructions.md",
-          ),
-        },
-        {
-          destinationPath: `${remoteSceneWorkspace}/demo-script.contract.ts`,
-          sourcePath: join(localSceneWorkspace, "demo-script.contract.ts"),
-        },
-        { destinationPath: remoteScenePath, sourcePath: localScenePath },
-      ],
+    const result = await executeDemoScriptInSandbox({
+      baseUrl: input.baseUrl,
+      demoPlaywrightScript: input.demoPlaywrightScript,
+      headed: this.headed,
+      mode: "recording",
+      pauseAfterSceneMs: this.pauseAfterSceneMs,
+      remoteRunDirectory: remoteSceneWorkspace,
+      scriptFilename: "demo-script.ts",
+      timeoutMs: this.sceneTimeoutMs,
+      videoDirectory: remoteVideoScratchDirectory,
       workspace,
     });
-
-    const result = await executeSubmittedCode(
-      workspace,
-      `cd ${shellQuote(remoteSceneWorkspace)} && ${createExposeGlobalPlaywrightCommand()} && timeout -s TERM ${Math.ceil(this.sceneTimeoutMs / 1000)} bun ${shellQuote(remoteScenePath)}`,
-    );
     await writeFile(markerLogPath, extractMarkerLog(result.stdout));
-    const blockedNetworkAttempts = readBlockedNetworkAttempts(result.stderr);
-    if (blockedNetworkAttempts.length > 0) {
+    if (result.blockedNetworkAttempts.length > 0) {
       throw new Error(
-        `Footage Capture blocked runtime network access from the generated Demo Script: ${blockedNetworkAttempts.map((attempt) => attempt.host).join(", ")}`,
+        `Footage Capture blocked runtime network access from the generated Demo Script: ${result.blockedNetworkAttempts.map((attempt) => attempt.host).join(", ")}`,
       );
     }
     if (result.exitCode !== 0) {
@@ -298,12 +251,6 @@ function readMarkerRanges(markers: SceneMarker[], sceneIds: string[]) {
   }
 }
 
-function readBlockedNetworkAttempts(stderr: string) {
-  return parseCaptureSdkBlockedNetworkEvents(stderr).map((attempt) => ({
-    host: attempt.host,
-  }));
-}
-
 async function findSingleRemoteVideo(input: {
   directory: string;
   workspace: PreparationWorkspace;
@@ -341,14 +288,4 @@ async function findSingleRemoteVideo(input: {
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-function createExposeGlobalPlaywrightCommand() {
-  return [
-    "global_node_modules=$(npm root -g 2>/dev/null || true)",
-    'if [ -n "$global_node_modules" ]; then mkdir -p node_modules; fi',
-    'if [ -e "$global_node_modules/@playwright" ]; then ln -sfn "$global_node_modules/@playwright" node_modules/@playwright; fi',
-    'if [ -e "$global_node_modules/playwright" ]; then ln -sfn "$global_node_modules/playwright" node_modules/playwright; fi',
-    'if [ -e "$global_node_modules/playwright-core" ]; then ln -sfn "$global_node_modules/playwright-core" node_modules/playwright-core; fi',
-  ].join("; ");
 }

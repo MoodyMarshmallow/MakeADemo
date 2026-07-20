@@ -1,19 +1,10 @@
-import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { uploadSubmittedCodeWorkspaceFiles } from "../03-repo-preparation/preparation-workspace-upload";
-import { executeSubmittedCode } from "../03-repo-preparation/submitted-code-execution";
+import { readCaptureSdkBrowserActionEvents } from "../06-footage-capture/capture-sdk-event.schema";
 import {
-  parseCaptureSdkBlockedNetworkEvents,
-  readCaptureSdkBrowserActionEvents,
-} from "../06-footage-capture/capture-sdk-event.schema";
-import {
-  validateDemoScriptCaptureSdkTypes,
-  writeGeneratedCaptureSdkHarness,
-} from "../06-footage-capture/capture-sdk-harness";
-import { prepareStylizedPlaywrightScript } from "../06-footage-capture/stylized-playwright-script";
+  DemoScriptTypeValidationError,
+  executeDemoScriptInSandbox,
+} from "../06-footage-capture/demo-script-sandbox-executor";
 import type {
   CapturePathSceneValidationInput,
   CapturePathSceneValidationResult,
@@ -22,6 +13,7 @@ import type {
 
 const missingSandboxPlaywrightFailureReason =
   "MakeADemo validator dependency failure: Playwright is not available inside the submitted-code sandbox.";
+const capturePathDemoScriptTimeoutMs = 120_000;
 
 export class DefaultCapturePathSceneValidator
   implements CapturePathSceneValidator
@@ -29,53 +21,37 @@ export class DefaultCapturePathSceneValidator
   async validateScene(
     input: CapturePathSceneValidationInput,
   ): Promise<CapturePathSceneValidationResult> {
-    if (input.preparationWorkspace !== undefined) {
-      return await this.validateSceneInPreparationWorkspace(input);
-    }
-
-    const runDirectory = join(
-      ".makeademo-capture-path-validation-runs",
-      createRunId(),
-      input.scene.id,
-    );
-    const scenePath = join(runDirectory, `${input.scene.id}.ts`);
-    const stderrPath = join(runDirectory, `${input.scene.id}.stderr.log`);
-    const stdoutPath = join(runDirectory, `${input.scene.id}.stdout.log`);
-
-    await mkdir(runDirectory, { recursive: true });
-    await writeGeneratedCaptureSdkHarness(runDirectory);
+    const runDirectory = `/workspace/.makeademo/capture-path-validation-runs/${createRunId()}/${input.scene.id}`;
+    let result: Awaited<ReturnType<typeof executeDemoScriptInSandbox>>;
     try {
-      await validateDemoScriptCaptureSdkTypes({
-        demoPlaywrightScript: input.demoPlaywrightScript,
-        directory: runDirectory,
-      });
-    } catch (error) {
-      return {
-        failureReason: "Demo Script failed Capture SDK TypeScript validation.",
-        logs: [error instanceof Error ? error.message : String(error)],
-        runDirectory,
-        status: "failed",
-      };
-    }
-    await writeFile(
-      scenePath,
-      prepareStylizedPlaywrightScript(input.demoPlaywrightScript, {
+      result = await executeDemoScriptInSandbox({
         baseUrl: input.baseUrl,
+        demoPlaywrightScript: input.demoPlaywrightScript,
         headed: false,
         mode: "validation",
         pauseAfterSceneMs: 0,
-      }),
-    );
+        remoteRunDirectory: runDirectory,
+        scriptFilename: `${input.scene.id}.ts`,
+        timeoutMs: capturePathDemoScriptTimeoutMs,
+        workspace: input.preparationWorkspace.workspace,
+      });
+    } catch (error) {
+      if (error instanceof DemoScriptTypeValidationError) {
+        return {
+          failureReason:
+            "Demo Script failed Capture SDK TypeScript validation.",
+          logs: [error.message],
+          runDirectory,
+          status: "failed",
+        };
+      }
+      throw error;
+    }
 
-    const result = await runSceneScript(scenePath);
-    await Promise.all([
-      writeFile(stdoutPath, result.stdout),
-      writeFile(stderrPath, result.stderr),
-    ]);
     const logs = [result.stdout, result.stderr].filter(
       (output) => output.length > 0,
     );
-    const blockedNetworkAttempts = readBlockedNetworkAttempts(result.stderr);
+    const blockedNetworkAttempts = result.blockedNetworkAttempts;
     if (blockedNetworkAttempts.length > 0) {
       return {
         blockedNetworkAttempts,
@@ -83,23 +59,34 @@ export class DefaultCapturePathSceneValidator
           "Capture Path Validation blocked runtime network access from the generated Demo Script.",
         logs,
         runDirectory,
-        scriptPath: scenePath,
-        stderrPath,
+        scriptPath: result.scriptPath,
+        stderrPath: result.stderrPath,
         status: "failed",
-        stdoutPath,
+        stdoutPath: result.stdoutPath,
       };
     }
 
     if (result.exitCode !== 0) {
+      if (result.timedOut) {
+        return {
+          failureReason: `Demo Script dry-run timed out after ${capturePathDemoScriptTimeoutMs}ms.`,
+          logs,
+          runDirectory,
+          scriptPath: result.scriptPath,
+          stderrPath: result.stderrPath,
+          status: "failed",
+          stdoutPath: result.stdoutPath,
+        };
+      }
       if (isMissingSandboxPlaywrightError(logs)) {
         return {
           failureReason: missingSandboxPlaywrightFailureReason,
           logs,
           runDirectory,
-          scriptPath: scenePath,
-          stderrPath,
+          scriptPath: result.scriptPath,
+          stderrPath: result.stderrPath,
           status: "failed",
-          stdoutPath,
+          stdoutPath: result.stdoutPath,
         };
       }
 
@@ -116,217 +103,22 @@ export class DefaultCapturePathSceneValidator
         logs,
         runDirectory,
         ...(screenshotArtifactId === undefined ? {} : { screenshotArtifactId }),
-        scriptPath: scenePath,
-        stderrPath,
+        scriptPath: result.scriptPath,
+        stderrPath: result.stderrPath,
         status: "failed",
-        stdoutPath,
+        stdoutPath: result.stdoutPath,
       };
     }
 
     return {
       logs,
       runDirectory,
-      scriptPath: scenePath,
+      scriptPath: result.scriptPath,
       status: "succeeded",
-      stderrPath,
-      stdoutPath,
+      stderrPath: result.stderrPath,
+      stdoutPath: result.stdoutPath,
     };
   }
-
-  private async validateSceneInPreparationWorkspace(
-    input: CapturePathSceneValidationInput,
-  ): Promise<CapturePathSceneValidationResult> {
-    const preparationWorkspace = input.preparationWorkspace;
-    if (preparationWorkspace === undefined) {
-      throw new Error(
-        "Capture Path Validation requires a preparation workspace.",
-      );
-    }
-    const localRunDirectory = await mkdtemp(
-      join(tmpdir(), "makeademo-capture-path-validation-"),
-    );
-    const remoteRunDirectory = `/workspace/.makeademo/capture-path-validation-runs/${createRunId()}/${input.scene.id}`;
-    const remoteScenePath = `${remoteRunDirectory}/${input.scene.id}.ts`;
-    const remoteStdoutPath = `${remoteRunDirectory}/${input.scene.id}.stdout.log`;
-    const remoteStderrPath = `${remoteRunDirectory}/${input.scene.id}.stderr.log`;
-    const localScenePath = join(localRunDirectory, `${input.scene.id}.ts`);
-    const localSdkRuntimePath = join(
-      localRunDirectory,
-      "makeademo-capture-sdk.js",
-    );
-    const localSdkDeclarationPath = join(
-      localRunDirectory,
-      "makeademo-capture-sdk.d.ts",
-    );
-    const localSdkInstructionsPath = join(
-      localRunDirectory,
-      "makeademo-capture-sdk.instructions.md",
-    );
-    const localContractPath = join(
-      localRunDirectory,
-      "demo-script.contract.ts",
-    );
-
-    try {
-      await writeGeneratedCaptureSdkHarness(localRunDirectory);
-      try {
-        await validateDemoScriptCaptureSdkTypes({
-          demoPlaywrightScript: input.demoPlaywrightScript,
-          directory: localRunDirectory,
-        });
-      } catch (error) {
-        return {
-          failureReason:
-            "Demo Script failed Capture SDK TypeScript validation.",
-          logs: [error instanceof Error ? error.message : String(error)],
-          runDirectory: remoteRunDirectory,
-          status: "failed",
-        };
-      }
-      await writeFile(
-        localScenePath,
-        prepareStylizedPlaywrightScript(input.demoPlaywrightScript, {
-          baseUrl: input.baseUrl,
-          headed: false,
-          mode: "validation",
-          pauseAfterSceneMs: 0,
-        }),
-      );
-      await executeSubmittedCode(
-        preparationWorkspace.workspace,
-        `mkdir -p ${shellQuote(remoteRunDirectory)}`,
-      );
-      await uploadSubmittedCodeWorkspaceFiles({
-        files: [
-          {
-            destinationPath: `${remoteRunDirectory}/makeademo-capture-sdk.js`,
-            sourcePath: localSdkRuntimePath,
-          },
-          {
-            destinationPath: `${remoteRunDirectory}/makeademo-capture-sdk.d.ts`,
-            sourcePath: localSdkDeclarationPath,
-          },
-          {
-            destinationPath: `${remoteRunDirectory}/makeademo-capture-sdk.instructions.md`,
-            sourcePath: localSdkInstructionsPath,
-          },
-          {
-            destinationPath: `${remoteRunDirectory}/demo-script.contract.ts`,
-            sourcePath: localContractPath,
-          },
-          { destinationPath: remoteScenePath, sourcePath: localScenePath },
-        ],
-        workspace: preparationWorkspace.workspace,
-      });
-
-      const result = await executeSubmittedCode(
-        preparationWorkspace.workspace,
-        [
-          `cd ${shellQuote(remoteRunDirectory)}`,
-          createExposeGlobalPlaywrightCommand(),
-          `timeout -s TERM 120 bun ${shellQuote(remoteScenePath)} > ${shellQuote(remoteStdoutPath)} 2> ${shellQuote(remoteStderrPath)}`,
-          "code=$?",
-          `cat ${shellQuote(remoteStdoutPath)}`,
-          `cat ${shellQuote(remoteStderrPath)} >&2`,
-          "exit $code",
-        ].join("; "),
-      );
-      const logs = [result.stdout, result.stderr].filter(
-        (output) => output.length > 0,
-      );
-      const blockedNetworkAttempts = readBlockedNetworkAttempts(result.stderr);
-      if (blockedNetworkAttempts.length > 0) {
-        return {
-          blockedNetworkAttempts,
-          failureReason:
-            "Capture Path Validation blocked runtime network access from the generated Demo Script.",
-          logs,
-          runDirectory: remoteRunDirectory,
-          scriptPath: remoteScenePath,
-          stderrPath: remoteStderrPath,
-          status: "failed",
-          stdoutPath: remoteStdoutPath,
-        };
-      }
-
-      if (result.exitCode !== 0) {
-        if (isMissingSandboxPlaywrightError(logs)) {
-          return {
-            failureReason: missingSandboxPlaywrightFailureReason,
-            logs,
-            runDirectory: remoteRunDirectory,
-            scriptPath: remoteScenePath,
-            stderrPath: remoteStderrPath,
-            status: "failed",
-            stdoutPath: remoteStdoutPath,
-          };
-        }
-
-        const failedAction = readFailedAction(logs);
-        const errorMessage = readValidationFailureMessage(logs);
-        const screenshotArtifactId = readValidationFailureScreenshotPath(
-          logs,
-          remoteRunDirectory,
-        );
-        return {
-          ...(errorMessage === undefined ? {} : { errorMessage }),
-          ...(failedAction === undefined ? {} : { failedAction }),
-          failureReason: createSceneFailureReason(input.scene.id, failedAction),
-          logs,
-          runDirectory: remoteRunDirectory,
-          ...(screenshotArtifactId === undefined
-            ? {}
-            : { screenshotArtifactId }),
-          scriptPath: remoteScenePath,
-          stderrPath: remoteStderrPath,
-          status: "failed",
-          stdoutPath: remoteStdoutPath,
-        };
-      }
-
-      return {
-        logs,
-        runDirectory: remoteRunDirectory,
-        scriptPath: remoteScenePath,
-        status: "succeeded",
-        stderrPath: remoteStderrPath,
-        stdoutPath: remoteStdoutPath,
-      };
-    } finally {
-      await rm(localRunDirectory, { force: true, recursive: true });
-    }
-  }
-}
-
-async function runSceneScript(scenePath: string) {
-  return await new Promise<{
-    exitCode: number | null;
-    stderr: string;
-    stdout: string;
-  }>((resolve, reject) => {
-    const child = spawn(process.execPath, [scenePath], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    child.once("error", reject);
-    child.once("close", (exitCode) => {
-      resolve({ exitCode, stderr, stdout });
-    });
-  });
-}
-
-function readBlockedNetworkAttempts(stderr: string) {
-  return parseCaptureSdkBlockedNetworkEvents(stderr);
 }
 
 function createSceneFailureReason(sceneId: string, failedAction?: string) {
@@ -423,18 +215,4 @@ function isMissingSandboxPlaywrightError(logs: string[]) {
 
 function createRunId() {
   return `capture-path-${new Date().toISOString().replaceAll(/[:.]/g, "-")}`;
-}
-
-function shellQuote(value: string) {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-function createExposeGlobalPlaywrightCommand() {
-  return [
-    "global_node_modules=$(npm root -g 2>/dev/null || true)",
-    'if [ -n "$global_node_modules" ]; then mkdir -p node_modules; fi',
-    'if [ -e "$global_node_modules/@playwright" ]; then ln -sfn "$global_node_modules/@playwright" node_modules/@playwright; fi',
-    'if [ -e "$global_node_modules/playwright" ]; then ln -sfn "$global_node_modules/playwright" node_modules/playwright; fi',
-    'if [ -e "$global_node_modules/playwright-core" ]; then ln -sfn "$global_node_modules/playwright-core" node_modules/playwright-core; fi',
-  ].join("; ");
 }

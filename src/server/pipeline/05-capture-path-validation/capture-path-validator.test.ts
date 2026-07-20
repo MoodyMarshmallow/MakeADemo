@@ -662,6 +662,65 @@ describe("validateCapturePath", () => {
     });
   });
 
+  it("preserves a dry-run timeout result that settles after staging and provider evidence", async () => {
+    vi.useFakeTimers();
+    let sceneStarted = false;
+    const resultPromise = validateCapturePath(
+      {
+        preparationManifest: manifest(),
+        preparationWorkspace: workspaceHandle([]),
+        demoScriptCandidate: demoScript(),
+        demoScriptPackage: demoScript(),
+      },
+      {
+        async validateProject() {
+          return {
+            blockedNetworkAttempts: [],
+            browserUrl: "https://preview.example.test/",
+            logs: ["project checks passed"],
+            status: "succeeded",
+            warnings: [],
+          };
+        },
+        sceneValidator: {
+          async validateScene() {
+            sceneStarted = true;
+            return await new Promise<{
+              failureReason: string;
+              logs: string[];
+              status: "failed";
+            }>((resolve) => {
+              setTimeout(() => {
+                resolve({
+                  failureReason:
+                    "Demo Script dry-run timed out after 120000ms.",
+                  logs: ["sandbox exited 124 after returning evidence"],
+                  status: "failed",
+                });
+              }, 145_000);
+            });
+          },
+        },
+      },
+    );
+    for (let index = 0; !sceneStarted && index < 100; index += 1) {
+      await Promise.resolve();
+    }
+    expect(sceneStarted).toBe(true);
+
+    vi.advanceTimersByTime(145_000);
+    const result = await resultPromise;
+
+    expect(result).toMatchObject({
+      failureReason: "Demo Script dry-run timed out after 120000ms.",
+      logs: [
+        "project checks passed",
+        "sandbox exited 124 after returning evidence",
+      ],
+      status: "failed",
+    });
+  });
+
   it.each([
     {
       expectedReason: "Capture Path emitted malformed Scene marker",

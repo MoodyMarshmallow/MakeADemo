@@ -34,7 +34,7 @@ const defaultDiagnosticsLogger = createPipelineEventLogger({
 export type CapturePathSceneValidationInput = {
   baseUrl: string;
   demoPlaywrightScript: string;
-  preparationWorkspace?: CapturePathValidationInput["preparationWorkspace"];
+  preparationWorkspace: CapturePathValidationInput["preparationWorkspace"];
   scene: SceneDescription;
   sectionId: string;
 };
@@ -83,7 +83,11 @@ export type CapturePathValidationDependencies = {
   ): Promise<ProjectValidationResult>;
 };
 
-const defaultSceneValidationTimeoutMs = 2 * 60_000;
+const defaultDemoScriptProviderDeadlineMs = 125_000;
+const defaultSceneValidationStagingAndEvidenceHeadroomMs = 25_000;
+const defaultSceneValidationTimeoutMs =
+  defaultDemoScriptProviderDeadlineMs +
+  defaultSceneValidationStagingAndEvidenceHeadroomMs;
 
 export async function validateCapturePath(
   input: CapturePathValidationInput,
@@ -149,10 +153,7 @@ export async function validateCapturePath(
   const logs = [...projectValidation.logs];
   const browserUrl =
     projectValidation.browserUrl ?? input.preparationManifest.url;
-  const sceneBaseUrl =
-    input.preparationWorkspace === undefined
-      ? browserUrl
-      : input.preparationManifest.url;
+  const sceneBaseUrl = input.preparationManifest.url;
   await writeCapturePathDiagnostics(input, dependencies, {
     event: "capture-path-validation.demo-script.started",
     scenes: scriptPackage.scenes.map((scene) => ({
@@ -167,9 +168,7 @@ export async function validateCapturePath(
       dependencies.sceneValidator.validateScene({
         baseUrl: sceneBaseUrl,
         demoPlaywrightScript: scriptPackage.demoPlaywrightScript,
-        ...(input.preparationWorkspace === undefined
-          ? {}
-          : { preparationWorkspace: input.preparationWorkspace }),
+        preparationWorkspace: input.preparationWorkspace,
         scene: firstScene,
         sectionId: "demo-script",
       }),
