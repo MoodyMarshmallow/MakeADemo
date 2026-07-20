@@ -10,7 +10,7 @@
 
 ## Log Artifacts
 
-- Full pipeline run events are written to `.makeademo-full-pipeline-runs/<run-id>/pipeline-log.jsonl` by `src/server/pipeline/00-orchestration/full-pipeline-runner.ts`.
+- Full pipeline run events are written to `.makeademo-full-pipeline-runs/<run-id>/pipeline-log.jsonl` by `src/server/pipeline/00-orchestration/job/full-pipeline-runner.ts`.
 - Provider-neutral Agent Harness output is written locally through Pino by `src/server/composition/agent-output.ts`.
 - Repo Preparation sandbox audit events are written through `PreparationWorkspace.writeSandboxLog` to `/tmp/makeademo/sandbox-log.jsonl` by the Daytona workspace provider.
 - Project Validation and Script Generation should add sandbox-visible progress through `writeSandboxLog`, not by writing their own log files.
