@@ -1,41 +1,25 @@
 import { describe, expect, it } from "vitest";
 
-import type { PreparationWorkspaceHandle } from "../03-repo-preparation/preparation-workspace-runner";
-import type { RepoPreparationAgent } from "../03-repo-preparation/repo-preparation-agent.interface";
-import type { ScriptGenerationAgent } from "../04-script-generation/script-generation-agent.interface";
-import type { CapturePathRepairer } from "../05-capture-path-validation/capture-path-repairer.interface";
-import type { BrowserValidator } from "../05-capture-path-validation/project-runtime-preflight/browser-validator.interface";
-import type { SandboxRunner } from "../05-capture-path-validation/project-runtime-preflight/sandbox-runner.interface";
-import { parseDemoScript } from "../06-footage-capture/demo-script.schema";
-import { runPipelineJob } from "./pipeline-orchestrator";
-import { createPreCapturePipelineDependencies } from "./pre-capture-pipeline";
+import { runPipelineJob } from "../pipeline/00-orchestration/job/pipeline-orchestrator";
+import type { PreparationWorkspaceHandle } from "../pipeline/03-repo-preparation/preparation-workspace-runner";
+import type { RepoPreparationAgent } from "../pipeline/03-repo-preparation/repo-preparation-agent.interface";
+import type { ScriptGenerationAgent } from "../pipeline/04-script-generation/script-generation-agent.interface";
+import type { CapturePathRepairer } from "../pipeline/05-capture-path-validation/capture-path-repairer.interface";
+import type { BrowserValidator } from "../pipeline/05-capture-path-validation/project-runtime-preflight/browser-validator.interface";
+import type { SandboxRunner } from "../pipeline/05-capture-path-validation/project-runtime-preflight/sandbox-runner.interface";
+import { parseDemoScript } from "../pipeline/06-footage-capture/demo-script.schema";
+import {
+  createDaytonaFreshCaptureStatePreparer,
+  createProductionPipelineDependencies,
+} from "./production-pipeline";
 
-describe("createPreCapturePipelineDependencies", () => {
-  it("wires the runnable pipeline through Script Generation", async () => {
+describe("production Pipeline assembly", () => {
+  it("runs Repo Preparation, Script Generation, and Capture Path Validation through the Pipeline Job", async () => {
     const repoPreparationAgent: RepoPreparationAgent = {
       async prepare() {
         return {
           baselineSourceControlledPaths: ["src/App.tsx"],
-          manifest: {
-            assumptions: [],
-            createdFiles: [],
-            demoCommand: "npm run demo:makeademo",
-            diffArtifactId: "artifact_diff",
-            existingDemoEvidence: [],
-            mockedServices: [],
-            modifiedFiles: [],
-            nativeVisibleInterface: {
-              nativeStartupAttempts: ["npm run dev"],
-              sourceControlledUiPaths: ["src/App.tsx"],
-            },
-            repoUrl: "https://github.com/example/app",
-            risks: [],
-            scriptGenerationContext: [],
-            setupSummary: "Prepared demo runtime.",
-            status: "created-new-demo",
-            url: "http://localhost:3000",
-            workspaceId: "workspace_123",
-          },
+          manifest: preparationManifest(),
           status: "succeeded",
           workspace: preparationWorkspaceHandle(),
         };
@@ -72,7 +56,7 @@ describe("createPreCapturePipelineDependencies", () => {
         repoUrl: "https://github.com/example/app",
         workspaceId: "workspace_123",
       },
-      createPreCapturePipelineDependencies({
+      createProductionPipelineDependencies({
         browserValidator,
         repoPreparationAgent,
         sandboxRunner,
@@ -104,7 +88,29 @@ describe("createPreCapturePipelineDependencies", () => {
     }
   });
 
-  it("wires Capture Path Validation repair through an explicit repair agent", async () => {
+  it("supplies a fresh deterministic state before Footage Capture", async () => {
+    const preparationWorkspace = preparationWorkspaceHandle();
+    const prepareFreshCaptureState = createDaytonaFreshCaptureStatePreparer(
+      async ({
+        preparationManifest: manifest,
+        preparationWorkspace: workspace,
+      }) => {
+        expect(manifest).toEqual(preparationManifest());
+        expect(workspace).toBe(preparationWorkspace);
+        return { browserUrl: "https://fresh-preview.example.test/" };
+      },
+    );
+
+    await expect(
+      prepareFreshCaptureState({
+        attempt: 1,
+        browserUrl: "https://preview.example.test/",
+        preparedDemo: succeededPreparedDemo(preparationWorkspace),
+      }),
+    ).resolves.toEqual({ browserUrl: "https://fresh-preview.example.test/" });
+  });
+
+  it("makes Capture Path repair available to the Pipeline Job", async () => {
     const scriptGenerationAgent: ScriptGenerationAgent = {
       async generateScriptPackage() {
         return scriptPackage("script_initial");
@@ -119,7 +125,7 @@ describe("createPreCapturePipelineDependencies", () => {
       },
     };
 
-    const dependencies = createPreCapturePipelineDependencies({
+    const dependencies = createProductionPipelineDependencies({
       repoPreparationAgent: {
         async prepare() {
           throw new Error("not used");
@@ -145,7 +151,7 @@ describe("createPreCapturePipelineDependencies", () => {
           status: "failed",
           warnings: [],
         },
-        preparationManifest: manifest(),
+        preparationManifest: preparationManifest(),
         repoUrl: "https://github.com/example/app",
         demoScriptPackage: scriptPackage("script_initial"),
       }),
@@ -155,7 +161,7 @@ describe("createPreCapturePipelineDependencies", () => {
   });
 });
 
-function manifest() {
+function preparationManifest() {
   return {
     assumptions: [],
     createdFiles: [],
@@ -215,6 +221,27 @@ function preparationWorkspaceHandle(): PreparationWorkspaceHandle {
   };
 }
 
+function succeededPreparedDemo(
+  preparationWorkspace: PreparationWorkspaceHandle,
+) {
+  const acceptedDemoScript = scriptPackage("script_test");
+
+  return {
+    acceptedDemoScript,
+    capturePathValidation: {
+      blockedNetworkAttempts: [],
+      browserUrl: "https://preview.example.test/",
+      logs: [],
+      status: "succeeded" as const,
+      warnings: [],
+    },
+    demoScriptPackage: acceptedDemoScript,
+    preparationManifest: preparationManifest(),
+    preparationWorkspace,
+    status: "succeeded" as const,
+  };
+}
+
 function scriptPackage(scriptId: string) {
   return {
     assumptions: [],
@@ -226,7 +253,7 @@ function scriptPackage(scriptId: string) {
     demoPlaywrightScript:
       "await scene('scene_validation', async () => { await page.goto(baseUrl); });",
     exploration: { assumptions: [], productSurfaces: [], summary: "" },
-    format: "16:9",
+    format: "16:9" as const,
     presentation: {
       music: { enabled: false as const },
       textOverlays: [],

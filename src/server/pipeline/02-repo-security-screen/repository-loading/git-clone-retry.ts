@@ -1,12 +1,16 @@
-import type { PreparationWorkspaceCommandResult } from "./preparation-workspace.interface";
+type GitCloneCommandResult = {
+  exitCode: number;
+  stderr: string;
+  stdout: string;
+};
 
 const defaultCloneRetryDelaysMs = [100, 250];
 
 export async function runGitCloneWithTransientRetry(input: {
-  clone: () => Promise<PreparationWorkspaceCommandResult>;
+  clone: () => Promise<GitCloneCommandResult>;
   retryDelaysMs?: number[];
   retryThrownErrors?: boolean;
-}): Promise<PreparationWorkspaceCommandResult> {
+}): Promise<GitCloneCommandResult> {
   const retryDelaysMs = input.retryDelaysMs ?? defaultCloneRetryDelaysMs;
 
   for (let attempt = 0; ; attempt += 1) {
@@ -34,12 +38,12 @@ export async function runGitCloneWithTransientRetry(input: {
 }
 
 function isTransientGitCloneFailure(output: string): boolean {
-  return /could not resolve host|temporary failure in name resolution|name or service not known|econnrefused|connection refused|econnreset|connection reset|etimedout|timed out|operation timed out|the socket connection was closed unexpectedly|daytonaconnectionerror/i.test(
+  return /could not resolve host|temporary failure in name resolution|name or service not known|econnrefused|connection refused|econnreset|connection reset|etimedout|timed out|operation timed out|the socket connection was closed unexpectedly/i.test(
     output,
   );
 }
 
-function readCommandOutput(result: PreparationWorkspaceCommandResult): string {
+function readCommandOutput(result: GitCloneCommandResult): string {
   return [result.stderr, result.stdout]
     .filter((line) => line.length > 0)
     .join("\n");

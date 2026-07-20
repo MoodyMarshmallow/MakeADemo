@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { FullPipelineStageFailure } from "../job/full-pipeline-runner";
 import { formatFullPipelineFailure } from "./full-pipeline-failure-output";
-import { FullPipelineStageFailure } from "./full-pipeline-runner";
 
 describe("formatFullPipelineFailure", () => {
   it("prints whole-pipeline failure context for the terminal", () => {

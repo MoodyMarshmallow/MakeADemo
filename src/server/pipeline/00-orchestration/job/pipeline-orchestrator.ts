@@ -1,22 +1,23 @@
+import type { AgentSession } from "../../../agent-harness/agent-session";
 import type {
   RepoSecurityInput,
   RepoSecurityResult,
-} from "../02-repo-security-screen/repo-security-screen";
+} from "../../02-repo-security-screen/repo-security-screen";
 import type {
   RepoPreparationInput,
   RepoPreparationResult,
-} from "../03-repo-preparation/repo-preparation-agent.interface";
+} from "../../03-repo-preparation/repo-preparation-agent.interface";
 import type {
   AcceptedDemoScript,
   DemoScriptCandidate,
   DemoScriptPackage,
-} from "../04-script-generation/demo-script-package";
-import type { ScriptGenerationInput } from "../04-script-generation/script-generation-orchestrator";
-import type { CapturePathRepairer } from "../05-capture-path-validation/capture-path-repairer.interface";
+} from "../../04-script-generation/demo-script-package";
+import type { ScriptGenerationInput } from "../../04-script-generation/script-generation-orchestrator";
+import type { CapturePathRepairer } from "../../05-capture-path-validation/capture-path-repairer.interface";
 import type {
   CapturePathValidationInput,
   CapturePathValidationResult,
-} from "../05-capture-path-validation/capture-path-validator.interface";
+} from "../../05-capture-path-validation/capture-path-validator.interface";
 import type { PipelineJobInput, PipelineJobResult } from "./pipeline-job";
 import {
   type PipelineObservabilityEvent,
@@ -50,6 +51,43 @@ export type PipelineOrchestratorOptions = {
   observer?: PipelineObserver;
   onProgress?: (event: PipelineProgressEvent) => Promise<unknown> | unknown;
 };
+
+/**
+ * Inputs for the bounded authoritative Capture Path Validation and repair
+ * lifecycle. A supplied failure requests a repair before the next validation;
+ * every repaired candidate is still validated from the beginning.
+ */
+export type CapturePathValidationRepairLifecycleInput = {
+  agentSession?: AgentSession;
+  context: PipelineObservationContext;
+  dependencies: PipelineOrchestratorDependencies;
+  demoScriptCandidate: DemoScriptCandidate;
+  failure?: CapturePathValidationResult;
+  now: () => number;
+  observer: PipelineObserver;
+  onProgress?:
+    | ((event: PipelineProgressEvent) => Promise<unknown> | unknown)
+    | undefined;
+  preparationManifest: CapturePathValidationInput["preparationManifest"];
+  preparationWorkspace: CapturePathValidationInput["preparationWorkspace"];
+  repoUrl: string;
+};
+
+/**
+ * Result of the bounded Capture Path Validation and repair lifecycle. Only a
+ * succeeded result may promote its Demo Script candidate for Footage Capture.
+ */
+export type CapturePathValidationRepairLifecycleResult =
+  | {
+      capturePathValidation: CapturePathValidationResult;
+      demoScriptCandidate: DemoScriptCandidate;
+      preparationManifest: CapturePathValidationInput["preparationManifest"];
+      status: "succeeded";
+    }
+  | {
+      capturePathValidation: CapturePathValidationResult;
+      status: "failed";
+    };
 
 export async function runPipelineJob(
   input: PipelineJobInput,
@@ -220,7 +258,7 @@ export async function runPipelineJob(
       : { preparationWorkspace: preparation.workspace }),
     repoUrl: input.repoUrl,
   } satisfies ScriptGenerationInput;
-  let preparationManifest = preparation.manifest;
+  const preparationManifest = preparation.manifest;
   try {
     demoScriptCandidate = await dependencies.generateScriptPackage(
       scriptGenerationInput,
@@ -254,61 +292,33 @@ export async function runPipelineJob(
     status: "succeeded",
   });
 
-  let capturePathValidation: CapturePathValidationResult | undefined;
-  const repairAttemptLimit = readCapturePathRepairAttemptLimit();
-  for (let attempt = 0; attempt <= repairAttemptLimit; attempt += 1) {
-    capturePathValidation = await runCapturePathValidation({
-      context,
-      dependencies,
-      now,
-      onProgress: options.onProgress,
-      observer,
-      preparationManifest,
-      preparationWorkspace,
-      demoScriptCandidate,
-      demoScriptPackage: demoScriptCandidate,
-    });
-
-    if (capturePathValidation.status === "succeeded") {
-      break;
-    }
-
-    if (
-      attempt === repairAttemptLimit ||
-      dependencies.repairCapturePathFailure === undefined
-    ) {
-      return {
-        capturePathValidation,
-        status: "capture-path-validation-failed",
-      };
-    }
-
-    reportStageRetrying("capture-path-validation", {
-      context,
-      nextAttempt: attempt + 2,
-      observer,
-      reason: readCapturePathRetryReason(capturePathValidation),
-    });
-    const repair = await dependencies.repairCapturePathFailure({
-      attempt: attempt + 1,
-      failure: capturePathValidation,
-      ...(preparation.agentSession === undefined
-        ? {}
-        : { agentSession: preparation.agentSession }),
-      preparationManifest,
-      preparationWorkspace,
-      repoUrl: input.repoUrl,
-      demoScriptPackage: demoScriptCandidate,
-    });
-    preparationManifest = repair.preparationManifest;
-    demoScriptCandidate = repair.demoScriptPackage;
+  const capturePathLifecycle = await runCapturePathValidationAndRepair({
+    ...(preparation.agentSession === undefined
+      ? {}
+      : { agentSession: preparation.agentSession }),
+    context,
+    dependencies,
+    demoScriptCandidate,
+    now,
+    observer,
+    onProgress: options.onProgress,
+    preparationManifest,
+    preparationWorkspace,
+    repoUrl: input.repoUrl,
+  });
+  if (capturePathLifecycle.status === "failed") {
+    return {
+      capturePathValidation: capturePathLifecycle.capturePathValidation,
+      status: "capture-path-validation-failed",
+    };
   }
 
-  const acceptedDemoScript: AcceptedDemoScript = demoScriptCandidate;
+  const acceptedDemoScript: AcceptedDemoScript =
+    capturePathLifecycle.demoScriptCandidate;
 
   return {
-    capturePathValidation: requireCapturePathValidation(capturePathValidation),
-    preparationManifest,
+    capturePathValidation: capturePathLifecycle.capturePathValidation,
+    preparationManifest: capturePathLifecycle.preparationManifest,
     ...(preparation.agentSession === undefined
       ? {}
       : { agentSession: preparation.agentSession }),
@@ -319,14 +329,73 @@ export async function runPipelineJob(
   };
 }
 
-function requireCapturePathValidation(
-  result: CapturePathValidationResult | undefined,
-) {
-  if (result === undefined) {
-    throw new Error("Capture Path Validation did not run.");
-  }
+/**
+ * Runs the authoritative Capture Path Validation gate and bounded repair
+ * lifecycle. It keeps the caller's retained agent session and workspace while
+ * returning only the candidate that successfully passed validation.
+ */
+export async function runCapturePathValidationAndRepair(
+  input: CapturePathValidationRepairLifecycleInput,
+): Promise<CapturePathValidationRepairLifecycleResult> {
+  let demoScriptCandidate = input.demoScriptCandidate;
+  let preparationManifest = input.preparationManifest;
+  let failure = input.failure;
+  let repairAttempt = 0;
+  const repairAttemptLimit = readCapturePathRepairAttemptLimit();
 
-  return result;
+  while (true) {
+    const capturePathValidation =
+      failure ??
+      (await runCapturePathValidation({
+        context: input.context,
+        dependencies: input.dependencies,
+        now: input.now,
+        onProgress: input.onProgress,
+        observer: input.observer,
+        preparationManifest,
+        preparationWorkspace: input.preparationWorkspace,
+        demoScriptCandidate,
+        demoScriptPackage: demoScriptCandidate,
+      }));
+
+    if (capturePathValidation.status === "succeeded") {
+      return {
+        capturePathValidation,
+        demoScriptCandidate,
+        preparationManifest,
+        status: "succeeded",
+      };
+    }
+
+    if (
+      repairAttempt === repairAttemptLimit ||
+      input.dependencies.repairCapturePathFailure === undefined
+    ) {
+      return { capturePathValidation, status: "failed" };
+    }
+
+    reportStageRetrying("capture-path-validation", {
+      context: input.context,
+      nextAttempt: repairAttempt + 2,
+      observer: input.observer,
+      reason: readCapturePathRetryReason(capturePathValidation),
+    });
+    repairAttempt += 1;
+    const repair = await input.dependencies.repairCapturePathFailure({
+      attempt: repairAttempt,
+      failure: capturePathValidation,
+      ...(input.agentSession === undefined
+        ? {}
+        : { agentSession: input.agentSession }),
+      preparationManifest,
+      preparationWorkspace: input.preparationWorkspace,
+      repoUrl: input.repoUrl,
+      demoScriptPackage: demoScriptCandidate,
+    });
+    preparationManifest = repair.preparationManifest;
+    demoScriptCandidate = repair.demoScriptPackage;
+    failure = undefined;
+  }
 }
 
 async function runCapturePathValidation(input: {

@@ -1,10 +1,10 @@
-import type { DemoBrief } from "../01-context-gathering/intake/demo-brief.schema";
-import type { NormalizedSupportingDocument } from "../01-context-gathering/supporting-documents";
+import type { DemoBrief } from "../../01-context-gathering/intake/demo-brief.schema";
+import type { NormalizedSupportingDocument } from "../../01-context-gathering/supporting-documents";
 import {
   type PipelineObserver,
   noopPipelineObserver,
   sanitizeObservabilityError,
-} from "./pipeline-observer";
+} from "../job/pipeline-observer";
 
 type ProjectDemoGenerationJob = {
   demoBrief: DemoBrief;

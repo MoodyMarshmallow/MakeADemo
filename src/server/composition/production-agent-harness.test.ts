@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentSessionRunner } from "../agent-harness/agent-session-runner.interface";
+import type { PreparationWorkspaceProvider } from "../pipeline/03-repo-preparation/preparation-workspace-runner";
 import { createProductionAgentHarness } from "./production-agent-harness";
 import { resolveProductionAgentModelConfig } from "./production-agent-model-config";
 
 describe("createProductionAgentHarness", () => {
-  it("assembles explicit Pipeline agent dependencies without starting network work", () => {
+  it("assembles Stage Agent adapters without starting network work", () => {
     const originalFetch = globalThis.fetch;
     const fetch = vi.fn(() => {
       throw new Error("Harness construction must not make a network request.");
@@ -18,18 +19,14 @@ describe("createProductionAgentHarness", () => {
           modelID: "gpt-5.6",
           providerID: "openai",
         }),
-        daytonaApiKey: "test-daytona-api-key",
         openaiApiKey: "test-openai-api-key",
+        repoPreparationWorkspaceProvider: testWorkspaceProvider(),
       });
 
       expect(fetch).not.toHaveBeenCalled();
       expect(harness.repoPreparationAgent).toBeDefined();
-      expect(harness.repoSecurityProvider).toBeDefined();
       expect(harness.scriptGenerationAgent).toBeDefined();
       expect(harness.capturePathRepairer).toBeDefined();
-      expect(harness.preCaptureDependencies.repairCapturePathFailure).toEqual(
-        expect.any(Function),
-      );
       expect(harness.reviewDraftComposite).toEqual(expect.any(Function));
     } finally {
       globalThis.fetch = originalFetch;
@@ -57,9 +54,9 @@ describe("createProductionAgentHarness", () => {
         modelID: "gpt-5.6",
         providerID: "openai",
       }),
-      daytonaApiKey: "test-daytona-api-key",
       onAgentStandard: (chunk) => sharedOutput.push(chunk),
       onRepoPreparationStandard: (chunk) => repoOutput.push(chunk),
+      repoPreparationWorkspaceProvider: testWorkspaceProvider(),
     });
 
     const taskInput = {
@@ -117,7 +114,7 @@ describe("createProductionAgentHarness", () => {
         modelID: "gpt-5.6",
         providerID: "openai",
       }),
-      daytonaApiKey: "test-daytona-api-key",
+      repoPreparationWorkspaceProvider: testWorkspaceProvider(),
     });
     const taskInput = {
       attempt: 1,
@@ -153,7 +150,7 @@ describe("createProductionAgentHarness", () => {
         modelID: "gpt-5.6",
         providerID: "openai",
       }),
-      daytonaApiKey: "test-daytona-api-key",
+      repoPreparationWorkspaceProvider: testWorkspaceProvider(),
     });
     const taskInput = {
       attempt: 1,
@@ -172,3 +169,11 @@ describe("createProductionAgentHarness", () => {
     }
   });
 });
+
+function testWorkspaceProvider(): PreparationWorkspaceProvider {
+  return {
+    async create() {
+      throw new Error("not used by Agent Harness construction tests");
+    },
+  };
+}

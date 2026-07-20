@@ -4,10 +4,10 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { createAgentSession } from "../../test-support/create-agent-session";
-import type { PreparationWorkspaceHandle } from "../03-repo-preparation/preparation-workspace-runner";
-import type { CaptureManifest } from "../06-footage-capture/capture-scenes";
-import type { CompositedVideoManifest } from "../07-compositing/composite-video";
+import { createAgentSession } from "../../../test-support/create-agent-session";
+import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
+import type { CaptureManifest } from "../../06-footage-capture/capture-scenes";
+import type { CompositedVideoManifest } from "../../07-compositing/composite-video";
 import {
   type DraftCompositeReviewLoopInput,
   runDraftCompositeReviewLoop,

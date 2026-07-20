@@ -3,25 +3,29 @@ import { join } from "node:path";
 import type {
   CaptureManifest,
   CaptureScenesFromScriptInput,
-} from "../06-footage-capture/capture-scenes";
-import { captureScenesFromScript } from "../06-footage-capture/capture-scenes";
+} from "../../06-footage-capture/capture-scenes";
+import { captureScenesFromScript } from "../../06-footage-capture/capture-scenes";
 import type {
   CompositeVideoFromScriptInput,
   CompositedVideoManifest,
-} from "../07-compositing/composite-video";
-import { compositeVideoFromScript } from "../07-compositing/composite-video";
+} from "../../07-compositing/composite-video";
+import { compositeVideoFromScript } from "../../07-compositing/composite-video";
 import {
   DEFAULT_EVIDENCE_COMMAND_TIMEOUT_MS,
   type DraftCompositeEvidence,
   collectDraftCompositeQualityFindings,
   inspectDraftCompositeEvidence,
-} from "../07-compositing/draft-composite-quality-review";
+} from "../../07-compositing/draft-composite-quality-review";
 import type {
   DraftCompositeReviewDecision,
   DraftCompositeReviewer,
-} from "../07-compositing/draft-composite-reviewer.interface";
+} from "../../07-compositing/draft-composite-reviewer.interface";
 import type { PipelineJobInput } from "./pipeline-job";
-import { runPipelineJob } from "./pipeline-orchestrator";
+import { noopPipelineObserver } from "./pipeline-observer";
+import {
+  runCapturePathValidationAndRepair,
+  runPipelineJob,
+} from "./pipeline-orchestrator";
 import type {
   PipelineOrchestratorDependencies,
   PipelineOrchestratorOptions,
@@ -457,9 +461,18 @@ export async function runDraftCompositeReviewLoop(
         browserUrl =
           preparedDemo.capturePathValidation.browserUrl ?? browserUrl;
         candidateNeedsPersistence = true;
-      } else if (input.dependencies.repairCapturePathFailure !== undefined) {
-        const repair = await input.dependencies.repairCapturePathFailure({
-          attempt,
+      } else {
+        phase = "repair-revalidation";
+        const repairLifecycle = await runCapturePathValidationAndRepair({
+          ...(preparedDemo.agentSession === undefined
+            ? {}
+            : { agentSession: preparedDemo.agentSession }),
+          context: {
+            ...input.options.context,
+            workspaceId: input.input.workspaceId,
+          },
+          dependencies: input.dependencies,
+          demoScriptCandidate: preparedDemo.demoScriptPackage,
           failure: {
             blockedNetworkAttempts: [],
             failureReason: `Draft Composite review requested Demo Script repair: ${decision.reason}`,
@@ -467,34 +480,27 @@ export async function runDraftCompositeReviewLoop(
             status: "failed",
             warnings: [],
           },
-          preparationWorkspace: preparedDemo.preparationWorkspace,
-          ...(preparedDemo.agentSession === undefined
-            ? {}
-            : { agentSession: preparedDemo.agentSession }),
+          now: input.options.now ?? Date.now,
+          observer: input.options.observer ?? noopPipelineObserver,
+          onProgress: input.options.onProgress,
           preparationManifest: preparedDemo.preparationManifest,
+          preparationWorkspace: preparedDemo.preparationWorkspace,
           repoUrl: input.input.repoUrl,
-          demoScriptPackage: preparedDemo.demoScriptPackage,
         });
-        phase = "repair-revalidation";
-        const capturePathValidation =
-          await input.dependencies.validateCapturePath({
-            preparationManifest: repair.preparationManifest,
-            preparationWorkspace: preparedDemo.preparationWorkspace,
-            demoScriptCandidate: repair.demoScriptPackage,
-            demoScriptPackage: repair.demoScriptPackage,
-          });
-        if (capturePathValidation.status !== "succeeded") {
+        if (repairLifecycle.status === "failed") {
           throw new Error(
-            `Demo Script repair failed Capture Path Validation: ${capturePathValidation.failureReason ?? capturePathValidation.errorMessage ?? "unknown failure"}`,
+            `Demo Script repair failed Capture Path Validation: ${repairLifecycle.capturePathValidation.failureReason ?? repairLifecycle.capturePathValidation.errorMessage ?? "unknown failure"}`,
           );
         }
         preparedDemo = {
           ...preparedDemo,
-          capturePathValidation,
-          preparationManifest: repair.preparationManifest,
-          demoScriptPackage: repair.demoScriptPackage,
+          acceptedDemoScript: repairLifecycle.demoScriptCandidate,
+          capturePathValidation: repairLifecycle.capturePathValidation,
+          demoScriptPackage: repairLifecycle.demoScriptCandidate,
+          preparationManifest: repairLifecycle.preparationManifest,
         };
-        browserUrl = capturePathValidation.browserUrl ?? browserUrl;
+        browserUrl =
+          repairLifecycle.capturePathValidation.browserUrl ?? browserUrl;
         candidateNeedsPersistence = true;
       }
     } catch (error) {

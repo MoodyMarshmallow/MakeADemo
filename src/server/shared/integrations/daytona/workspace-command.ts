@@ -1,5 +1,12 @@
 export const daytonaWorkspaceDirectory = "/workspace";
 
+export const daytonaGitCaBundleCandidates = [
+  "/etc/daytona/netleash/ca.crt",
+  "/etc/openshell-tls/ca-bundle.pem",
+  "/etc/ssl/certs/ca-certificates.crt",
+  "/etc/pki/tls/certs/ca-bundle.crt",
+] as const;
+
 /**
  * Creates the writable repo root expected by MakeADemo Daytona stages and
  * removes prior workspace contents before cloning submitted code.

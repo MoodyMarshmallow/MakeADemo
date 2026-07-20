@@ -1,22 +1,22 @@
 import { describe, expect, it } from "vitest";
 
-import { createPipelineEventLogger } from "../../shared/logging/pipeline-event-logger";
-import type {
-  PreparationWorkspaceHandle,
-  PreparationWorkspaceProvider,
-} from "../03-repo-preparation/preparation-workspace-runner";
-import type {
-  PreparationWorkspace,
-  PreparationWorkspaceCommandResult,
-} from "../03-repo-preparation/preparation-workspace.interface";
-import { readRepoSecurityInput } from "./pre-capture-repo-security";
+import { readRepoSecurityInputTextPolicy } from "../../../pipeline/02-repo-security-screen/repository-loading/repo-security-input";
+import { createPipelineEventLogger } from "../../logging/pipeline-event-logger";
+import {
+  DaytonaRepoSecurityInputLoader,
+  type DaytonaRepoSecurityInputLoaderOptions,
+  type RepositoryLoadingWorkspace,
+  type RepositoryLoadingWorkspaceCommandResult,
+  type RepositoryLoadingWorkspaceHandle,
+  type RepositoryLoadingWorkspaceProvider,
+} from "./daytona-repo-security-input-loader";
 
-describe("readRepoSecurityInput", () => {
+describe("DaytonaRepoSecurityInputLoader", () => {
   it("screens the exact requested repository commit", async () => {
     const commands: string[] = [];
 
     await readRepoSecurityInput(
-      new FakePreparationWorkspaceProvider(commands),
+      new FakeRepositoryLoadingWorkspaceProvider(commands),
       "https://github.com/example/app",
       { commitSha: "0123456789abcdef0123456789abcdef01234567" },
     );
@@ -32,7 +32,7 @@ describe("readRepoSecurityInput", () => {
   it("inventories dotenv paths without reading or returning their contents", async () => {
     const commands: string[] = [];
     const sentinel = "DOTENV_CANARY_ORIGINAL";
-    const workspace = new FakePreparationWorkspace({
+    const workspace = new FakeRepositoryLoadingWorkspace({
       commands,
       fileStats:
         "package.json\t17\n.env\t31\napps/web/.env.production\t42\n.env.test.local.template\t27\n",
@@ -45,7 +45,7 @@ describe("readRepoSecurityInput", () => {
     });
 
     const result = await readRepoSecurityInput(
-      new FakePreparationWorkspaceProvider(workspace),
+      new FakeRepositoryLoadingWorkspaceProvider(workspace),
       "https://github.com/example/app",
     );
 
@@ -64,7 +64,7 @@ describe("readRepoSecurityInput", () => {
   });
 
   it("retries transient Daytona clone failures before reading repo security input", async () => {
-    const workspace = new FakePreparationWorkspace({
+    const workspace = new FakeRepositoryLoadingWorkspace({
       cloneResults: [
         {
           exitCode: 128,
@@ -77,7 +77,7 @@ describe("readRepoSecurityInput", () => {
     });
 
     const result = await readRepoSecurityInput(
-      new FakePreparationWorkspaceProvider(workspace),
+      new FakeRepositoryLoadingWorkspaceProvider(workspace),
       "https://github.com/example/app",
     );
 
@@ -87,7 +87,7 @@ describe("readRepoSecurityInput", () => {
 
   it("does not retry deterministic git clone failures", async () => {
     const lines: string[] = [];
-    const workspace = new FakePreparationWorkspace({
+    const workspace = new FakeRepositoryLoadingWorkspace({
       cloneResults: [
         {
           exitCode: 128,
@@ -100,7 +100,7 @@ describe("readRepoSecurityInput", () => {
 
     await expect(
       readRepoSecurityInput(
-        new FakePreparationWorkspaceProvider(workspace),
+        new FakeRepositoryLoadingWorkspaceProvider(workspace),
         "https://github.com/example/missing",
         {
           logger: createPipelineEventLogger({
@@ -121,11 +121,11 @@ describe("readRepoSecurityInput", () => {
 
   it("logs thrown Daytona clone timeouts and retries in a fresh workspace", async () => {
     const lines: string[] = [];
-    const firstWorkspace = new FakePreparationWorkspace({
+    const firstWorkspace = new FakeRepositoryLoadingWorkspace({
       cloneError: new Error("Daytona command did not finish within 600000ms"),
     });
-    const secondWorkspace = new FakePreparationWorkspace();
-    const provider = new FakePreparationWorkspaceProvider([
+    const secondWorkspace = new FakeRepositoryLoadingWorkspace();
+    const provider = new FakeRepositoryLoadingWorkspaceProvider([
       firstWorkspace,
       secondWorkspace,
     ]);
@@ -165,13 +165,13 @@ describe("readRepoSecurityInput", () => {
   });
 
   it("retries thrown clone ETIMEDOUT errors in a fresh workspace", async () => {
-    const firstWorkspace = new FakePreparationWorkspace({
+    const firstWorkspace = new FakeRepositoryLoadingWorkspace({
       cloneError: new Error(
         "connect ETIMEDOUT 140.82.112.4:443 while cloning repository",
       ),
     });
-    const secondWorkspace = new FakePreparationWorkspace();
-    const provider = new FakePreparationWorkspaceProvider([
+    const secondWorkspace = new FakeRepositoryLoadingWorkspace();
+    const provider = new FakeRepositoryLoadingWorkspaceProvider([
       firstWorkspace,
       secondWorkspace,
     ]);
@@ -199,11 +199,11 @@ describe("readRepoSecurityInput", () => {
       "The socket connection was closed unexpectedly",
     );
     firstCloneError.name = "DaytonaConnectionError";
-    const firstWorkspace = new FakePreparationWorkspace({
+    const firstWorkspace = new FakeRepositoryLoadingWorkspace({
       cloneError: firstCloneError,
     });
-    const secondWorkspace = new FakePreparationWorkspace();
-    const provider = new FakePreparationWorkspaceProvider([
+    const secondWorkspace = new FakeRepositoryLoadingWorkspace();
+    const provider = new FakeRepositoryLoadingWorkspaceProvider([
       firstWorkspace,
       secondWorkspace,
     ]);
@@ -235,7 +235,7 @@ describe("readRepoSecurityInput", () => {
     });
 
     const result = await readRepoSecurityInput(
-      new FakePreparationWorkspaceProvider(commands),
+      new FakeRepositoryLoadingWorkspaceProvider(commands),
       "https://github.com/example/app",
       { logger },
     );
@@ -248,7 +248,15 @@ describe("readRepoSecurityInput", () => {
     );
     expect(commands[0]).toContain("/etc/ssl/certs/ca-certificates.crt");
     expect(commands[0]).toContain("/etc/pki/tls/certs/ca-bundle.crt");
+    expect(commands[0]).toContain("/etc/daytona/netleash/ca.crt");
     expect(commands[0]).toContain("/etc/openshell-tls/ca-bundle.pem");
+    const cloneCommand = commands[0];
+    if (cloneCommand === undefined) {
+      throw new Error("Expected a Daytona clone command");
+    }
+    expect(cloneCommand.indexOf("/etc/daytona/netleash/ca.crt")).toBeLessThan(
+      cloneCommand.indexOf("/etc/ssl/certs/ca-certificates.crt"),
+    );
     expect(commands[0]).toMatch(/export GIT_SSL_CAINFO=.*git clone/s);
     expect(commands[0]).not.toContain("GIT_SSL_NO_VERIFY");
     expect(commands[0]).not.toContain("sslVerify=false");
@@ -291,7 +299,7 @@ describe("readRepoSecurityInput", () => {
     });
 
     const result = await readRepoSecurityInput(
-      new FakePreparationWorkspaceProvider(),
+      new FakeRepositoryLoadingWorkspaceProvider(),
       "https://github.com/example/app",
       { logger },
     );
@@ -329,9 +337,12 @@ describe("readRepoSecurityInput", () => {
     });
 
     const result = await readRepoSecurityInput(
-      new FakePreparationWorkspaceProvider(new FakePreparationWorkspace(), {
-        release: () => new Promise(() => undefined),
-      }),
+      new FakeRepositoryLoadingWorkspaceProvider(
+        new FakeRepositoryLoadingWorkspace(),
+        {
+          release: () => new Promise(() => undefined),
+        },
+      ),
       "https://github.com/example/app",
       { releaseTimeoutMs: 1, logger },
     );
@@ -362,14 +373,34 @@ describe("readRepoSecurityInput", () => {
   });
 });
 
-class FakePreparationWorkspaceProvider implements PreparationWorkspaceProvider {
+async function readRepoSecurityInput(
+  provider: RepositoryLoadingWorkspaceProvider,
+  repoUrl: string,
+  options: Omit<DaytonaRepoSecurityInputLoaderOptions, "provider"> & {
+    commitSha?: string;
+  } = {},
+) {
+  const { commitSha, ...loaderOptions } = options;
+  return new DaytonaRepoSecurityInputLoader({
+    ...loaderOptions,
+    provider,
+  }).load({
+    ...(commitSha === undefined ? {} : { commitSha }),
+    repoUrl,
+    shouldReadText: readRepoSecurityInputTextPolicy,
+  });
+}
+
+class FakeRepositoryLoadingWorkspaceProvider
+  implements RepositoryLoadingWorkspaceProvider
+{
   readonly releasedWorkspaceIds: string[] = [];
 
   constructor(
     private readonly input:
-      | PreparationWorkspace
-      | PreparationWorkspace[]
-      | string[] = new FakePreparationWorkspace(),
+      | RepositoryLoadingWorkspace
+      | RepositoryLoadingWorkspace[]
+      | string[] = new FakeRepositoryLoadingWorkspace(),
     private readonly options: {
       release?: () => Promise<void>;
     } = {},
@@ -377,11 +408,11 @@ class FakePreparationWorkspaceProvider implements PreparationWorkspaceProvider {
 
   private createCount = 0;
 
-  async create(): Promise<PreparationWorkspaceHandle> {
+  async create(): Promise<RepositoryLoadingWorkspaceHandle> {
     const workspace = isWorkspaceList(this.input)
       ? readWorkspaceAt(this.input, this.createCount)
       : Array.isArray(this.input)
-        ? new FakePreparationWorkspace({ commands: this.input })
+        ? new FakeRepositoryLoadingWorkspace({ commands: this.input })
         : this.input;
     const id = `workspace-${this.createCount + 1}`;
     this.createCount += 1;
@@ -398,8 +429,8 @@ class FakePreparationWorkspaceProvider implements PreparationWorkspaceProvider {
 }
 
 function isWorkspaceList(
-  input: PreparationWorkspace | PreparationWorkspace[] | string[],
-): input is PreparationWorkspace[] {
+  input: RepositoryLoadingWorkspace | RepositoryLoadingWorkspace[] | string[],
+): input is RepositoryLoadingWorkspace[] {
   return (
     Array.isArray(input) &&
     input.length > 0 &&
@@ -408,9 +439,9 @@ function isWorkspaceList(
 }
 
 function readWorkspaceAt(
-  workspaces: PreparationWorkspace[],
+  workspaces: RepositoryLoadingWorkspace[],
   index: number,
-): PreparationWorkspace {
+): RepositoryLoadingWorkspace {
   const workspace = workspaces[index] ?? workspaces[workspaces.length - 1];
   if (workspace === undefined) {
     throw new Error("Expected at least one workspace");
@@ -418,7 +449,7 @@ function readWorkspaceAt(
   return workspace;
 }
 
-class FakePreparationWorkspace implements PreparationWorkspace {
+class FakeRepositoryLoadingWorkspace implements RepositoryLoadingWorkspace {
   cloneAttempts = 0;
   readonly cloneTimeoutsMs: number[] = [];
   readonly networkAccessChanges: boolean[] = [];
@@ -426,7 +457,7 @@ class FakePreparationWorkspace implements PreparationWorkspace {
   constructor(
     private readonly input: {
       cloneError?: Error;
-      cloneResults?: PreparationWorkspaceCommandResult[];
+      cloneResults?: RepositoryLoadingWorkspaceCommandResult[];
       commands?: string[];
       fileStats?: string;
       textByPath?: Record<string, string>;
@@ -436,7 +467,7 @@ class FakePreparationWorkspace implements PreparationWorkspace {
   async execute(
     command: string,
     options?: { timeoutMs?: number },
-  ): Promise<PreparationWorkspaceCommandResult> {
+  ): Promise<RepositoryLoadingWorkspaceCommandResult> {
     this.input.commands?.push(command);
     if (command.includes("git clone")) {
       if (options?.timeoutMs !== undefined) {
@@ -480,15 +511,7 @@ class FakePreparationWorkspace implements PreparationWorkspace {
     throw new Error(`Unexpected command: ${command}`);
   }
 
-  async getPreviewUrl(): Promise<string> {
-    throw new Error("getPreviewUrl should not be called");
-  }
-
   async setOutboundNetworkAccess(enabled: boolean): Promise<void> {
     this.networkAccessChanges.push(enabled);
-  }
-
-  async uploadFiles(): Promise<void> {
-    throw new Error("uploadFiles should not be called");
   }
 }

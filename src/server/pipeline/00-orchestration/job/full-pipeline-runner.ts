@@ -5,18 +5,18 @@ import {
   type PipelineLogSink,
   createFilePipelineLogSink,
   createPipelineEventLogger,
-} from "../../shared/logging/pipeline-event-logger";
-import type { DemoRequestScriptStore } from "../04-script-generation/demo-request-script-store.interface";
+} from "../../../shared/logging/pipeline-event-logger";
+import type { DemoRequestScriptStore } from "../../04-script-generation/demo-request-script-store.interface";
 import type {
   CaptureManifest,
   CaptureScenesFromScriptInput,
-} from "../06-footage-capture/capture-scenes";
+} from "../../06-footage-capture/capture-scenes";
 import type {
   CompositeVideoFromScriptInput,
   CompositedVideoManifest,
-} from "../07-compositing/composite-video";
-import type { DraftCompositeEvidence } from "../07-compositing/draft-composite-quality-review";
-import type { DraftCompositeReviewer } from "../07-compositing/draft-composite-reviewer.interface";
+} from "../../07-compositing/composite-video";
+import type { DraftCompositeEvidence } from "../../07-compositing/draft-composite-quality-review";
+import type { DraftCompositeReviewer } from "../../07-compositing/draft-composite-reviewer.interface";
 import {
   type DraftCompositeReviewSummary,
   type ScriptPersistence,
@@ -178,6 +178,22 @@ export async function runFullPipelineJob(
     },
   };
   let terminalFailureLogged = false;
+  const reportPipelineProgress: NonNullable<
+    PipelineOrchestratorOptions["onProgress"]
+  > = async (event) => {
+    await options.onProgress?.(event);
+    await log({
+      event: "stage-progress",
+      message: `${event.stage} ${event.status}.`,
+      severity: severityForPipelineStageStatus(event.status),
+      stage: event.stage,
+      status: event.status,
+    });
+  };
+  const pipelineOptions: FullPipelineRunnerOptions = {
+    ...options,
+    onProgress: reportPipelineProgress,
+  };
 
   try {
     await log({
@@ -194,19 +210,7 @@ export async function runFullPipelineJob(
     const initialPreparedDemo = await runPipelineJob(
       input,
       orchestratorDependencies,
-      {
-        ...options,
-        onProgress: async (event) => {
-          await options.onProgress?.(event);
-          await log({
-            event: "stage-progress",
-            message: `${event.stage} ${event.status}.`,
-            severity: severityForPipelineStageStatus(event.status),
-            stage: event.stage,
-            status: event.status,
-          });
-        },
-      },
+      pipelineOptions,
     );
     if (initialPreparedDemo.status !== "succeeded") {
       const resultPath = join(runDirectory, "full-pipeline-result.json");
@@ -274,7 +278,7 @@ export async function runFullPipelineJob(
       dependencies: orchestratorDependencies,
       input,
       log,
-      options,
+      options: pipelineOptions,
       runDirectory,
       persistScript: (scriptPackage) =>
         persistGeneratedScript({

@@ -8,18 +8,16 @@ import {
 } from "../agent-harness/bind-agent-task-runner";
 import { createAgentSessionRunner } from "../agent-harness/create-agent-session-runner";
 import { classifyProviderFailure } from "../agent-harness/provider-failure-classifier";
-import { createPreCapturePipelineDependencies } from "../pipeline/00-orchestration/pre-capture-pipeline";
 import { AgenticRepoPreparation } from "../pipeline/03-repo-preparation/agent-task/agentic-repo-preparation";
+import type { PreparationWorkspaceProvider } from "../pipeline/03-repo-preparation/preparation-workspace-runner";
 import { AgenticScriptGenerator } from "../pipeline/04-script-generation/agent-task/agentic-script-generator";
 import { AgenticCapturePathRepairer } from "../pipeline/05-capture-path-validation/agent-task/agentic-capture-path-repairer";
 import { validateProject } from "../pipeline/05-capture-path-validation/project-runtime-preflight/project-validator";
 import { AgenticDraftCompositeReviewer } from "../pipeline/07-compositing/agent-task/agentic-draft-composite-reviewer";
 import { PlaywrightBrowserValidator } from "../shared/integrations/browser/playwright-browser-validator";
-import { DaytonaSdkPreparationWorkspaceProvider } from "../shared/integrations/daytona/daytona-sdk-preparation-workspace-provider";
 import { DaytonaSandboxRunner } from "../shared/integrations/sandbox/daytona-sandbox-runner";
 import {
   type PipelineEventLogger,
-  type PipelineLogSink,
   createPipelineEventLogger,
 } from "../shared/logging/pipeline-event-logger";
 import type { ProductionAgentModelConfig } from "./production-agent-model-config";
@@ -34,9 +32,6 @@ const defaultDraftReviewEvidenceUploadRetryDelaysMs = [250] as const;
 
 export type ProductionAgentHarnessOptions = {
   agentSessionRunner?: AgentSessionRunner;
-  daytonaApiKey: string;
-  daytonaSnapshot?: string;
-  daytonaSubmittedCodeSnapshot?: string;
   logger?: PipelineEventLogger;
   maxScriptGenerationAttempts?: number;
   agentModel: ProductionAgentModelConfig;
@@ -47,36 +42,18 @@ export type ProductionAgentHarnessOptions = {
   onRepoPreparationEvent?: (event: AgentTaskEvent) => void;
   onRepoPreparationStandard?: (chunk: string) => void;
   openaiApiKey?: string;
+  repoPreparationCloneFailureDiagnosticsContext?: {
+    daytonaSnapshot?: string;
+    daytonaSubmittedCodeSnapshot?: string;
+  };
   repoPreparationTimeoutMs?: number;
-  sandboxLogSinks?: PipelineLogSink[];
+  repoPreparationWorkspaceProvider: PreparationWorkspaceProvider;
 };
 
 /** Assembles production agent adapters without opening a workspace or network connection. */
 export function createProductionAgentHarness(
   options: ProductionAgentHarnessOptions,
 ) {
-  if (options.daytonaApiKey.length === 0) {
-    throw new Error("DAYTONA_API_KEY is required for production agent runs.");
-  }
-
-  const sandboxLogSinks = options.sandboxLogSinks ?? [];
-  const repoSecurityProvider = new DaytonaSdkPreparationWorkspaceProvider({
-    apiKey: options.daytonaApiKey,
-    ...(options.daytonaSnapshot === undefined
-      ? {}
-      : { snapshot: options.daytonaSnapshot }),
-    sandboxLogSinks,
-  });
-  const agentWorkspaceProvider = new DaytonaSdkPreparationWorkspaceProvider({
-    apiKey: options.daytonaApiKey,
-    ...(options.daytonaSnapshot === undefined
-      ? {}
-      : { snapshot: options.daytonaSnapshot }),
-    ...(options.daytonaSubmittedCodeSnapshot === undefined
-      ? {}
-      : { submittedCodeSnapshot: options.daytonaSubmittedCodeSnapshot }),
-    sandboxLogSinks,
-  });
   const openaiApiKey = options.openaiApiKey ?? process.env.OPENAI_API_KEY;
   const runner =
     options.agentSessionRunner ??
@@ -135,18 +112,14 @@ export function createProductionAgentHarness(
   );
   const onAgentStatus = options.onAgentStandard ?? (() => {});
   const repoPreparationAgent = new AgenticRepoPreparation({
-    cloneFailureDiagnosticsContext: {
-      ...(options.daytonaSnapshot === undefined
-        ? {}
-        : { daytonaSnapshot: options.daytonaSnapshot }),
-      ...(options.daytonaSubmittedCodeSnapshot === undefined
-        ? {}
-        : {
-            daytonaSubmittedCodeSnapshot: options.daytonaSubmittedCodeSnapshot,
-          }),
-    },
+    ...(options.repoPreparationCloneFailureDiagnosticsContext === undefined
+      ? {}
+      : {
+          cloneFailureDiagnosticsContext:
+            options.repoPreparationCloneFailureDiagnosticsContext,
+        }),
     ...(logger === undefined ? {} : { logger }),
-    provider: agentWorkspaceProvider,
+    provider: options.repoPreparationWorkspaceProvider,
     runner: repoPreparationRunner,
     ...(repoPreparationTimeoutMs === undefined
       ? {}
@@ -190,13 +163,6 @@ export function createProductionAgentHarness(
     runner: draftCompositeReviewRunner,
     timeoutMs: defaultInactivityTimeoutMs,
   });
-  const preCaptureDependencies = createPreCapturePipelineDependencies({
-    capturePathRepairer,
-    repoPreparationAgent,
-    sandboxRunner: new DaytonaSandboxRunner(),
-    scriptGenerationAgent,
-  });
-
   return {
     agentTaskRunners: {
       capturePathRepair: capturePathRepairRunner,
@@ -208,9 +174,7 @@ export function createProductionAgentHarness(
     disposeAgentSessions: async () => {
       await runner.dispose?.();
     },
-    preCaptureDependencies,
     repoPreparationAgent,
-    repoSecurityProvider,
     reviewDraftComposite: draftCompositeReviewer.review.bind(
       draftCompositeReviewer,
     ),

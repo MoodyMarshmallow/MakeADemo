@@ -2,16 +2,15 @@ import { readFile, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 
-import { createDaytonaFreshCaptureStatePreparer } from "../pipeline/00-orchestration/fresh-capture-state";
-import { formatFullPipelineFailure } from "../pipeline/00-orchestration/full-pipeline-failure-output";
-import { runFullPipelineJob } from "../pipeline/00-orchestration/full-pipeline-runner";
-import { collectPreCaptureCliOptions } from "../pipeline/00-orchestration/pre-capture-cli-interactive";
-import { readRepoSecurityInput } from "../pipeline/00-orchestration/pre-capture-repo-security";
+import { formatFullPipelineFailure } from "../pipeline/00-orchestration/cli/full-pipeline-failure-output";
+import { collectPreCaptureCliOptions } from "../pipeline/00-orchestration/cli/pre-capture-cli-interactive";
+import { runFullPipelineJob } from "../pipeline/00-orchestration/job/full-pipeline-runner";
 import { readDemoBrief } from "../pipeline/01-context-gathering/intake/project-intake";
 import {
   normalizeSupportingDocument,
   readSupportingDocumentUpload,
 } from "../pipeline/01-context-gathering/supporting-documents";
+import { readRepoSecurityInput } from "../pipeline/02-repo-security-screen/repository-loading/repo-security-input";
 import {
   createFilePipelineLogSink,
   createPipelineEventLogger,
@@ -22,8 +21,8 @@ import {
   type ProductionAgentCliOptions,
   parseProductionAgentCliArgs,
 } from "./production-agent-cli-options";
-import { createProductionAgentHarness } from "./production-agent-harness";
 import { resolveProductionAgentModelConfig } from "./production-agent-model-config";
+import { createProductionPipeline } from "./production-pipeline";
 
 const { outputRoot, preCaptureArgs } = readFullPipelineArgs(
   process.argv.slice(2),
@@ -72,7 +71,7 @@ const agentOutputRouter = createAgentOutputRouter({
   writeDiagnostic: (chunk) => process.stderr.write(chunk),
   writeStandard: (text) => process.stdout.write(text),
 });
-const productionAgentHarness = createProductionAgentHarness({
+const productionPipeline = createProductionPipeline({
   agentModel,
   daytonaApiKey,
   ...(daytonaSnapshot === undefined ? {} : { daytonaSnapshot }),
@@ -83,19 +82,19 @@ const productionAgentHarness = createProductionAgentHarness({
   onRepoPreparationDiagnostic: agentOutputRouter.repoPreparation.onDiagnostic,
   onRepoPreparationEvent: agentOutputRouter.repoPreparation.onEvent,
   onRepoPreparationStandard: agentOutputRouter.repoPreparation.onStandard,
+  repoSecurityLogger: cliLogger.child({ component: "repo-security-screen" }),
   sandboxLogSinks: [cliLogSink, localSandboxLogSink],
   onAgentDiagnostic: agentOutputRouter.agentTasks.onDiagnostic,
   onAgentEvent: agentOutputRouter.agentTasks.onEvent,
   onAgentStandard: agentOutputRouter.agentTasks.onStandard,
 });
 const repoSecurity = await readRepoSecurityInput(
-  productionAgentHarness.repoSecurityProvider,
+  productionPipeline.repoSecurityInputLoader,
   options.repoUrl,
   {
     ...(options.commitSha === undefined
       ? {}
       : { commitSha: options.commitSha }),
-    logger: cliLogger.child({ component: "repo-security-screen" }),
   },
 );
 
@@ -110,13 +109,13 @@ const result = await runFullPipelineJob(
     repoUrl: options.repoUrl,
     workspaceId: options.workspaceId,
   },
-  productionAgentHarness.preCaptureDependencies,
+  productionPipeline.pipelineDependencies,
   {
     logSinks: [cliLogSink],
     outputRoot: fullPipelineOutputRoot,
-    prepareFreshCaptureState: createDaytonaFreshCaptureStatePreparer(),
+    prepareFreshCaptureState: productionPipeline.prepareFreshCaptureState,
     agentAuditLogPath: agentOutputRouter.primaryAuditLogPath,
-    reviewDraftComposite: productionAgentHarness.reviewDraftComposite,
+    reviewDraftComposite: productionPipeline.reviewDraftComposite,
     runId,
     sandboxLogPath,
     scriptGenerationAuditLogPath:
@@ -136,7 +135,7 @@ const result = await runFullPipelineJob(
   .finally(async () => {
     await Promise.all([
       agentOutputRouter.close(),
-      productionAgentHarness.disposeAgentSessions(),
+      productionPipeline.disposeAgentSessions(),
     ]);
   });
 

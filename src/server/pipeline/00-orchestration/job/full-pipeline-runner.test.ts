@@ -4,9 +4,12 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { createAgentSession } from "../../test-support/create-agent-session";
-import type { CaptureManifest } from "../06-footage-capture/capture-scenes";
-import type { CompositedVideoManifest } from "../07-compositing/composite-video";
+import { createAgentSession } from "../../../test-support/create-agent-session";
+import type {
+  CaptureManifest,
+  CaptureScenesFromScriptInput,
+} from "../../06-footage-capture/capture-scenes";
+import type { CompositedVideoManifest } from "../../07-compositing/composite-video";
 import { runFullPipelineJob } from "./full-pipeline-runner";
 import type { PipelineOrchestratorDependencies } from "./pipeline-orchestrator";
 
@@ -145,6 +148,151 @@ describe("runFullPipelineJob", () => {
       await expect(
         stat(join(outputRoot, "full-run", "demo-script.json")),
       ).resolves.toMatchObject({ isFile: expect.any(Function) });
+    } finally {
+      await rm(outputRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("retries authoritative Capture Path Validation after a Draft Composite script repair", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
+    const calls: string[] = [];
+    const capturePathProgress: string[] = [];
+    const reviewedScriptIds: string[] = [];
+    const capturedScriptIds: string[] = [];
+    let repairCount = 0;
+    const baseDependencies = orchestratorDependencies(calls);
+
+    try {
+      const result = await runFullPipelineJob(
+        fullPipelineInput(),
+        {
+          ...baseDependencies,
+          async generateScriptPackage(input) {
+            const script = await baseDependencies.generateScriptPackage(input);
+            return { ...script, scriptId: "script_initial" };
+          },
+          async repairCapturePathFailure(input) {
+            repairCount += 1;
+            const scriptId = `script_repaired_${repairCount}`;
+            calls.push(`repair:${scriptId}`);
+            return {
+              demoScriptPackage: {
+                ...input.demoScriptPackage,
+                scriptId,
+              },
+              preparationManifest: input.preparationManifest,
+            };
+          },
+          async validateCapturePath(input) {
+            const scriptId = input.demoScriptPackage.scriptId;
+            calls.push(`capture-path-validation:${scriptId}`);
+            if (scriptId === "script_repaired_1") {
+              return {
+                blockedNetworkAttempts: [],
+                browserUrl: "https://preview.example.test/",
+                failureReason: "Repaired selector did not match.",
+                logs: ["repaired candidate 1 failed"],
+                status: "failed" as const,
+                warnings: [],
+              };
+            }
+
+            return {
+              blockedNetworkAttempts: [],
+              browserUrl: "https://preview.example.test/",
+              logs: [`validated ${scriptId}`],
+              status: "succeeded" as const,
+              warnings: [],
+            };
+          },
+        },
+        {
+          async captureScenes(input: CaptureScenesFromScriptInput) {
+            const { scriptPackage } = input;
+            if (
+              typeof scriptPackage !== "object" ||
+              scriptPackage === null ||
+              !("scriptId" in scriptPackage) ||
+              typeof scriptPackage.scriptId !== "string"
+            ) {
+              throw new Error("capture fixture requires a Demo Script package");
+            }
+            capturedScriptIds.push(scriptPackage.scriptId);
+            return captureManifest(outputRoot, input.runId ?? "capture");
+          },
+          async compositeVideo(input) {
+            return compositeManifest(outputRoot, input.runId ?? "composite");
+          },
+          inspectDraftCompositeEvidence: async () => cleanDraftEvidence(),
+          onProgress(event) {
+            if (event.stage === "capture-path-validation") {
+              capturePathProgress.push(event.status);
+            }
+          },
+          outputRoot,
+          reviewDraftComposite: async (input) => {
+            reviewedScriptIds.push(input.scriptPackage.scriptId);
+            return input.attempt === 1
+              ? {
+                  decision: "repair" as const,
+                  reason: "Tighten the demo flow.",
+                  repairScope: "demo-script" as const,
+                }
+              : { decision: "accept" as const };
+          },
+          runId: "review-repair-run",
+        },
+      );
+
+      expect(result.preparedDemo.demoScriptPackage.scriptId).toBe(
+        "script_repaired_2",
+      );
+      expect(result.preparedDemo.acceptedDemoScript.scriptId).toBe(
+        "script_repaired_2",
+      );
+      expect(result.preparedDemo.acceptedDemoScript).toBe(
+        result.preparedDemo.demoScriptPackage,
+      );
+      expect(result.draftCompositeReview).toMatchObject({
+        attempts: 2,
+        status: "accepted",
+        warnings: [],
+      });
+      expect(reviewedScriptIds).toEqual([
+        "script_initial",
+        "script_repaired_2",
+      ]);
+      expect(capturedScriptIds).toEqual([
+        "script_initial",
+        "script_repaired_2",
+      ]);
+      expect(
+        calls.filter((call) => call.startsWith("capture-path-validation:")),
+      ).toEqual([
+        "capture-path-validation:script_initial",
+        "capture-path-validation:script_repaired_1",
+        "capture-path-validation:script_repaired_2",
+      ]);
+      expect(capturePathProgress).toEqual([
+        "started",
+        "succeeded",
+        "started",
+        "failed",
+        "started",
+        "succeeded",
+      ]);
+
+      const durableStageProgress = (await readFile(result.logPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+        .filter(
+          (entry) =>
+            entry.event === "stage-progress" &&
+            entry.stage === "capture-path-validation",
+        )
+        .map((entry) => entry.status);
+      expect(durableStageProgress).toEqual(capturePathProgress);
     } finally {
       await rm(outputRoot, { force: true, recursive: true });
     }

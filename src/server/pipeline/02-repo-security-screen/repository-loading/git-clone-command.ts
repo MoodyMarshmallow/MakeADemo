@@ -5,20 +5,19 @@ const caBundleEnvCandidates = [
   "REQUESTS_CA_BUNDLE",
 ];
 
-const caBundleCandidates = [
-  "/etc/daytona/netleash/ca.crt",
-  "/etc/openshell-tls/ca-bundle.pem",
+const defaultCaBundleCandidates = [
   "/etc/ssl/certs/ca-certificates.crt",
   "/etc/pki/tls/certs/ca-bundle.crt",
 ];
 
 /**
- * Builds the native git clone command used inside Daytona workspaces.
+ * Builds a native git clone command for an isolated repository workspace.
  * Implementations must keep repo URL and path arguments shell-quoted, discover a
  * readable CA bundle before cloning, must never disable TLS verification, and
  * must verify HEAD when an immutable commit is requested.
  */
 export function createGitCloneCommand(input: {
+  caBundleCandidates?: string[];
   commitSha?: string;
   destinationPath: string;
   repoUrl: string;
@@ -36,7 +35,9 @@ export function createGitCloneCommand(input: {
     input.commitSha === undefined ? undefined : shellQuote(input.commitSha);
   return [
     input.resetCommand,
-    createCaBundleDiscoveryCommand(),
+    createCaBundleDiscoveryCommand(
+      input.caBundleCandidates ?? defaultCaBundleCandidates,
+    ),
     `git clone --depth 1${commitSha === undefined ? "" : " --no-checkout"} ${shellQuote(input.repoUrl)} ${destinationPath}`,
     ...(commitSha === undefined
       ? []
@@ -48,7 +49,7 @@ export function createGitCloneCommand(input: {
   ].join(" && ");
 }
 
-function createCaBundleDiscoveryCommand(): string {
+function createCaBundleDiscoveryCommand(caBundleCandidates: string[]): string {
   const envDiscoveryCommand = [
     `for makeademo_ca_env_name in ${caBundleEnvCandidates.join(" ")}; do`,
     'eval "makeademo_ca_env_value=\\${${makeademo_ca_env_name}-}";',

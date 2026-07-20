@@ -48,16 +48,16 @@ describe("createGitCloneCommand", () => {
     });
 
     expect(command.indexOf("GIT_SSL_CAINFO")).toBeLessThan(
-      command.indexOf("/etc/daytona/netleash/ca.crt"),
+      command.indexOf("/etc/ssl/certs/ca-certificates.crt"),
     );
     expect(command.indexOf("SSL_CERT_FILE")).toBeLessThan(
-      command.indexOf("/etc/daytona/netleash/ca.crt"),
+      command.indexOf("/etc/ssl/certs/ca-certificates.crt"),
     );
     expect(command.indexOf("CURL_CA_BUNDLE")).toBeLessThan(
-      command.indexOf("/etc/daytona/netleash/ca.crt"),
+      command.indexOf("/etc/ssl/certs/ca-certificates.crt"),
     );
     expect(command.indexOf("REQUESTS_CA_BUNDLE")).toBeLessThan(
-      command.indexOf("/etc/daytona/netleash/ca.crt"),
+      command.indexOf("/etc/ssl/certs/ca-certificates.crt"),
     );
     expect(command).toContain("test -r");
     expect(command).toMatch(/case .* in \/\*/s);
@@ -102,21 +102,26 @@ printf '%s' "$GIT_SSL_CAINFO" > "$FAKE_GIT_SELECTED_CA_PATH"
     expect(readFileSync(selectedCaPath, "utf8")).toBe(caBundlePath);
   });
 
-  it("prefers Daytona netleash and OpenShell TLS bundles before system CA bundles", () => {
+  it("preserves configured CA bundle preference order", () => {
     const command = createGitCloneCommand({
+      caBundleCandidates: [
+        "/provider/primary-ca.crt",
+        "/provider/secondary-ca.crt",
+        "/etc/ssl/certs/ca-certificates.crt",
+      ],
       destinationPath: "/workspace/submitted code",
       repoUrl: "https://github.com/example/app",
       resetCommand: "rm -rf '/workspace/submitted code'",
     });
 
-    expect(command.indexOf("/etc/daytona/netleash/ca.crt")).toBeLessThan(
-      command.indexOf("/etc/openshell-tls/ca-bundle.pem"),
+    expect(command.indexOf("/provider/primary-ca.crt")).toBeLessThan(
+      command.indexOf("/provider/secondary-ca.crt"),
     );
-    expect(command.indexOf("/etc/daytona/netleash/ca.crt")).toBeLessThan(
+    expect(command.indexOf("/provider/primary-ca.crt")).toBeLessThan(
       command.indexOf("/etc/ssl/certs/ca-certificates.crt"),
     );
-    expect(command.indexOf("/etc/openshell-tls/ca-bundle.pem")).toBeLessThan(
-      command.indexOf("/etc/pki/tls/certs/ca-bundle.crt"),
+    expect(command.indexOf("/provider/secondary-ca.crt")).toBeLessThan(
+      command.indexOf("/etc/ssl/certs/ca-certificates.crt"),
     );
     expect(command).toMatch(/export GIT_SSL_CAINFO=.*git clone/s);
     expect(command).not.toContain("GIT_SSL_NO_VERIFY");

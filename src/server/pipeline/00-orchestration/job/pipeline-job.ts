@@ -1,17 +1,17 @@
-import type { AgentSession } from "../../agent-harness/agent-session";
-import type { DemoBrief } from "../01-context-gathering/intake/demo-brief.schema";
-import type { NormalizedSupportingDocument } from "../01-context-gathering/supporting-documents";
+import type { AgentSession } from "../../../agent-harness/agent-session";
+import type { DemoBrief } from "../../01-context-gathering/intake/demo-brief.schema";
+import type { NormalizedSupportingDocument } from "../../01-context-gathering/supporting-documents";
 import type {
   RepoSecurityInput,
   RepoSecurityResult,
-} from "../02-repo-security-screen/repo-security-screen";
-import type { PreparationManifest } from "../03-repo-preparation/preparation-manifest";
-import type { PreparationWorkspaceHandle } from "../03-repo-preparation/preparation-workspace-runner";
+} from "../../02-repo-security-screen/repo-security-screen";
+import type { PreparationManifest } from "../../03-repo-preparation/preparation-manifest";
+import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
 import type {
   AcceptedDemoScript,
   DemoScriptPackage,
-} from "../04-script-generation/demo-script-package";
-import type { CapturePathValidationResult } from "../05-capture-path-validation/capture-path-validator.interface";
+} from "../../04-script-generation/demo-script-package";
+import type { CapturePathValidationResult } from "../../05-capture-path-validation/capture-path-validator.interface";
 
 export type PipelineJobInput = {
   commitSha?: string;

@@ -2,7 +2,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { type PostgresJsDatabase, drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 
-import type { ProjectDemoGenerationQueueStore } from "../../pipeline/00-orchestration/project-demo-generation-queue";
+import type { ProjectDemoGenerationQueueStore } from "../../pipeline/00-orchestration/queue/project-demo-generation-queue";
 import type { NormalizedSupportingDocument } from "../../pipeline/01-context-gathering/supporting-documents";
 import { demoRequests, projects } from "./schema";
 

@@ -1,31 +1,104 @@
+import type { RepoSecurityInput } from "../../../pipeline/02-repo-security-screen/repo-security-screen";
+import { createGitCloneCommand } from "../../../pipeline/02-repo-security-screen/repository-loading/git-clone-command";
+import { runGitCloneWithTransientRetry } from "../../../pipeline/02-repo-security-screen/repository-loading/git-clone-retry";
+import type {
+  RepoSecurityInputLoadInput,
+  RepoSecurityInputLoader,
+} from "../../../pipeline/02-repo-security-screen/repository-loading/repo-security-input-loader.interface";
+import type { PipelineEventLogger } from "../../logging/pipeline-event-logger";
+import {
+  DaytonaSdkPreparationWorkspaceProvider,
+  type DaytonaSdkPreparationWorkspaceProviderOptions,
+} from "./daytona-sdk-preparation-workspace-provider";
 import {
   createDaytonaWorkspaceResetCommand,
+  daytonaGitCaBundleCandidates,
   daytonaWorkspaceDirectory,
-} from "../../shared/integrations/daytona/workspace-command";
-import type { PipelineEventLogger } from "../../shared/logging/pipeline-event-logger";
-import type { RepoSecurityInput } from "../02-repo-security-screen/repo-security-screen";
-import { createGitCloneCommand } from "../03-repo-preparation/git-clone-command";
-import { runGitCloneWithTransientRetry } from "../03-repo-preparation/git-clone-retry";
-import type {
-  PreparationWorkspaceHandle,
-  PreparationWorkspaceProvider,
-} from "../03-repo-preparation/preparation-workspace-runner";
-import type { PreparationWorkspace } from "../03-repo-preparation/preparation-workspace.interface";
+} from "./workspace-command";
+
+export type RepositoryLoadingWorkspaceCommandResult = {
+  exitCode: number;
+  stderr: string;
+  stdout: string;
+};
+
+/**
+ * Executes backend-authored repository-loading commands and controls outbound
+ * network access. Implementations must return the command's exit status and
+ * captured output, honor requested timeouts, and settle network changes before
+ * the corresponding promise resolves.
+ */
+export interface RepositoryLoadingWorkspace {
+  execute(
+    command: string,
+    options?: { timeoutMs?: number },
+  ): Promise<RepositoryLoadingWorkspaceCommandResult>;
+  setOutboundNetworkAccess(enabled: boolean): Promise<void>;
+}
+
+/**
+ * Owns one repository-loading workspace with a stable provider identifier.
+ * `release` must be safe to call repeatedly and must settle only after the
+ * workspace has been released or the release failure is known.
+ */
+export interface RepositoryLoadingWorkspaceHandle {
+  id: string;
+  release(): Promise<void>;
+  workspace: RepositoryLoadingWorkspace;
+}
+
+/**
+ * Creates a fresh, independently releasable repository-loading workspace for
+ * each call. Implementations must not return a previously released handle.
+ */
+export interface RepositoryLoadingWorkspaceProvider {
+  create(): Promise<RepositoryLoadingWorkspaceHandle>;
+}
+
+export type DaytonaRepoSecurityInputLoaderOptions = Pick<
+  DaytonaSdkPreparationWorkspaceProviderOptions,
+  "apiKey" | "sandboxLogSinks" | "snapshot"
+> & {
+  cloneWorkspaceRetryDelaysMs?: number[];
+  logger?: PipelineEventLogger;
+  provider?: RepositoryLoadingWorkspaceProvider;
+  releaseTimeoutMs?: number;
+};
 
 const defaultWorkspaceReleaseTimeoutMs = 30_000;
 const defaultCloneAttemptTimeoutMs = 120_000;
 const defaultCloneWorkspaceRetryDelaysMs = [250, 500];
 const maxCloneWorkspaceRetries = 2;
 
-export async function readRepoSecurityInput(
-  provider: PreparationWorkspaceProvider,
-  repoUrl: string,
-  options: {
-    cloneWorkspaceRetryDelaysMs?: number[];
-    commitSha?: string;
-    releaseTimeoutMs?: number;
-    logger?: PipelineEventLogger;
-  } = {},
+/** Daytona adapter for the Repo Security Screen's static input-loading seam. */
+export class DaytonaRepoSecurityInputLoader implements RepoSecurityInputLoader {
+  private readonly options: DaytonaRepoSecurityInputLoaderOptions;
+  private readonly provider: RepositoryLoadingWorkspaceProvider;
+
+  constructor(options: DaytonaRepoSecurityInputLoaderOptions = {}) {
+    this.options = options;
+    this.provider =
+      options.provider ??
+      new DaytonaSdkPreparationWorkspaceProvider({
+        ...(options.apiKey === undefined ? {} : { apiKey: options.apiKey }),
+        ...(options.sandboxLogSinks === undefined
+          ? {}
+          : { sandboxLogSinks: options.sandboxLogSinks }),
+        ...(options.snapshot === undefined
+          ? {}
+          : { snapshot: options.snapshot }),
+      });
+  }
+
+  load(input: RepoSecurityInputLoadInput): Promise<RepoSecurityInput> {
+    return loadDaytonaRepoSecurityInput(this.provider, input, this.options);
+  }
+}
+
+async function loadDaytonaRepoSecurityInput(
+  provider: RepositoryLoadingWorkspaceProvider,
+  input: RepoSecurityInputLoadInput,
+  options: DaytonaRepoSecurityInputLoaderOptions,
 ): Promise<RepoSecurityInput> {
   const cloneWorkspaceRetryDelaysMs =
     options.cloneWorkspaceRetryDelaysMs ?? defaultCloneWorkspaceRetryDelaysMs;
@@ -35,12 +108,12 @@ export async function readRepoSecurityInput(
     const cloneStartedAt = Date.now();
 
     try {
-      await logCloneEvent(options.logger, "started", repoUrl);
+      await logCloneEvent(options.logger, "started", input.repoUrl);
       await handle.workspace.setOutboundNetworkAccess(true);
       const cloneResult = await cloneWithNetworkAccess(
         handle.workspace,
-        repoUrl,
-        options.commitSha,
+        input.repoUrl,
+        input.commitSha,
       );
       if (cloneResult.exitCode !== 0) {
         const error = new Error(
@@ -48,12 +121,12 @@ export async function readRepoSecurityInput(
         );
         throw error;
       }
-      await logCloneEvent(options.logger, "succeeded", repoUrl);
+      await logCloneEvent(options.logger, "succeeded", input.repoUrl);
     } catch (error) {
       const retryable =
         attempt < maxCloneWorkspaceRetries &&
         isCloneWorkspaceRetryableError(error);
-      await logCloneEvent(options.logger, "failed", repoUrl, {
+      await logCloneEvent(options.logger, "failed", input.repoUrl, {
         durationMs: Date.now() - cloneStartedAt,
         error,
         level: retryable ? "warn" : "error",
@@ -89,7 +162,7 @@ export async function readRepoSecurityInput(
           });
         const files = await Promise.all(
           fileStats.map(async (file) => {
-            if (!shouldReadForSecurity(file.path)) {
+            if (!input.shouldReadText(file.path)) {
               return { path: file.path };
             }
 
@@ -134,7 +207,7 @@ export async function readRepoSecurityInput(
 }
 
 async function releaseWorkspace(
-  handle: PreparationWorkspaceHandle,
+  handle: RepositoryLoadingWorkspaceHandle,
   options: { releaseTimeoutMs?: number; logger?: PipelineEventLogger },
 ) {
   const timeoutMs =
@@ -179,7 +252,7 @@ async function runReleaseWithTimeout(
 }
 
 async function cloneWithNetworkAccess(
-  workspace: PreparationWorkspace,
+  workspace: RepositoryLoadingWorkspace,
   repoUrl: string,
   commitSha: string | undefined,
 ) {
@@ -188,6 +261,7 @@ async function cloneWithNetworkAccess(
       clone: () =>
         workspace.execute(
           createGitCloneCommand({
+            caBundleCandidates: [...daytonaGitCaBundleCandidates],
             ...(commitSha === undefined ? {} : { commitSha }),
             destinationPath: daytonaWorkspaceDirectory,
             repoUrl,
@@ -348,10 +422,6 @@ function delay(ms: number): Promise<void> {
 
 function readErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function shouldReadForSecurity(path: string): boolean {
-  return path === "package.json" || path.endsWith(".sh");
 }
 
 function shellQuote(value: string): string {

@@ -1,8 +1,7 @@
-import { createDaytonaFreshCaptureStatePreparer } from "../pipeline/00-orchestration/fresh-capture-state";
-import { runFullPipelineJob } from "../pipeline/00-orchestration/full-pipeline-runner";
-import { readRepoSecurityInput } from "../pipeline/00-orchestration/pre-capture-repo-security";
-import { processNextProjectDemoGenerationJob } from "../pipeline/00-orchestration/project-demo-generation-queue";
-import { createProjectDemoGenerationWorkerLogger } from "../pipeline/00-orchestration/project-demo-generation-worker-logging";
+import { runFullPipelineJob } from "../pipeline/00-orchestration/job/full-pipeline-runner";
+import { processNextProjectDemoGenerationJob } from "../pipeline/00-orchestration/queue/project-demo-generation-queue";
+import { createProjectDemoGenerationWorkerLogger } from "../pipeline/00-orchestration/queue/project-demo-generation-worker-logging";
+import { readRepoSecurityInput } from "../pipeline/02-repo-security-screen/repository-loading/repo-security-input";
 import { compositeVideoFromScript } from "../pipeline/07-compositing/composite-video";
 import { finalVideoEmailsEnabled } from "../pipeline/final-output/final-video-email-feature";
 import { createResendFinalVideoEmailNotifierFromEnv } from "../shared/integrations/email/resend-final-video-email-notifier";
@@ -10,8 +9,8 @@ import { createR2UploadPresignerFromEnv } from "../shared/integrations/storage/r
 import { R2FinalVideoStorage } from "../shared/integrations/storage/r2-final-video-storage";
 import { createNeonDemoRequestFinalVideoStore } from "../shared/persistence/neon-demo-request-final-video-store";
 import { createNeonProjectDemoGenerationQueueStore } from "../shared/persistence/neon-project-demo-generation-queue-store";
-import { createProductionAgentHarness } from "./production-agent-harness";
 import { resolveProductionAgentModelConfigFromEnv } from "./production-agent-model-config";
+import { createProductionPipeline } from "./production-pipeline";
 
 const pollIntervalMs = Number.parseInt(
   process.env.DEMO_QUEUE_POLL_INTERVAL_MS ?? "5000",
@@ -41,7 +40,7 @@ await workerLogger.workerStarted();
 do {
   const result = await processNextProjectDemoGenerationJob(queueStore, {
     async runFullPipeline(job) {
-      const productionAgentHarness = createProductionAgentHarness({
+      const productionPipeline = createProductionPipeline({
         daytonaApiKey,
         ...(daytonaSnapshot === undefined ? {} : { daytonaSnapshot }),
         ...(daytonaSubmittedCodeSnapshot === undefined
@@ -49,14 +48,14 @@ do {
           : { daytonaSubmittedCodeSnapshot }),
         agentModel,
         logger: workerLogger.child({ component: "agent-harness" }),
+        repoSecurityLogger: workerLogger.child({
+          component: "repo-security-screen",
+        }),
       });
       try {
         const repoSecurity = await readRepoSecurityInput(
-          productionAgentHarness.repoSecurityProvider,
+          productionPipeline.repoSecurityInputLoader,
           job.repoUrl,
-          {
-            logger: workerLogger.child({ component: "repo-security-screen" }),
-          },
         );
 
         const pipelineResult = await runFullPipelineJob(
@@ -67,7 +66,7 @@ do {
             repoUrl: job.repoUrl,
             workspaceId: job.workspaceId,
           },
-          productionAgentHarness.preCaptureDependencies,
+          productionPipeline.pipelineDependencies,
           {
             async compositeVideo(input) {
               return compositeVideoFromScript({
@@ -82,8 +81,9 @@ do {
               });
             },
             onProgress: (event) => workerLogger.pipelineProgress(event),
-            prepareFreshCaptureState: createDaytonaFreshCaptureStatePreparer(),
-            reviewDraftComposite: productionAgentHarness.reviewDraftComposite,
+            prepareFreshCaptureState:
+              productionPipeline.prepareFreshCaptureState,
+            reviewDraftComposite: productionPipeline.reviewDraftComposite,
           },
         );
 
@@ -95,7 +95,7 @@ do {
           generatedDemoUrl: pipelineResult.finalVideo.finalVideo.r2Url,
         };
       } finally {
-        await productionAgentHarness.disposeAgentSessions();
+        await productionPipeline.disposeAgentSessions();
       }
     },
   });

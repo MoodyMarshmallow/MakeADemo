@@ -1,4 +1,4 @@
-import { FullPipelineStageFailure } from "./full-pipeline-runner";
+import { FullPipelineStageFailure } from "../job/full-pipeline-runner";
 
 export function formatFullPipelineFailure(error: unknown): string | undefined {
   if (!(error instanceof FullPipelineStageFailure)) {

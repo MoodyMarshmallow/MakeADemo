@@ -3,7 +3,7 @@ import {
   type PipelineEventLoggerOptions,
   type PipelineLogSink,
   createPipelineEventLogger,
-} from "../../shared/logging/pipeline-event-logger";
+} from "../../../shared/logging/pipeline-event-logger";
 
 type WorkerPipelineProgress = {
   stage: string;

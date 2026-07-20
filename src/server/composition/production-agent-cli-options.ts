@@ -1,4 +1,4 @@
-import { parsePreCaptureCliArgs } from "../pipeline/00-orchestration/pre-capture-cli-options";
+import { parsePreCaptureCliArgs } from "../pipeline/00-orchestration/cli/pre-capture-cli-options";
 import {
   type ProductionAgentModelConfig,
   resolveProductionAgentModelConfig,

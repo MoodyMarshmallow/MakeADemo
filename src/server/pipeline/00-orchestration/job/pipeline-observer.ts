@@ -1,4 +1,4 @@
-import { createPipelineEventLogger } from "../../shared/logging/pipeline-event-logger";
+import { createPipelineEventLogger } from "../../../shared/logging/pipeline-event-logger";
 
 export type PipelineStage =
   | "compositing"

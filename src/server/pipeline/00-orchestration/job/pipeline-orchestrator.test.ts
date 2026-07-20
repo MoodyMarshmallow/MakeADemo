@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createAgentSession } from "../../test-support/create-agent-session";
+import { createAgentSession } from "../../../test-support/create-agent-session";
 import { createRecordingPipelineObserver } from "./pipeline-observer";
 import { runPipelineJob } from "./pipeline-orchestrator";
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createRecordingPipelineObserver } from "./pipeline-observer";
+import { createRecordingPipelineObserver } from "../job/pipeline-observer";
 import { processNextProjectDemoGenerationJob } from "./project-demo-generation-queue";
 
 describe("processNextProjectDemoGenerationJob", () => {

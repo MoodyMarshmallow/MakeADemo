@@ -1,10 +1,11 @@
 import {
   createDaytonaWorkspaceResetCommand,
+  daytonaGitCaBundleCandidates,
   daytonaWorkspaceDirectory,
 } from "../../../shared/integrations/daytona/workspace-command";
 import type { PipelineEventLogger } from "../../../shared/logging/pipeline-event-logger";
-import { createGitCloneCommand } from "../git-clone-command";
-import { runGitCloneWithTransientRetry } from "../git-clone-retry";
+import { createGitCloneCommand } from "../../02-repo-security-screen/repository-loading/git-clone-command";
+import { runGitCloneWithTransientRetry } from "../../02-repo-security-screen/repository-loading/git-clone-retry";
 import type { PreparationWorkspace } from "../preparation-workspace.interface";
 const diagnosticValueMaxLength = 500;
 const outputChannelMaxLength = 750;
@@ -127,6 +128,7 @@ async function cloneSubmittedCode(
 
 function createCloneCommand(repoUrl: string, commitSha?: string): string {
   return createGitCloneCommand({
+    caBundleCandidates: [...daytonaGitCaBundleCandidates],
     ...(commitSha === undefined ? {} : { commitSha }),
     destinationPath: daytonaWorkspaceDirectory,
     repoUrl,
