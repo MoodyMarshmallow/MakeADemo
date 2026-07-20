@@ -7,6 +7,16 @@ the entire fixed benchmark suite. Each completed run is recorded independently,
 and the summarizer reports every run's duration together with the arithmetic
 mean, median, and maximum duration.
 
+Each JSONL row records the effective `benchmarkTimeoutMs`, and whether its
+`disposition` is `completed` or `inconclusive`. A row is `completed` only when
+a readable, run-owned terminal `full-pipeline-result.json` matches the full
+Pipeline summary contract; an exit code by itself is never evidence of Pipeline
+completion. Inconclusive rows retain the
+furthest trusted success level, record a bounded infrastructure failure kind,
+and use the latest chronological Pipeline Stage as their failure stage. Forced
+process shutdowns also record `terminationReason` as `deadline`, `signal`, or
+`result-grace`.
+
 The suite uses one absolute 35-minute deadline shared by all jobs and
 repetitions. Set `MAKEADEMO_BENCHMARK_TIMEOUT_MS` to a positive safe integer to
 override it. A child that emits a readable `Result JSON:` marker gets five

@@ -13,26 +13,44 @@ describe("benchmark process lifecycle", () => {
   it("cancels every active child exactly once and excludes completed jobs", async () => {
     const controller = createBenchmarkProcessController();
     const signals: string[] = [];
+    const reasons: string[] = [];
     let releaseFirst!: () => void;
     const unregisterFirst = controller.register(
-      () =>
+      (reason) =>
         new Promise<void>((resolve) => {
           signals.push("first");
+          reasons.push(reason);
           releaseFirst = resolve;
         }),
     );
-    const unregisterSecond = controller.register(async () => {
+    const unregisterSecond = controller.register(async (reason) => {
       signals.push("second");
+      reasons.push(reason);
     });
     unregisterSecond();
 
-    const cancellation = controller.cancelAll();
-    expect(controller.cancelAll()).toBe(cancellation);
+    const cancellation = controller.cancelAll("signal");
+    expect(controller.cancelAll("deadline")).toBe(cancellation);
     expect(signals).toEqual(["first"]);
+    expect(reasons).toEqual(["signal"]);
     releaseFirst();
     await cancellation;
     unregisterFirst();
     expect(signals).toEqual(["first"]);
+  });
+
+  it("terminates a child registered after signal cancellation with the original reason", async () => {
+    const controller = createBenchmarkProcessController();
+    await controller.cancelAll("signal");
+    const reasons: string[] = [];
+
+    const unregister = controller.register(async (reason) => {
+      reasons.push(reason);
+    });
+    await controller.cancelAll("deadline");
+
+    expect(reasons).toEqual(["signal"]);
+    unregister();
   });
 
   it("reaps multiple detached children when the shared controller is cancelled", async () => {
@@ -53,8 +71,8 @@ describe("benchmark process lifecycle", () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     await controller.cancelAll();
     await expect(children).resolves.toEqual([
-      { exitCode: null, killed: true },
-      { exitCode: null, killed: true },
+      { exitCode: null, killed: true, terminationReason: "signal" },
+      { exitCode: null, killed: true, terminationReason: "signal" },
     ]);
   });
 
@@ -74,6 +92,7 @@ describe("benchmark process lifecycle", () => {
       killGraceMs: 10,
     });
     expect(outcome.killed).toBe(true);
+    expect(outcome.terminationReason).toBe("result-grace");
     expect(outcome.resultPath).toBe(result);
     expect(await readFile(join(dir, "stdout.log"), "utf8")).toContain(
       "Result JSON:",
@@ -89,6 +108,23 @@ describe("benchmark process lifecycle", () => {
       deadlineAt: Date.now() + 1000,
     });
     expect(outcome).toMatchObject({ exitCode: 0, killed: false });
+    expect(outcome).not.toHaveProperty("terminationReason");
+  });
+
+  it("records the deadline when it is the first termination trigger", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "benchmark-liveness-"));
+    await expect(
+      runBenchmarkProcess({
+        args: ["-e", "setInterval(() => {}, 1000)"],
+        stdoutPath: join(dir, "out"),
+        stderrPath: join(dir, "err"),
+        deadlineAt: Date.now(),
+        killGraceMs: 10,
+      }),
+    ).resolves.toMatchObject({
+      killed: true,
+      terminationReason: "deadline",
+    });
   });
 
   it("parses only positive safe integer timeout values", () => {

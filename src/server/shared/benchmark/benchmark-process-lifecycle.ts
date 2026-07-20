@@ -34,25 +34,38 @@ export type BenchmarkProcessLifecycleResult = {
   exitCode: number | null;
   killed: boolean;
   resultPath?: string;
+  terminationReason?: BenchmarkTerminationReason;
 };
 
+type BenchmarkTerminationReason = "deadline" | "result-grace" | "signal";
+
 export type BenchmarkProcessController = {
-  register(terminate: () => Promise<void>): () => void;
-  cancelAll(): Promise<void>;
+  register(
+    terminate: (reason: BenchmarkTerminationReason) => Promise<void>,
+  ): () => void;
+  cancelAll(reason?: BenchmarkTerminationReason): Promise<void>;
 };
 
 export function createBenchmarkProcessController(): BenchmarkProcessController {
-  const active = new Set<() => Promise<void>>();
+  const active = new Set<
+    (reason: BenchmarkTerminationReason) => Promise<void>
+  >();
   let cancellation: Promise<void> | undefined;
+  let cancellationReason: BenchmarkTerminationReason | undefined;
   return {
     register(terminate) {
+      if (cancellationReason !== undefined) {
+        void terminate(cancellationReason);
+        return () => undefined;
+      }
       active.add(terminate);
       return () => active.delete(terminate);
     },
-    cancelAll() {
+    cancelAll(reason = "signal") {
       if (cancellation !== undefined) return cancellation;
+      cancellationReason = reason;
       cancellation = Promise.all(
-        [...active].map((terminate) => terminate()),
+        [...active].map((terminate) => terminate(reason)),
       ).then(() => undefined);
       return cancellation;
     },
@@ -70,6 +83,7 @@ export async function runBenchmarkProcess(
   const stdout = createWriteStream(input.stdoutPath);
   const stderr = createWriteStream(input.stderrPath);
   let resultPath: string | undefined;
+  let terminationReason: BenchmarkTerminationReason | undefined;
   let killed = false;
   let settled = false;
   let markerBuffer = "";
@@ -90,7 +104,10 @@ export async function runBenchmarkProcess(
         .then(() => {
           resultPath = match[1];
           if (!settled) {
-            graceTimer = setTimeout(() => void terminate(), resultGraceMs);
+            graceTimer = setTimeout(
+              () => void terminate("result-grace"),
+              resultGraceMs,
+            );
           }
         })
         .catch(() => undefined);
@@ -99,7 +116,7 @@ export async function runBenchmarkProcess(
   child.stdout.on("data", (chunk: Buffer) => inspect(chunk, stdout));
   child.stderr.on("data", (chunk: Buffer) => inspect(chunk, stderr));
 
-  const terminate = (): Promise<void> => {
+  const terminate = (reason: BenchmarkTerminationReason): Promise<void> => {
     if (terminationPromise !== undefined) return terminationPromise;
     terminationPromise = new Promise<void>((resolve) => {
       resolveTermination = resolve;
@@ -108,6 +125,7 @@ export async function runBenchmarkProcess(
       resolveTermination?.();
       return terminationPromise;
     }
+    terminationReason = reason;
     killed = true;
     const pid = child.pid;
     try {
@@ -133,7 +151,7 @@ export async function runBenchmarkProcess(
   };
   const unregister = input.controller?.register(terminate);
   const remaining = Math.max(0, input.deadlineAt - Date.now());
-  const deadlineTimer = setTimeout(() => void terminate(), remaining);
+  const deadlineTimer = setTimeout(() => void terminate("deadline"), remaining);
 
   return await new Promise((resolve, reject) => {
     child.once("error", (error) => {
@@ -171,6 +189,7 @@ export async function runBenchmarkProcess(
             exitCode: code,
             killed,
             ...(resultPath === undefined ? {} : { resultPath }),
+            ...(terminationReason === undefined ? {} : { terminationReason }),
           }),
         reject,
       );

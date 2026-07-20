@@ -10,9 +10,11 @@ import {
 } from "../src/server/shared/benchmark/benchmark-process-lifecycle";
 import {
   type BenchmarkResult,
-  type BenchmarkStatusInferenceInput,
+  type BenchmarkTerminalPipelineResult,
+  buildBenchmarkResult,
   findFullPipelineResultPath,
-  inferBenchmarkStatusLevel,
+  isBenchmarkTerminalResultPath,
+  readBenchmarkTerminalPipelineResult,
   summarizeBenchmarkResults,
 } from "../src/server/shared/benchmark/benchmark-results";
 import { runBenchmarkJobs } from "../src/server/shared/benchmark/benchmark-runner";
@@ -34,15 +36,16 @@ const selectedBenchmarkSuite = {
 const benchmarkRunId = createRunId();
 const outputRoot = join(".makeademo-benchmark-runs", benchmarkRunId);
 const resultsPath = join(outputRoot, "benchmark-results.jsonl");
-const suiteDeadlineAt =
-  Date.now() +
-  parseBenchmarkTimeout(process.env.MAKEADEMO_BENCHMARK_TIMEOUT_MS);
+const benchmarkTimeoutMs = parseBenchmarkTimeout(
+  process.env.MAKEADEMO_BENCHMARK_TIMEOUT_MS,
+);
+const suiteDeadlineAt = Date.now() + benchmarkTimeoutMs;
 const processController = createBenchmarkProcessController();
 let interrupted = false;
 const handleSignal = (signal: NodeJS.Signals) => {
   interrupted = true;
   process.exitCode = signal === "SIGINT" ? 130 : 143;
-  void processController.cancelAll();
+  void processController.cancelAll("signal");
 };
 process.once("SIGINT", handleSignal);
 process.once("SIGTERM", handleSignal);
@@ -69,6 +72,7 @@ try {
     run: async ({ repo, repetitionIndex, deadlineAt }) => {
       const result = await runRepoBenchmark({
         benchmarkRunId,
+        benchmarkTimeoutMs,
         outputRoot,
         repo,
         repetitionIndex,
@@ -94,6 +98,7 @@ if (!interrupted) {
 
 async function runRepoBenchmark(input: {
   benchmarkRunId: string;
+  benchmarkTimeoutMs: number;
   outputRoot: string;
   repo: BenchmarkRepo;
   repetitionIndex: number;
@@ -121,18 +126,15 @@ async function runRepoBenchmark(input: {
     args,
     stderrPath,
     stdoutPath,
-    deadlineAt:
-      input.deadlineAt ??
-      Date.now() +
-        parseBenchmarkTimeout(process.env.MAKEADEMO_BENCHMARK_TIMEOUT_MS),
+    deadlineAt: input.deadlineAt ?? Date.now() + input.benchmarkTimeoutMs,
     controller: processController,
   });
-  const exitCode = lifecycle.exitCode;
   await Promise.all([
     redactBenchmarkLog(stdoutPath),
     redactBenchmarkLog(stderrPath),
   ]);
   const fullPipelineResult = await readFullPipelineResult({
+    pipelineOutputRoot,
     stderrPath,
     stdoutPath,
   });
@@ -140,57 +142,28 @@ async function runRepoBenchmark(input: {
     fullPipelineResult?.artifacts?.logPath ??
     (await findPipelineLogPath(pipelineOutputRoot));
   const fullPipelineLog = await readFullPipelineLog(pipelineLogPath);
-  const status =
-    fullPipelineResult?.status === "succeeded" || exitCode === 0
-      ? "succeeded"
-      : "failed";
   const endedAt = new Date();
-  const statusLevel = inferBenchmarkStatusLevel(
-    fullPipelineResult?.status === undefined
-      ? {
-          stageOutcomes: fullPipelineLog.stageOutcomes,
-          succeededEvents: fullPipelineLog.succeededEvents,
-        }
-      : {
-          pipelineStatus: fullPipelineResult.status,
-          stageOutcomes: fullPipelineLog.stageOutcomes,
-          succeededEvents: fullPipelineLog.succeededEvents,
-        },
-  );
-
-  const result: BenchmarkResult = {
+  const result = buildBenchmarkResult({
     benchmarkRunId: input.benchmarkRunId,
+    benchmarkTimeoutMs: input.benchmarkTimeoutMs,
     commitSha: input.repo.commitSha,
     command,
     durationMs: endedAt.getTime() - startedAt.getTime(),
     endedAt: endedAt.toISOString(),
     expectedLevel: input.repo.expectedLevel,
-    exitCode,
-    ...(fullPipelineLog.failureStage === undefined
-      ? {}
-      : { failureStage: fullPipelineLog.failureStage }),
-    ...(fullPipelineResult?.failure?.blockers?.[0] === undefined
-      ? {}
-      : { failureMessage: fullPipelineResult.failure.blockers[0] }),
-    ...(fullPipelineResult?.artifacts?.logPath === undefined
-      ? {}
-      : { logPath: fullPipelineResult.artifacts.logPath }),
+    fullPipelineLog,
+    ...(fullPipelineResult === undefined ? {} : { fullPipelineResult }),
+    lifecycle,
     repoId: input.repo.id,
     repoUrl: input.repo.repoUrl,
-    ...(fullPipelineResult?.resultPath === undefined
-      ? {}
-      : { resultPath: fullPipelineResult.resultPath }),
     runDirectory,
     startedAt: startedAt.toISOString(),
-    status,
-    statusLevel,
     stderrPath,
     stdoutPath,
-    tokenUsage: null,
-  };
+  });
 
   process.stdout.write(
-    `[${input.repo.id}] ${status} ${statusLevel} in ${formatDuration(result.durationMs)}\n`,
+    `[${input.repo.id}] ${result.status} ${result.statusLevel} in ${formatDuration(result.durationMs)}\n`,
   );
   return result;
 }
@@ -204,19 +177,10 @@ async function redactBenchmarkLog(path: string) {
 }
 
 async function readFullPipelineResult(input: {
+  pipelineOutputRoot: string;
   stderrPath: string;
   stdoutPath: string;
-}): Promise<
-  | {
-      artifacts?: {
-        logPath?: string;
-      };
-      failure?: { blockers?: string[] };
-      resultPath?: string;
-      status?: string;
-    }
-  | undefined
-> {
+}): Promise<BenchmarkTerminalPipelineResult | undefined> {
   const [stderr, stdout] = await Promise.all([
     readFile(input.stderrPath, "utf8"),
     readFile(input.stdoutPath, "utf8"),
@@ -225,19 +189,36 @@ async function readFullPipelineResult(input: {
   if (resultPath === undefined) {
     return undefined;
   }
+  if (
+    !isBenchmarkTerminalResultPath({
+      pipelineOutputRoot: input.pipelineOutputRoot,
+      resultPath,
+    })
+  ) {
+    return undefined;
+  }
 
-  const result = JSON.parse(await readFile(resultPath, "utf8")) as {
-    artifacts?: {
-      logPath?: string;
-    };
-    failure?: { blockers?: string[] };
-    status?: string;
-  };
-
-  return { ...result, resultPath };
+  try {
+    const result = JSON.parse(await readFile(resultPath, "utf8")) as unknown;
+    return readBenchmarkTerminalPipelineResult({
+      pipelineOutputRoot: input.pipelineOutputRoot,
+      resultPath,
+      value: result,
+    });
+  } catch {
+    return undefined;
+  }
 }
 
-async function readFullPipelineLog(logPath: string | undefined) {
+async function readFullPipelineLog(logPath: string | undefined): Promise<{
+  failureStage?: string;
+  latestStage?: string;
+  stageOutcomes: Array<{
+    stage: string;
+    status: "failed" | "started" | "succeeded";
+  }>;
+  succeededEvents: string[];
+}> {
   if (logPath === undefined) {
     return {
       stageOutcomes: [] as Array<{
@@ -248,9 +229,19 @@ async function readFullPipelineLog(logPath: string | undefined) {
     };
   }
 
-  const lines = (await readFile(logPath, "utf8"))
-    .split("\n")
-    .filter((line) => line.trim().length > 0);
+  let contents: string;
+  try {
+    contents = await readFile(logPath, "utf8");
+  } catch {
+    return {
+      stageOutcomes: [] as Array<{
+        stage: string;
+        status: "failed" | "started" | "succeeded";
+      }>,
+      succeededEvents: [] as string[],
+    };
+  }
+  const lines = contents.split("\n").filter((line) => line.trim().length > 0);
   const events = lines.flatMap((line) => {
     try {
       return [JSON.parse(line) as Record<string, unknown>];
@@ -261,9 +252,10 @@ async function readFullPipelineLog(logPath: string | undefined) {
   const succeededEvents = events
     .map((event) => event.event)
     .filter((event): event is string => typeof event === "string");
-  const stageOutcomes: NonNullable<
-    BenchmarkStatusInferenceInput["stageOutcomes"]
-  > = events.flatMap((event) => {
+  const stageOutcomes: Array<{
+    stage: string;
+    status: "failed" | "started" | "succeeded";
+  }> = events.flatMap((event) => {
     if (
       event.event !== "stage-progress" ||
       typeof event.stage !== "string" ||
@@ -283,6 +275,7 @@ async function readFullPipelineLog(logPath: string | undefined) {
     .slice()
     .reverse()
     .find((outcome) => outcome.status === "failed")?.stage;
+  const latestStage = stageOutcomes.at(-1)?.stage;
 
   return {
     ...(typeof failedEvent?.stage === "string"
@@ -292,6 +285,7 @@ async function readFullPipelineLog(logPath: string | undefined) {
         : { failureStage: failedStage }),
     stageOutcomes,
     succeededEvents,
+    ...(latestStage === undefined ? {} : { latestStage }),
   };
 }
 
