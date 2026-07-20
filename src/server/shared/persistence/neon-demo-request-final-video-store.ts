@@ -31,14 +31,6 @@ type UpdateReturningQuery = {
   };
 };
 
-type SelectWhereQuery = {
-  from(table: unknown): {
-    where(condition: unknown): {
-      limit(count: number): Promise<Array<Record<string, unknown>>>;
-    };
-  };
-};
-
 type SelectStatusQuery = {
   from(table: unknown): {
     innerJoin(

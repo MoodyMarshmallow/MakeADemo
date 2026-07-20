@@ -50,7 +50,7 @@ describe("runDraftCompositeReviewLoop", () => {
     const calls: string[] = [];
     let persisted = 0;
     try {
-      const dependencies = loopDependencies([], () => {});
+      const dependencies = loopDependencies(() => {});
       dependencies.repairCapturePathFailure = async (input) => ({
         preparationManifest: input.preparationManifest,
         demoScriptPackage: { ...input.demoScriptPackage, scriptId: "repaired" },
@@ -100,7 +100,7 @@ describe("runDraftCompositeReviewLoop", () => {
     let stageRuns = 0;
     let persisted = 0;
     try {
-      const dependencies = loopDependencies(calls, () => {
+      const dependencies = loopDependencies(() => {
         stageRuns += 1;
       });
       const result = await runDraftCompositeReviewLoop(
@@ -222,8 +222,7 @@ function loopInput(
   return {
     browserUrl: "https://preview.example.test/",
     dependencies:
-      overrides.dependencies ??
-      loopDependencies([], () => succeededPreparedDemo()),
+      overrides.dependencies ?? loopDependencies(() => succeededPreparedDemo()),
     input: {
       demoBrief: { keyProductFeatures: ["article feed"] },
       normalizedSupportingDocuments: [],
@@ -246,7 +245,6 @@ function loopInput(
 }
 
 function loopDependencies(
-  calls: string[],
   onPrepare: () => void,
 ): PipelineOrchestratorDependencies {
   return {

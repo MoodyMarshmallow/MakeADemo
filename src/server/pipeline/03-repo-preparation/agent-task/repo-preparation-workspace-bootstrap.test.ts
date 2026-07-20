@@ -1,12 +1,4 @@
-import {
-  cp,
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -174,18 +166,4 @@ async function readAllGitText(directory: string): Promise<string> {
   return values.join("\n");
 }
 
-async function listRelativeFiles(directory: string): Promise<string[]> {
-  const entries = await readdir(directory, {
-    recursive: true,
-    withFileTypes: true,
-  });
-  return entries
-    .filter((entry) => entry.isFile())
-    .map(
-      (entry) =>
-        `${entry.parentPath.slice(directory.length + 1)}/${entry.name}`,
-    )
-    .map((path) => path.replace(/^\//, ""))
-    .sort();
-}
 import { execFile } from "node:child_process";

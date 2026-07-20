@@ -305,79 +305,6 @@ export function canContinueFromRepoStep(
   return repoInput.trim().startsWith("https://github.com/");
 }
 
-export function answerCurrentPrompt(
-  draft: ContextGatheringDraft,
-  answer: string,
-  options: Clock = {},
-): ContextGatheringDraft {
-  const currentPrompt = currentAssistantPrompt(draft);
-  if (currentPrompt.id === "demo-duration") {
-    const seconds = Number.parseInt(answer, 10);
-    return selectDemoDuration(draft, seconds, options);
-  }
-
-  const now = readNow(options);
-  const nextDraft = applyTextAnswer(draft, currentPrompt.id, answer.trim());
-  const nextPrompt =
-    prompts[prompts.findIndex((prompt) => prompt.id === currentPrompt.id) + 1];
-
-  return {
-    ...nextDraft,
-    contextTranscript: [
-      ...nextDraft.contextTranscript,
-      {
-        id: `user-${currentPrompt.id}-${nextDraft.contextTranscript.length}`,
-        promptId: currentPrompt.id,
-        role: "user",
-        text: answer.trim(),
-        timestamp: now,
-      },
-      ...(nextPrompt === undefined
-        ? []
-        : [
-            {
-              id: `assistant-${nextPrompt.id}-${nextDraft.contextTranscript.length + 1}`,
-              promptId: nextPrompt.id,
-              role: "assistant" as const,
-              text: nextPrompt.text,
-              timestamp: now,
-            },
-          ]),
-    ],
-  };
-}
-
-export function selectDemoDuration(
-  draft: ContextGatheringDraft,
-  seconds: number,
-  options: Clock = {},
-): ContextGatheringDraft {
-  if (!Number.isFinite(seconds) || seconds < 30 || seconds > 180) {
-    throw new Error("Demo duration must be between 30 seconds and 3 minutes");
-  }
-
-  const now = readNow(options);
-
-  return {
-    ...draft,
-    chatStep: "details",
-    contextTranscript: [
-      ...draft.contextTranscript,
-      {
-        id: `user-demo-duration-${draft.contextTranscript.length}`,
-        promptId: "demo-duration",
-        role: "user",
-        text: formatDuration(seconds),
-        timestamp: now,
-      },
-    ],
-    structuredContext: {
-      ...draft.structuredContext,
-      requestedDurationSeconds: seconds,
-    },
-  };
-}
-
 export function rejectUnsupportedSupportingFile(file: BrowserFileLike): void {
   if (file.type.startsWith("image/") || file.type.startsWith("video/")) {
     throw new Error("Supporting Documents cannot be videos or pictures");
@@ -418,56 +345,6 @@ export function removePendingSupportingFile<
   return current.filter((file) => file.id !== fileId);
 }
 
-function applyTextAnswer(
-  draft: ContextGatheringDraft,
-  promptId: ChatPromptId,
-  answer: string,
-): ContextGatheringDraft {
-  if (promptId === "name-email") {
-    const contact = parseContact(answer);
-    return { ...draft, contact };
-  }
-
-  if (promptId === "product-summary") {
-    return {
-      ...draft,
-      structuredContext: { ...draft.structuredContext, productSummary: answer },
-    };
-  }
-
-  if (promptId === "target-users") {
-    return {
-      ...draft,
-      structuredContext: { ...draft.structuredContext, targetUsers: answer },
-    };
-  }
-
-  if (promptId === "important-features") {
-    return {
-      ...draft,
-      structuredContext: {
-        ...draft.structuredContext,
-        importantFeatures: answer,
-      },
-    };
-  }
-
-  return draft;
-}
-
-function currentAssistantPrompt(draft: ContextGatheringDraft) {
-  const current = findLastPromptMessage(draft);
-
-  if (!current) {
-    return prompts[0] as (typeof prompts)[number];
-  }
-
-  return {
-    id: current.promptId,
-    text: current.text,
-  };
-}
-
 function readPrompt(promptId: ChatPromptId) {
   const prompt = prompts.find((item) => item.id === promptId);
   if (!prompt) {
@@ -475,27 +352,6 @@ function readPrompt(promptId: ChatPromptId) {
   }
 
   return prompt;
-}
-
-function findLastPromptMessage(draft: ContextGatheringDraft) {
-  for (let index = draft.contextTranscript.length - 1; index >= 0; index -= 1) {
-    const message = draft.contextTranscript[index];
-    if (message?.role === "assistant") {
-      return message;
-    }
-  }
-
-  return undefined;
-}
-
-function parseContact(answer: string) {
-  const email = /[^\s,]+@[^\s,]+\.[^\s,]+/.exec(answer)?.[0] ?? "";
-  const name = answer.replace(email, "").replaceAll(",", "").trim();
-
-  return {
-    email,
-    name,
-  };
 }
 
 function readNow(options: Clock) {

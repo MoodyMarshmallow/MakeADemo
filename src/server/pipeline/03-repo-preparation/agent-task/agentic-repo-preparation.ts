@@ -52,9 +52,6 @@ import {
 } from "./tools/repo-preparation-tool-protocol";
 
 const minimumBackendToolBudgetMs = 100;
-const cloneFailureOutputMaxLength = 1_500;
-const cloneFailureOutputChannelMaxLength = 750;
-const cloneFailureDiagnosticValueMaxLength = 500;
 const defaultInactivityTimeoutMs = 600_000;
 const defaultHardTimeoutMs = 1_800_000;
 const validationRepairAttemptLimit = 8;
@@ -816,24 +813,6 @@ async function writePreparationSandboxLog(
   }
 }
 
-async function writePreparationSandboxLogDurable(
-  logger: PipelineEventLogger,
-  workspace: PreparationWorkspace,
-  event: Record<string, unknown>,
-): Promise<void> {
-  const eventName =
-    typeof event.event === "string" ? event.event : "repo-preparation.debug";
-  try {
-    await workspace.writeSandboxLog?.({
-      ...event,
-      event: eventName,
-      stage: "repo-preparation",
-    });
-  } catch (error) {
-    warnPreparationSandboxLogWriteFailed(logger, eventName, error);
-  }
-}
-
 function warnPreparationSandboxLogWriteFailed(
   logger: PipelineEventLogger,
   eventName: string,
@@ -953,14 +932,6 @@ function readProviderAuthFailure(
     : undefined;
 }
 
-function tryParseJson(text: string): unknown | undefined {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-}
-
 function agentTaskFailureResult(
   message = "Agent task failed.",
 ): RepoPreparationResult {
@@ -1005,8 +976,4 @@ function createValidationHandoffFailure(
 
 function readErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }

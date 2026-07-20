@@ -538,10 +538,6 @@ function collectLogs(result: { stderr: string; stdout: string }): string[] {
   return [result.stdout, result.stderr].filter((line) => line.length > 0);
 }
 
-function createStartDemoCommand(demoCommand: string): string {
-  return `sh -lc ${shellQuote(createStartDemoScript(demoCommand))}`;
-}
-
 export function createStartDemoScript(
   demoCommand: string,
   workspacePath = "/workspace",

@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  SubmittedCodeToolchainResolutionError,
-  resolveSubmittedCodeToolchain,
-} from "./submitted-code-toolchain.schema";
+import { resolveSubmittedCodeToolchain } from "./submitted-code-toolchain.schema";
 
 describe("resolveSubmittedCodeToolchain", () => {
   it("resolves Ghost's exact Node and Corepack-hashed pnpm evidence", () => {

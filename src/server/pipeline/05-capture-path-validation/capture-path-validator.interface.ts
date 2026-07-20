@@ -30,15 +30,3 @@ export type CapturePathValidationResult = {
   stdoutPath?: string;
   warnings: string[];
 };
-
-/**
- * Validates that a Demo Script candidate's generated capture path can run against
- * the prepared app under Runtime Network Lockdown. Implementations must run
- * project-level checks before generated Browser Actions, produce structured
- * failure evidence, and must not produce final Scene footage.
- */
-interface CapturePathValidator {
-  validate(
-    input: CapturePathValidationInput,
-  ): Promise<CapturePathValidationResult>;
-}

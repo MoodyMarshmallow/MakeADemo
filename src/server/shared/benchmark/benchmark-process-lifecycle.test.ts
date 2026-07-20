@@ -14,7 +14,6 @@ describe("benchmark process lifecycle", () => {
     const controller = createBenchmarkProcessController();
     const signals: string[] = [];
     let releaseFirst!: () => void;
-    let releaseSecond!: () => void;
     const unregisterFirst = controller.register(
       () =>
         new Promise<void>((resolve) => {

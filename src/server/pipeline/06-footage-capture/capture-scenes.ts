@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { PreparationWorkspaceHandle } from "../03-repo-preparation/preparation-workspace-runner";
 import { assertDemoScriptCaptureSdkContract } from "./capture-sdk-contract";
-import { type DemoScript, parseDemoScript } from "./demo-script.schema";
+import { parseDemoScript } from "./demo-script.schema";
 import { PreparedWorkspacePlaywrightSceneRecorder } from "./playwright-scene-recorder";
 import type { SceneClipTrimLogger } from "./scene-clip-trimmer";
 import type { SceneRecorder } from "./scene-recorder.interface";

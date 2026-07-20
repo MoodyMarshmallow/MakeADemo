@@ -2641,13 +2641,3 @@ function deferred<T>() {
 function countOccurrences(text: string, needle: string): number {
   return text.split(needle).length - 1;
 }
-
-async function waitForCall(calls: unknown[], key: string): Promise<void> {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    if (calls.some((call) => key in Object(call))) {
-      return;
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-}

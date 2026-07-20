@@ -1958,23 +1958,6 @@ function fakeWorkspace(
   };
 }
 
-function supportedPnpmMetadata(): unknown {
-  return {
-    candidates: [
-      {
-        files: {
-          "package.json": JSON.stringify({
-            engines: { node: "22" },
-            packageManager: "pnpm@11.13.0",
-          }),
-          "pnpm-lock.yaml": "",
-        },
-        projectRoot: ".",
-      },
-    ],
-  };
-}
-
 function providerInvalidApiKeyFailure(
   receivedCredential: string,
 ): AgentTaskRunResult {

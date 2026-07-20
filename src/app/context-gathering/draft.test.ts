@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  answerCurrentPrompt,
   canContinueFromRepoStep,
   collectIntakeDetails,
   connectGitHubInstallation,
@@ -9,7 +8,6 @@ import {
   createInitialContextGatheringDraft,
   rejectUnsupportedSupportingFile,
   removePendingSupportingFile,
-  selectDemoDuration,
   selectRepositoryForDemo,
   setRepoDetails,
   stagePendingSupportingFiles,
@@ -17,56 +15,6 @@ import {
 } from "./draft";
 
 describe("Context Gathering draft", () => {
-  it("collects chat answers into transcript and structured context", () => {
-    let draft = createInitialContextGatheringDraft({
-      now: () => "2026-06-07T17:00:00.000Z",
-    });
-
-    draft = answerCurrentPrompt(draft, "Anqi Qu, anqi@example.com", {
-      now: () => "2026-06-07T17:01:00.000Z",
-    });
-    draft = answerCurrentPrompt(draft, "Owlet turns apps into demo videos.", {
-      now: () => "2026-06-07T17:02:00.000Z",
-    });
-    draft = answerCurrentPrompt(draft, "Founders and hackathon builders.", {
-      now: () => "2026-06-07T17:03:00.000Z",
-    });
-    draft = answerCurrentPrompt(
-      draft,
-      "Repo validation and script generation.",
-      {
-        now: () => "2026-06-07T17:04:00.000Z",
-      },
-    );
-    draft = selectDemoDuration(draft, 120, {
-      now: () => "2026-06-07T17:05:00.000Z",
-    });
-
-    expect(draft.contact).toEqual({
-      email: "anqi@example.com",
-      name: "Anqi Qu",
-    });
-    expect(draft.structuredContext).toEqual({
-      importantFeatures: "Repo validation and script generation.",
-      productSummary: "Owlet turns apps into demo videos.",
-      requestedDurationSeconds: 120,
-      targetUsers: "Founders and hackathon builders.",
-    });
-    expect(draft.chatStep).toBe("details");
-    expect(draft.contextTranscript.at(-1)?.text).toBe("2 minutes");
-  });
-
-  it("keeps demo duration between 30 seconds and 3 minutes", () => {
-    const draft = createInitialContextGatheringDraft();
-
-    expect(() => selectDemoDuration(draft, 10)).toThrow(
-      "Demo duration must be between 30 seconds and 3 minutes",
-    );
-    expect(() => selectDemoDuration(draft, 240)).toThrow(
-      "Demo duration must be between 30 seconds and 3 minutes",
-    );
-  });
-
   it("collects the combined intake form into structured context and transcript", () => {
     const draft = setRepoDetails(createInitialContextGatheringDraft(), {
       repoUrl: "https://github.com/example/app",
@@ -146,6 +94,42 @@ describe("Context Gathering draft", () => {
       "How long do you want the demo video to be? Choose between 30s-3min.",
       "1 minute",
     ]);
+  });
+
+  it("rejects a demo duration below 30 seconds", () => {
+    const draft = setRepoDetails(createInitialContextGatheringDraft(), {
+      repoUrl: "https://github.com/example/app",
+      repoVisibility: "public",
+    });
+
+    expect(() =>
+      collectIntakeDetails(draft, {
+        email: "founder@example.com",
+        importantFeatures: "",
+        name: "Anqi",
+        productSummary: "",
+        requestedDurationSeconds: 29,
+        targetUsers: "",
+      }),
+    ).toThrow("Demo duration must be between 30 seconds and 3 minutes");
+  });
+
+  it("rejects a demo duration above 180 seconds", () => {
+    const draft = setRepoDetails(createInitialContextGatheringDraft(), {
+      repoUrl: "https://github.com/example/app",
+      repoVisibility: "public",
+    });
+
+    expect(() =>
+      collectIntakeDetails(draft, {
+        email: "founder@example.com",
+        importantFeatures: "",
+        name: "Anqi",
+        productSummary: "",
+        requestedDurationSeconds: 181,
+        targetUsers: "",
+      }),
+    ).toThrow("Demo duration must be between 30 seconds and 3 minutes");
   });
 
   it("moves collected Project Intake to submitting before the API returns", () => {

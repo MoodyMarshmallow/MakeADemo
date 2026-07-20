@@ -13,13 +13,11 @@ import type {
   AgentSessionRunInput,
   AgentSessionRunResult,
   AgentSessionRunner,
-  AgentToolDefinition,
 } from "../agent-session-runner.interface";
 import { AgentSessionTimeoutError } from "../agent-session-timeout";
 import { universalAgentSystemPrompt } from "../prompts/universal-agent-system-prompt";
 import { createContext7ToolDefinitions } from "../tools/context7-tools";
 import { createRemoteCodingToolDefinitions } from "../tools/remote-workspace-tools";
-import { createPiStageToolDefinitions } from "./pi-stage-tools";
 import {
   parsePiStructuredOutput,
   readPiAssistantText,
@@ -32,6 +30,7 @@ import {
   runWithPiActivityTimeout,
 } from "./pi-meaningful-activity-timeout";
 import { createPiResourceLoader } from "./pi-resource-loader";
+import { createPiStageToolDefinitions } from "./pi-stage-tools";
 
 const defaultCwd = "/workspace";
 const defaultAgentDirectory = "/tmp/makeademo/pi-agent";

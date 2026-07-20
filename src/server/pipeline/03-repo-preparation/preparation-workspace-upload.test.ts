@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { uploadPreparedWorkspaceFiles } from "./preparation-workspace-upload";
+import { uploadSubmittedCodeWorkspaceFiles } from "./preparation-workspace-upload";
 import type { PreparationWorkspace } from "./preparation-workspace.interface";
 
-describe("uploadPreparedWorkspaceFiles", () => {
-  it("uploads screened workspace files into the preparation workspace", async () => {
+describe("uploadSubmittedCodeWorkspaceFiles", () => {
+  it("uploads submitted-code files into the preparation workspace", async () => {
     const uploaded: Array<{ destinationPath: string; sourcePath: string }> = [];
     const workspace: PreparationWorkspace = {
       async execute() {
@@ -19,7 +19,7 @@ describe("uploadPreparedWorkspaceFiles", () => {
       },
     };
 
-    await uploadPreparedWorkspaceFiles({
+    await uploadSubmittedCodeWorkspaceFiles({
       files: [
         {
           destinationPath: "/workspace/package.json",

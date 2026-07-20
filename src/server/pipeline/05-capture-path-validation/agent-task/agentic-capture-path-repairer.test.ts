@@ -484,7 +484,7 @@ function workspaceHandle(
       }
       return { exitCode: 0, stderr: "", stdout: "generated" };
     },
-    async execute(command, commandOptions) {
+    async execute(command) {
       if (command.includes("preparation-manifest.json")) {
         const transientSocketClosures =
           helperOptions.transientSocketClosureArtifactReads;

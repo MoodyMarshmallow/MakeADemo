@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { PreparationWorkspaceHandle } from "../03-repo-preparation/preparation-workspace-runner";
 import { uploadSubmittedCodeWorkspaceFiles } from "../03-repo-preparation/preparation-workspace-upload";

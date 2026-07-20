@@ -5,8 +5,6 @@ import {
   createPipelineEventLogger,
 } from "../../../shared/logging/pipeline-event-logger";
 import { createRepoPreparationAgentWorkspace } from "../../03-repo-preparation/agent-task/repo-preparation-agent-workspace";
-import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
-import type { PreparationWorkspace } from "../../03-repo-preparation/preparation-workspace.interface";
 import { validateDemoScriptCandidate } from "../demo-script-candidate-validator";
 import type { DemoScriptPackage } from "../demo-script-package";
 import type {
