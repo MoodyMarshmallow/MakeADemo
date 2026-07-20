@@ -4,8 +4,8 @@ MakeADemo will provision and operate Daytona workspaces through a backend Extern
 
 The seam should hide Daytona-specific SDK or API calls from pipeline orchestration. Repo Preparation should depend on product-level workspace operations such as create, execute, stream logs, update network policy, and destroy.
 
-The Daytona/OpenCode run should still produce the existing Preparation Manifest, Video Script Package, validation evidence, and workspace diff artifact. Daytona is the execution substrate, not a replacement for pipeline output contracts.
+Agent Harness runs backed by Daytona should still produce the existing Preparation Manifest, Demo Script, validation evidence, and workspace diff artifact. Daytona is the execution substrate, not a replacement for pipeline output contracts.
 
-MakeADemo should persist redacted audit artifacts from each run: the agent transcript, command logs, validation evidence, network enable and disable events, and the final diff and Preparation Manifest. Secrets must be redacted before persistence.
+MakeADemo should persist only bounded provider-neutral lifecycle metadata from each run: stage, provider/model identifiers, output lengths, activity kinds, tool names, and timestamps. Assistant text, user prompts, tool arguments and results, secrets, and raw diagnostic contents must not be persisted. Pipeline artifacts such as validation evidence, network-policy events, the final diff, and the Preparation Manifest remain separate product contracts and are not agent transcripts.
 
 The backend seam should enforce bounded timeouts for post-provisioning agent work, including dependency installation, demo build, manifest generation, script generation, and repair attempts. If a timeout fires, MakeADemo should close outbound network access and tear down the Daytona workspace as part of cleanup.

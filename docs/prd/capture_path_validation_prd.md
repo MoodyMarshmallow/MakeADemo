@@ -12,7 +12,7 @@ MakeADemo needs a single non-agent validation gate that proves the prepared app 
 
 MakeADemo will replace standalone pre-script Project Validation in the main script-driven flow with Capture Path Validation. Capture Path Validation is a deterministic dry-run validation stage that runs project-level checks and then runs the generated Browser Actions or Capture Scripts against the prepared app under Runtime Network Lockdown.
 
-Repo Preparation and Script Generation may run through one long-lived OpenCode session with staged backend prompts. The session can prepare the repo, generate the Video Script Package, receive structured Capture Path Validation failures, and repair either the prepared workspace or the Video Script Package. The stage contracts remain separate: Repo Preparation still produces a Preparation Manifest, Script Generation still produces a Video Script Package, and Capture Path Validation remains a backend-owned non-agent gate.
+Repo Preparation and Script Generation may run through one long-lived Agent Session with staged backend prompts. The session can prepare the repo, generate the Video Script Package, receive structured Capture Path Validation failures, and repair either the prepared workspace or the Video Script Package. The stage contracts remain separate: Repo Preparation still produces a Preparation Manifest, Script Generation still produces a Video Script Package, and Capture Path Validation remains a backend-owned non-agent gate.
 
 Capture Path Validation will be a dry run. It should skip presentation-oriented behavior such as human-like typing, visible cursor movement, and recording-specific pauses so validation stays fast and deterministic. Footage Capture will run after Capture Path Validation succeeds and will start from fresh deterministic app state, using the accepted Video Script Package to record final Scenes with the slower presentation-oriented browser behavior.
 
@@ -38,7 +38,7 @@ If Capture Path Validation fails, the backend returns structured failure feedbac
 16. As a MakeADemo operator, I want one non-agent validation gate for script-driven runs, so that trust decisions are easier to reason about.
 17. As a MakeADemo operator, I want Capture Path Validation to subsume project-level checks, so that we avoid validating generic app interactivity separately from the real capture path.
 18. As a MakeADemo operator, I want Repo Preparation and Script Generation to remain separate stage contracts, so that artifacts stay durable and auditable.
-19. As a MakeADemo operator, I want one long-lived OpenCode session across Repo Preparation, Script Generation, and repair prompts, so that context is preserved without coordinating multiple agents.
+19. As a MakeADemo operator, I want one long-lived Agent Session across Repo Preparation, Script Generation, and repair prompts, so that context is preserved without coordinating multiple agents.
 20. As a MakeADemo operator, I want the backend validator to remain authoritative, so that agent-written scripts and workspace changes are not trusted without deterministic checks.
 21. As a MakeADemo operator, I want the agent to repair either workspace or script failures, so that both seeded data problems and script interaction problems are addressable.
 22. As a MakeADemo operator, I want every repair retry to rerun all Capture Path Validation checks, so that a workspace or script repair cannot bypass project-level safety checks.
@@ -71,13 +71,13 @@ If Capture Path Validation fails, the backend returns structured failure feedbac
 - Capture Path Validation should run under Runtime Network Lockdown.
 - Capture Path Validation should run in a Sandbox rather than from the backend host.
 - Capture Path Validation should be backend-owned and deterministic; LLM calls should not decide whether validation succeeds.
-- Repo Preparation and Script Generation may use one long-lived OpenCode session with staged backend prompts.
-- Repo Preparation and Script Generation should remain separate stage contracts even when they share an OpenCode session.
+- Repo Preparation and Script Generation may use one long-lived Agent Session with staged backend prompts.
+- Repo Preparation and Script Generation should remain separate stage contracts even when they share an Agent Session.
 - Repo Preparation should still produce a Preparation Manifest.
 - Script Generation should still produce a Video Script Package.
 - Capture Path Validation should produce validation evidence and an accepted or failed result.
 - The backend validator remains authoritative over whether a Video Script Package is accepted for Footage Capture.
-- If Capture Path Validation fails, the backend may send structured failure feedback to the same OpenCode session.
+- If Capture Path Validation fails, the backend may send structured failure feedback to the same Agent Session.
 - The agent may repair the prepared workspace, the Video Script Package, or both after Capture Path Validation failure.
 - Every repair attempt must rerun the complete Capture Path Validation stage from the beginning.
 - The repair budget should be configurable through `MAKEADEMO_CAPTURE_PATH_REPAIR_ATTEMPTS`.

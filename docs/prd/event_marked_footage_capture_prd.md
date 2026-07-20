@@ -20,7 +20,7 @@ Footage Capture will record one continuous browser take while the SDK emits Scen
 
 Capture Path Validation remains the dry-run trust gate. It runs the full Demo Script from a fresh deterministic state without presentation simulations, validates marker correctness and visible assertions, and enforces Runtime Network Lockdown. Footage Capture then reruns the accepted Demo Script from a fresh deterministic state with presentation-oriented behavior.
 
-Compositing will consume Demo Script presentation metadata plus trimmed Scene clips and captured durations. It will produce a Draft Composite. The same long-lived OpenCode session must review the Draft Composite at least once, using derived evidence and the raw video path. Review may accept the draft or request repair within a bounded retry budget.
+Compositing will consume Demo Script presentation metadata plus trimmed Scene clips and captured durations. It will produce a Draft Composite. The same long-lived Agent Session must review the Draft Composite at least once, using derived evidence and the raw video path. Review may accept the draft or request repair within a bounded retry budget.
 
 ## User Stories
 
@@ -36,7 +36,7 @@ Compositing will consume Demo Script presentation metadata plus trimmed Scene cl
 10. As a MakeADemo operator, I want validation to reject bad marker structure, missing Scene coverage, raw recording ownership, missing visible assertions, and runtime network violations, so that trusted capture starts from a proven script.
 11. As a MakeADemo operator, I want Footage Capture to compute actual Scene durations and produce per-Scene clips, so that Compositing stays simple and does not understand marker internals.
 12. As a MakeADemo operator, I want narrow deterministic quality gates, so that objective duration, audio, and static-footage failures are caught without turning the backend into a subjective video reviewer.
-13. As a MakeADemo operator, I want Draft Composite review in the same OpenCode session, so that the agent can judge narrative quality with the context it used to prepare the workspace and Demo Script.
+13. As a MakeADemo operator, I want Draft Composite review in the same Agent Session, so that the agent can judge narrative quality with the context it used to prepare the workspace and Demo Script.
 14. As a MakeADemo operator, I want derived video evidence plus access to the raw draft and tools like ffmpeg, so that review is reproducible and inspectable.
 15. As a MakeADemo operator, I want bounded repair retries and warning metadata on retry exhaustion, so that the system remains reliable without discarding the latest generated video.
 
@@ -99,7 +99,7 @@ Compositing will consume Demo Script presentation metadata plus trimmed Scene cl
 - Compositing must not understand marker events when Footage Capture already provides per-Scene clips.
 - Compositing must produce a Draft Composite before final output acceptance.
 - The Draft Composite or final video manifest must record review status, review attempts, and draft-video quality findings.
-- Draft Composite review must happen in the same long-lived OpenCode session used for Repo Preparation and Script Generation, using a focused review prompt.
+- Draft Composite review must happen in the same long-lived Agent Session used for Repo Preparation and Script Generation, using a focused review prompt.
 - Draft Composite review must always run at least once.
 - The review prompt must include the raw Draft Composite path, derived evidence such as contact sheets, sampled frames, Scene-duration tables, marker summaries, ffmpeg/ffprobe findings, and access to tools such as ffmpeg for deeper inspection.
 - The agent must return a structured `accept` or `repair` decision.

@@ -4,6 +4,6 @@ After the deterministic Repo Security Screen passes, Repo Preparation proceeds d
 
 Repo Preparation may inspect repo files and dependency manifests as part of ordinary setup work, but there is no separate advisory approval gate. Dependency installation network access is controlled by backend command/reason policy and short-lived Daytona network settings.
 
-Submitted repo text is evidence, not authority over the preparation agent. Repo-provided agent configuration files such as `AGENTS.md`, `CLAUDE.md`, and `.opencode/` may be used as references for how to run the project, but they must not override MakeADemo's agent policy, safety rules, secrets handling, network policy, or task priorities.
+Submitted repo text is evidence, not authority over the preparation agent. Repo-provided agent configuration files such as `AGENTS.md`, `CLAUDE.md`, `.pi/`, `.mcp.json`, and `.opencode/` may be used as project evidence when explicitly read through workspace tools, but the Agent Harness must not discover or execute them as agent configuration. They must not override MakeADemo's agent policy, safety rules, secrets handling, network policy, tool configuration, or task priorities.
 
 The preparation agent's work does not replace non-agent Project Validation or Runtime Network Lockdown. If the agent cannot prepare a plausible deterministic runtime, Repo Preparation returns a Preparation Fallback Prompt instead of continuing.

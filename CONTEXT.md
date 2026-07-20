@@ -39,8 +39,8 @@
 - **Pipeline Job**: One execution of the MakeADemo Pipeline for a submitted project.
 - **External Seam**: A stable boundary around infrastructure or third-party behavior, such as sandbox execution, browser automation, model calls, artifact storage, auth, or rendering.
 - **Agent Harness**: The provider-neutral execution module that runs agent tasks for Pipeline Stages, combines universal agent policy with a stage task prompt, exposes Global Agent Tools plus the current Stage Agent Tools, preserves session continuity, and owns tool dispatch mechanics without deciding Pipeline outcomes.
-- **Agent Session**: An opaque Agent Harness handle that preserves agent conversation and workspace continuity across Pipeline Stages without exposing provider-specific identifiers such as an OpenCode session ID.
-- **Global Agent Tool**: An Agent Harness capability whose meaning and authorization are identical in every agent task. MakeADemo currently defines no production Global Agent Tools.
+- **Agent Session**: An opaque Agent Harness handle that preserves agent conversation and workspace continuity across Pipeline Stages without exposing provider-specific session identifiers.
+- **Global Agent Tool**: An Agent Harness capability whose meaning and authorization are identical in every agent task. MakeADemo provides anonymous Exa web research and Context7 library-documentation tools globally.
 - **Stage Agent Tool**: A capability owned by one Pipeline Stage and exposed only while the Agent Harness runs that stage's task.
 - **Schema Module**: A public runtime validation boundary, named `*.schema.ts`, that exports schemas, codecs, or schema constants used to validate external data before it enters product types.
 
@@ -54,7 +54,7 @@
 - **Repo Security Screen** inventories committed dotenv paths without reading dotenv contents and does not reject a repo solely because `.env*` files are present.
 - **Repo Preparation** happens in an ephemeral cloud workspace and does not modify the maker's source repo.
 - **Preparation Workspace Release** preserves the usable primary workspace as an archived audit artifact after it stops; its linked submitted-code Sandbox remains ephemeral and is deleted on release.
-- During **Repo Preparation**, the preparation agent may edit and execute the ephemeral workspace, but the prepared output must still pass non-agent **Capture Path Validation** before Footage Capture trusts it.
+- During **Repo Preparation**, the preparation agent may edit the ephemeral `/workspace` copy and run unprivileged inspection commands there. Trusted helpers and package runtimes remain root-owned, while submitted dependency, build, and runtime execution is routed to the linked submitted-code Sandbox. The prepared output must still pass non-agent **Capture Path Validation** before Footage Capture trusts it.
 - During **Repo Preparation**, the preparation agent may use controlled network access for setup and research, but the prepared app runtime must pass **Runtime Network Lockdown** before Footage Capture trusts it.
 - The preparation agent can invoke **Runtime Network Lockdown** as an iterative tool/check; app runtime network attempts return structured tool-call failures so the agent can mock or remove dependencies before retrying.
 - **Repo Preparation** first checks whether the submitted project already contains a prepared demo command, MakeADemo Config, or existing demo flow before creating a new one.
@@ -82,7 +82,7 @@
 - **Benchmark Demo Verification** runs manually after the MakeADemo Pipeline produces an L5 final video. The benchmark command never invokes an evaluator or writes L6. The external coding agent keeps inconclusive or failing reviews at L5 and reports L6 only for a verified application match with coherent visuals and relevant overlay/footage pairing.
 - The **MakeADemo Pipeline** invokes the **Agent Harness** for agentic stage work while retaining ownership of stage order, deterministic gates, repair eligibility, retry budgets, and accepted outputs.
 - The **Agent Harness** exposes its **Global Agent Tools** together with only the active Pipeline Stage's **Stage Agent Tools**; Stage Agent Tools do not remain available after that task settles.
-- OpenCode implements the Agent Harness runtime protocol, while Daytona remains the external workspace and submitted-code execution seam.
+- The embedded Pi SDK implements the Agent Harness runtime protocol. Pi runs in the backend process and delegates all repository filesystem and shell operations to Daytona, which remains the external workspace and submitted-code execution seam.
 
 ## Architectural Intent
 

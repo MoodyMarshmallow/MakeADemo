@@ -110,11 +110,9 @@ DAYTONA_API_KEY=...
 OPENAI_API_KEY=sk-...
 ```
 
-MakeADemo creates or updates a Daytona secret from `OPENAI_API_KEY` before
-creating Repo Preparation sandboxes. The sandbox receives that secret as the
-`OPENAI_API_KEY` placeholder, so OpenCode can call OpenAI without receiving the
-plaintext key in its process env. Set `MAKEADEMO_OPENAI_DAYTONA_SECRET_NAME` only
-if you need to override the default Daytona secret name, `makeademo-openai`.
+The embedded Pi Agent Harness reads `OPENAI_API_KEY` in the backend process and
+holds it in memory. It is not copied into Repo Preparation or submitted-code
+Daytona workspaces.
 
 Optional email settings:
 
@@ -179,8 +177,8 @@ The primary local pipeline command runs from repository intake through final vid
 
 1. Context Gathering
 2. Repo Security Screen
-3. Repo Preparation with OpenCode
-4. Script Generation with the same OpenCode session
+3. Repo Preparation with the Agent Harness
+4. Script Generation with the same Agent Session
 5. Capture Path Validation
 6. Footage Capture
 7. Compositing and final output
@@ -208,16 +206,16 @@ Optional flags:
 --doc ./optional-notes.md
 ```
 
-Pipeline runs require `DAYTONA_API_KEY` and `OPENAI_API_KEY`. Repo Security Screen, Repo Preparation, Script Generation, and Capture Path Validation run through Daytona-backed sandboxes using the backend Daytona seam. Repo Preparation runs OpenCode inside Daytona with provider credentials supplied by Daytona sandbox secrets and streams concise progress to the terminal. After preparation succeeds, Script Generation resumes the same OpenCode session so the agent keeps the repo context it discovered while emitting only the capture-ready script artifact.
+Pipeline runs require `DAYTONA_API_KEY` and `OPENAI_API_KEY`. The embedded Pi Agent Harness runs in the backend and delegates repository shell and filesystem tools to Daytona through the workspace seam. Its global tools provide anonymous Exa web research and Context7 library documentation; Pipeline Stage tools are exposed only during their owning stage. After preparation succeeds, Script Generation resumes the same opaque Agent Session so the model keeps the repo context it discovered while emitting only the capture-ready script artifact. Provider credentials remain in the backend process.
 
 Each run writes a local run directory under `--output-root`:
 
 ```text
 .makeademo-full-pipeline-runs/full-pipeline-<timestamp>/
   full-pipeline-result.json
-  opencode-raw-output.jsonl
+  agent-audit-log.jsonl
   pipeline-log.jsonl
-  script-generation-opencode-raw-output.jsonl
+  script-generation-agent-audit-log.jsonl
   video-script-package.json
   capture/capture/capture-manifest.json
   composite/composite/composite-manifest.json
@@ -233,12 +231,12 @@ Generated script: <path-to-video-script-package.json>
 Capture manifest: <path-to-capture-manifest.json>
 Composite manifest: <path-to-composite-manifest.json>
 Log: <path-to-pipeline-log.jsonl>
-Raw OpenCode log: <path-to-opencode-raw-output.jsonl>
-Script Generation raw OpenCode log: <path-to-script-generation-opencode-raw-output.jsonl>
+Agent audit log: <path-to-agent-audit-log.jsonl>
+Script Generation audit log: <path-to-script-generation-agent-audit-log.jsonl>
 Result JSON: <path-to-full-pipeline-result.json>
 ```
 
-`pipeline-log.jsonl` is the structured high-level pipeline event log. `opencode-raw-output.jsonl` is intentionally more verbose than terminal output: it records raw OpenCode stdout/stderr lines with timestamps and parsed tool metadata when available. `script-generation-opencode-raw-output.jsonl` contains the Script Generation OpenCode turn separately for debugging script quality and repair loops.
+`pipeline-log.jsonl` is the structured high-level pipeline event log. `agent-audit-log.jsonl` records bounded provider-neutral Agent Harness lifecycle metadata with timestamps: task stage, provider/model identifiers, output lengths, activity kinds, and tool names. It intentionally excludes assistant text, reasoning, tool arguments, and diagnostic contents. `script-generation-agent-audit-log.jsonl` contains the Script Generation and later shared-agent lifecycle evidence separately for debugging script quality and repair loops.
 
 If the pipeline fails, `full-pipeline-result.json` is still written with failure status, failure details, and available log paths.
 

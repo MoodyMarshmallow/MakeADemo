@@ -48,9 +48,9 @@ DAYTONA_API_KEY=...
 OPENAI_API_KEY=...
 ```
 
-MakeADemo creates or updates a Daytona secret from `OPENAI_API_KEY` before
-creating Repo Preparation sandboxes. The benchmarked OpenCode process receives a
-Daytona secret placeholder, not the plaintext local value.
+The embedded Pi Agent Harness reads `OPENAI_API_KEY` only in the backend
+process. Provider credentials are held in memory and are never copied into the
+Repo Preparation Daytona workspace.
 
 Every benchmark runs the whole MakeADemo Pipeline, from Repo Security Screen
 through Compositing. Repositories, commits, features, provider, and repetition
