@@ -20,6 +20,11 @@ import type {
   DraftCompositeReviewDecision,
   DraftCompositeReviewer,
 } from "../../07-compositing/draft-composite-reviewer.interface";
+import {
+  isPipelineCancellationError,
+  runSettledPipelineOperation,
+  throwIfPipelineDeadlineReached,
+} from "./pipeline-cancellation";
 import type { PipelineJobInput } from "./pipeline-job";
 import { noopPipelineObserver } from "./pipeline-observer";
 import {
@@ -58,8 +63,10 @@ type DraftCompositeReviewLoopOptions = PipelineOrchestratorOptions & {
   evidenceCommandTimeoutMs?: number;
   inspectDraftCompositeEvidence?: (input: {
     captureManifest: CaptureManifest;
+    deadlineAt?: number;
     draftComposite: CompositedVideoManifest;
     demoScript: PreparedDemoResult["demoScript"];
+    signal?: AbortSignal;
   }) => Promise<DraftCompositeEvidence>;
   prepareFreshCaptureState?: (input: {
     attempt: number;
@@ -123,6 +130,10 @@ export async function runDraftCompositeReviewLoop(
     | undefined;
 
   for (let attempt = 1; attempt <= reviewRepairLimit + 1; attempt += 1) {
+    throwIfPipelineDeadlineReached(
+      input.options.signal,
+      input.options.deadlineAt,
+    );
     let phase = "capture";
     try {
       const runSuffix = String(attempt);
@@ -134,13 +145,29 @@ export async function runDraftCompositeReviewLoop(
           "Footage Capture requires a fresh deterministic app-state reset before recording.",
         );
       }
-      const freshState = await input.options.prepareFreshCaptureState?.({
+      const freshStateOperation = input.options.prepareFreshCaptureState?.({
         attempt,
         browserUrl,
         preparedDemo,
       });
+      const freshState =
+        freshStateOperation === undefined
+          ? undefined
+          : await runSettledPipelineOperation({
+              deadlineAt: input.options.deadlineAt,
+              onCancel: async () => {
+                await preparedDemo.preparationWorkspace?.workspace.cancelActiveCommands?.();
+              },
+              operation: freshStateOperation,
+              signal: input.options.signal,
+            });
+      throwIfPipelineDeadlineReached(
+        input.options.signal,
+        input.options.deadlineAt,
+      );
       browserUrl = freshState?.browserUrl ?? browserUrl;
       const captureBaseUrl = preparedDemo.preparationManifest.url;
+      await emitDraftStageProgress(input, "footage-capture", "started");
       await input.log({
         attempt,
         baseUrl: captureBaseUrl,
@@ -154,7 +181,7 @@ export async function runDraftCompositeReviewLoop(
       const captureStartedAt = Date.now();
       let captureManifest: CaptureManifest;
       try {
-        captureManifest = await (
+        const captureOperation = (
           input.options.captureScenes ?? captureScenesFromScript
         )({
           baseUrl: captureBaseUrl,
@@ -168,7 +195,20 @@ export async function runDraftCompositeReviewLoop(
           preparationWorkspace: preparedDemo.preparationWorkspace,
           tempRoot: join(input.runDirectory, "capture"),
         });
+        captureManifest = await runSettledPipelineOperation({
+          deadlineAt: input.options.deadlineAt,
+          onCancel: async () => {
+            await preparedDemo.preparationWorkspace?.workspace.cancelActiveCommands?.();
+          },
+          operation: captureOperation,
+          signal: input.options.signal,
+        });
+        throwIfPipelineDeadlineReached(
+          input.options.signal,
+          input.options.deadlineAt,
+        );
       } catch (error) {
+        await emitDraftStageProgress(input, "footage-capture", "failed");
         await input.log({
           attempt,
           durationMs: elapsedMs(captureStartedAt),
@@ -180,6 +220,7 @@ export async function runDraftCompositeReviewLoop(
         throw error;
       }
       latestCaptureManifest = captureManifest;
+      await emitDraftStageProgress(input, "footage-capture", "succeeded");
       await input.log({
         attempt,
         artifacts: {
@@ -201,6 +242,11 @@ export async function runDraftCompositeReviewLoop(
       });
 
       phase = "composite";
+      throwIfPipelineDeadlineReached(
+        input.options.signal,
+        input.options.deadlineAt,
+      );
+      await emitDraftStageProgress(input, "compositing", "started");
       await input.log({
         attempt,
         captureManifestPath: captureManifest.manifestPath,
@@ -218,6 +264,9 @@ export async function runDraftCompositeReviewLoop(
           input.options.compositeVideo ?? compositeVideoFromScript
         )({
           captureManifestPath: captureManifest.manifestPath,
+          ...(input.options.deadlineAt === undefined
+            ? {}
+            : { deadlineAt: input.options.deadlineAt }),
           outputRoot: join(input.runDirectory, "composite"),
           runId: `composite-${runSuffix}`,
           scriptDirectory: input.runDirectory,
@@ -225,8 +274,16 @@ export async function runDraftCompositeReviewLoop(
           ...(scriptPersistence.scriptPath === undefined
             ? {}
             : { scriptPath: scriptPersistence.scriptPath }),
+          ...(input.options.signal === undefined
+            ? {}
+            : { signal: input.options.signal }),
         });
+        throwIfPipelineDeadlineReached(
+          input.options.signal,
+          input.options.deadlineAt,
+        );
       } catch (error) {
+        await emitDraftStageProgress(input, "compositing", "failed");
         await input.log({
           attempt,
           captureManifestPath: captureManifest.manifestPath,
@@ -239,6 +296,7 @@ export async function runDraftCompositeReviewLoop(
         throw error;
       }
       latestFinalVideo = finalVideo;
+      await emitDraftStageProgress(input, "compositing", "succeeded");
 
       if (candidateNeedsPersistence) {
         scriptPersistence = await input.persistScript(preparedDemo.demoScript);
@@ -271,6 +329,11 @@ export async function runDraftCompositeReviewLoop(
       });
 
       phase = "evidence";
+      throwIfPipelineDeadlineReached(
+        input.options.signal,
+        input.options.deadlineAt,
+      );
+      await emitDraftStageProgress(input, "draft-composite-review", "started");
       const evidenceArtifacts = {
         captureManifestPath: captureManifest.manifestPath,
         compositeManifestPath: finalVideo.manifestPath,
@@ -294,7 +357,12 @@ export async function runDraftCompositeReviewLoop(
           options: input.options,
           demoScript: preparedDemo.demoScript,
         });
+        throwIfPipelineDeadlineReached(
+          input.options.signal,
+          input.options.deadlineAt,
+        );
       } catch (error) {
+        await emitDraftStageProgress(input, "draft-composite-review", "failed");
         await input.log({
           attempt,
           artifacts: evidenceArtifacts,
@@ -333,6 +401,10 @@ export async function runDraftCompositeReviewLoop(
       });
 
       phase = "reviewer";
+      throwIfPipelineDeadlineReached(
+        input.options.signal,
+        input.options.deadlineAt,
+      );
       const reviewerArtifacts = {
         ...evidenceArtifacts,
         ...(captureManifest.rawTakePath === undefined
@@ -351,6 +423,9 @@ export async function runDraftCompositeReviewLoop(
       try {
         agentDecision = await reviewer({
           attempt,
+          ...(input.options.deadlineAt === undefined
+            ? {}
+            : { deadlineAt: input.options.deadlineAt }),
           captureManifest,
           derivedEvidence: {
             contactSheetPaths: draftEvidence.contactSheetPaths,
@@ -379,9 +454,17 @@ export async function runDraftCompositeReviewLoop(
           ...(preparedDemo.preparationWorkspace === undefined
             ? {}
             : { preparationWorkspace: preparedDemo.preparationWorkspace }),
+          ...(input.options.signal === undefined
+            ? {}
+            : { signal: input.options.signal }),
           demoScript: preparedDemo.demoScript,
         });
+        throwIfPipelineDeadlineReached(
+          input.options.signal,
+          input.options.deadlineAt,
+        );
       } catch (error) {
+        await emitDraftStageProgress(input, "draft-composite-review", "failed");
         await input.log({
           attempt,
           artifacts: reviewerArtifacts,
@@ -422,6 +505,11 @@ export async function runDraftCompositeReviewLoop(
           ? { reason: decision.reason, repairScope: decision.repairScope }
           : { reason: decision.reason }),
       });
+      await emitDraftStageProgress(
+        input,
+        "draft-composite-review",
+        "succeeded",
+      );
 
       if (decision.decision === "accept") {
         return {
@@ -461,7 +549,7 @@ export async function runDraftCompositeReviewLoop(
         candidateNeedsPersistence = true;
       } else {
         phase = "repair-revalidation";
-        const repairLifecycle = await runCapturePathValidationAndRepair({
+        const repairOperation = runCapturePathValidationAndRepair({
           ...(preparedDemo.agentSession === undefined
             ? {}
             : { agentSession: preparedDemo.agentSession }),
@@ -470,6 +558,9 @@ export async function runDraftCompositeReviewLoop(
             workspaceId: input.input.workspaceId,
           },
           dependencies: input.dependencies,
+          ...(input.options.deadlineAt === undefined
+            ? {}
+            : { deadlineAt: input.options.deadlineAt }),
           demoScript: preparedDemo.demoScript,
           failure: {
             blockedNetworkAttempts: [],
@@ -484,6 +575,17 @@ export async function runDraftCompositeReviewLoop(
           preparationManifest: preparedDemo.preparationManifest,
           preparationWorkspace: preparedDemo.preparationWorkspace,
           repoUrl: input.input.repoUrl,
+          ...(input.options.signal === undefined
+            ? {}
+            : { signal: input.options.signal }),
+        });
+        const repairLifecycle = await runSettledPipelineOperation({
+          deadlineAt: input.options.deadlineAt,
+          onCancel: async () => {
+            await preparedDemo.preparationWorkspace?.workspace.cancelActiveCommands?.();
+          },
+          operation: repairOperation,
+          signal: input.options.signal,
         });
         if (repairLifecycle.status === "failed") {
           throw new Error(
@@ -501,6 +603,7 @@ export async function runDraftCompositeReviewLoop(
         candidateNeedsPersistence = true;
       }
     } catch (error) {
+      if (isPipelineCancellationError(error)) throw error;
       if (validDraftCheckpoint === undefined) {
         throw error;
       }
@@ -581,15 +684,27 @@ async function readDraftCompositeEvidence(input: {
 }): Promise<DraftCompositeEvidence> {
   const evidence = await input.options.inspectDraftCompositeEvidence?.({
     captureManifest: input.captureManifest,
+    ...(input.options.deadlineAt === undefined
+      ? {}
+      : { deadlineAt: input.options.deadlineAt }),
     draftComposite: input.finalVideo,
     demoScript: input.demoScript,
+    ...(input.options.signal === undefined
+      ? {}
+      : { signal: input.options.signal }),
   });
 
   return (
     evidence ??
     (await inspectDraftCompositeEvidence({
       captureManifest: input.captureManifest,
+      ...(input.options.deadlineAt === undefined
+        ? {}
+        : { deadlineAt: input.options.deadlineAt }),
       draftComposite: input.finalVideo,
+      ...(input.options.signal === undefined
+        ? {}
+        : { signal: input.options.signal }),
       timeoutMs:
         input.options.evidenceCommandTimeoutMs ??
         DEFAULT_EVIDENCE_COMMAND_TIMEOUT_MS,
@@ -617,6 +732,14 @@ function readDraftCompositeReviewAttemptLimit() {
 
 function elapsedMs(startedAt: number) {
   return Math.max(0, Date.now() - startedAt);
+}
+
+async function emitDraftStageProgress(
+  input: DraftCompositeReviewLoopInput,
+  stage: "compositing" | "draft-composite-review" | "footage-capture",
+  status: "failed" | "started" | "succeeded",
+) {
+  await input.options.onProgress?.({ stage, status });
 }
 
 function readErrorMessage(error: unknown) {

@@ -42,6 +42,7 @@ export type BenchmarkRepo = BenchmarkRepoSpec & {
 };
 
 export type BenchmarkPipelineArgsInput = {
+  deadlineAt?: number;
   outputRoot: string;
   repo: BenchmarkRepo;
 };
@@ -68,6 +69,10 @@ export function buildBenchmarkPipelineArgs(input: BenchmarkPipelineArgsInput) {
     "--output-root",
     input.outputRoot,
   ];
+
+  if (input.deadlineAt !== undefined) {
+    args.push("--deadline-at", String(input.deadlineAt));
+  }
 
   args.push(
     "--repo",

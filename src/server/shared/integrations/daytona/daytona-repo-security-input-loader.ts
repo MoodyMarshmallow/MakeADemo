@@ -1,3 +1,7 @@
+import {
+  runSettledPipelineOperation,
+  throwIfPipelineDeadlineReached,
+} from "../../../pipeline/00-orchestration/job/pipeline-cancellation";
 import type { RepoSecurityInput } from "../../../pipeline/02-repo-security-screen/repo-security-screen";
 import { createGitCloneCommand } from "../../../pipeline/02-repo-security-screen/repository-loading/git-clone-command";
 import { runGitCloneWithTransientRetry } from "../../../pipeline/02-repo-security-screen/repository-loading/git-clone-retry";
@@ -29,6 +33,8 @@ export type RepositoryLoadingWorkspaceCommandResult = {
  * the corresponding promise resolves.
  */
 export interface RepositoryLoadingWorkspace {
+  /** Terminates active repository-loading commands and waits for settlement. */
+  cancelActiveCommands?(): Promise<void>;
   execute(
     command: string,
     options?: { timeoutMs?: number },
@@ -100,14 +106,44 @@ async function loadDaytonaRepoSecurityInput(
   input: RepoSecurityInputLoadInput,
   options: DaytonaRepoSecurityInputLoaderOptions,
 ): Promise<RepoSecurityInput> {
+  let activeHandle: RepositoryLoadingWorkspaceHandle | undefined;
+  const operation = loadDaytonaRepoSecurityInputOperation(
+    provider,
+    input,
+    options,
+    (handle) => {
+      activeHandle = handle;
+    },
+  );
+  return await runSettledPipelineOperation({
+    deadlineAt: input.deadlineAt,
+    onCancel: async () => {
+      await activeHandle?.workspace.cancelActiveCommands?.();
+    },
+    operation,
+    signal: input.signal,
+  });
+}
+
+async function loadDaytonaRepoSecurityInputOperation(
+  provider: RepositoryLoadingWorkspaceProvider,
+  input: RepoSecurityInputLoadInput,
+  options: DaytonaRepoSecurityInputLoaderOptions,
+  setActiveHandle: (
+    handle: RepositoryLoadingWorkspaceHandle | undefined,
+  ) => void,
+): Promise<RepoSecurityInput> {
   const cloneWorkspaceRetryDelaysMs =
     options.cloneWorkspaceRetryDelaysMs ?? defaultCloneWorkspaceRetryDelaysMs;
 
   for (let attempt = 0; ; attempt += 1) {
+    throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
     const handle = await provider.create();
+    setActiveHandle(handle);
     const cloneStartedAt = Date.now();
 
     try {
+      throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
       await logCloneEvent(options.logger, "started", input.repoUrl);
       await handle.workspace.setOutboundNetworkAccess(true);
       const cloneResult = await cloneWithNetworkAccess(
@@ -115,6 +151,7 @@ async function loadDaytonaRepoSecurityInput(
         input.repoUrl,
         input.commitSha,
       );
+      throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
       if (cloneResult.exitCode !== 0) {
         const error = new Error(
           `Daytona git clone failed: ${[cloneResult.stderr, cloneResult.stdout].filter((line) => line.length > 0).join("\n")}`,
@@ -124,6 +161,8 @@ async function loadDaytonaRepoSecurityInput(
       await logCloneEvent(options.logger, "succeeded", input.repoUrl);
     } catch (error) {
       const retryable =
+        input.signal?.aborted !== true &&
+        (input.deadlineAt === undefined || Date.now() < input.deadlineAt) &&
         attempt < maxCloneWorkspaceRetries &&
         isCloneWorkspaceRetryableError(error);
       await logCloneEvent(options.logger, "failed", input.repoUrl, {
@@ -132,7 +171,12 @@ async function loadDaytonaRepoSecurityInput(
         level: retryable ? "warn" : "error",
       });
 
-      await releaseWorkspace(handle, options);
+      try {
+        await releaseWorkspace(handle, options);
+      } finally {
+        setActiveHandle(undefined);
+      }
+      throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
       if (retryable) {
         await delay(cloneWorkspaceRetryDelaysMs[attempt] ?? 0);
         continue;
@@ -144,6 +188,7 @@ async function loadDaytonaRepoSecurityInput(
     const statsStartedAt = Date.now();
     try {
       try {
+        throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
         await logStatsEvent(options.logger, "started");
         const statsResult = await handle.workspace.execute(
           `find ${shellQuote(daytonaWorkspaceDirectory)} -path ${shellQuote(`${daytonaWorkspaceDirectory}/.git`)} -prune -o -path ${shellQuote(`${daytonaWorkspaceDirectory}/node_modules`)} -prune -o -type f -printf '%P\\t%s\\n'`,
@@ -162,6 +207,7 @@ async function loadDaytonaRepoSecurityInput(
           });
         const files = await Promise.all(
           fileStats.map(async (file) => {
+            throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
             if (!input.shouldReadText(file.path)) {
               return { path: file.path };
             }
@@ -169,6 +215,7 @@ async function loadDaytonaRepoSecurityInput(
             const textResult = await handle.workspace.execute(
               `cat ${shellQuote(`${daytonaWorkspaceDirectory}/${file.path}`)}`,
             );
+            throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
 
             return {
               path: file.path,
@@ -201,7 +248,11 @@ async function loadDaytonaRepoSecurityInput(
         throw error;
       }
     } finally {
-      await releaseWorkspace(handle, options);
+      try {
+        await releaseWorkspace(handle, options);
+      } finally {
+        setActiveHandle(undefined);
+      }
     }
   }
 }

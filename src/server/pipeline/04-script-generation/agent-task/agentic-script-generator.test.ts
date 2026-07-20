@@ -51,14 +51,18 @@ class ScriptGenerationAgentFixture {
 describe("AgenticScriptGenerator", () => {
   it("resumes the retained Agent Session and returns an interactive Demo Script", async () => {
     const session = createAgentSession();
+    const controller = new AbortController();
+    const deadlineAt = Date.now() + 30_000;
     const agent = new ScriptGenerationAgentFixture({});
 
     const result = await agent.generateDemoScript({
       ...scriptGenerationInput(),
+      deadlineAt,
       agentSession: session,
       preparationWorkspace: createAgentWorkspaceFixture({
         artifacts: [canonicalDemoScript()],
       }).preparationWorkspace,
+      signal: controller.signal,
     });
 
     expect(result.scriptId).toBe("script_conduit");
@@ -69,8 +73,10 @@ describe("AgenticScriptGenerator", () => {
     expect(result).not.toHaveProperty("demoPlan");
     expect(agent.runner.calls[0]).toMatchObject({
       session,
+      signal: controller.signal,
       stage: "script-generation",
     });
+    expect(agent.runner.calls[0]?.hardDeadlineAt).toBe(deadlineAt);
     expect(agent.runner.calls[0]?.taskPrompt.length).toBeLessThan(35_000);
   });
 

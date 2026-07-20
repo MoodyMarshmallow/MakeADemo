@@ -11,6 +11,7 @@ import type {
 } from "../../06-footage-capture/capture-scenes";
 import type { CompositedVideoManifest } from "../../07-compositing/composite-video";
 import { runFullPipelineJob } from "./full-pipeline-runner";
+import { PipelineCancellationError } from "./pipeline-cancellation";
 import type { PipelineOrchestratorDependencies } from "./pipeline-orchestrator";
 
 describe("runFullPipelineJob", () => {
@@ -595,6 +596,60 @@ describe("runFullPipelineJob", () => {
           status: "failed",
         }),
       );
+    } finally {
+      await rm(outputRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("writes an authoritative cancelled result before propagating a pipeline deadline", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
+    const controller = new AbortController();
+    const preparationWorkspace = fakePreparationWorkspaceHandle();
+    const resultPath = join(
+      outputRoot,
+      "cancelled-run",
+      "full-pipeline-result.json",
+    );
+    const resultExistedDuringRelease: boolean[] = [];
+    preparationWorkspace.release = async () => {
+      try {
+        await stat(resultPath);
+        resultExistedDuringRelease.push(true);
+      } catch {
+        resultExistedDuringRelease.push(false);
+      }
+    };
+
+    try {
+      let thrown: unknown;
+      try {
+        await runFullPipelineJob(
+          fullPipelineInput(),
+          {
+            ...orchestratorDependencies([], {}, preparationWorkspace),
+            async generateDemoScript() {
+              controller.abort(
+                new PipelineCancellationError("deadline-exceeded"),
+              );
+              throw controller.signal.reason;
+            },
+          },
+          {
+            outputRoot,
+            runId: "cancelled-run",
+            signal: controller.signal,
+          },
+        );
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toMatchObject({ status: "cancelled" });
+      await expect(readJsonFile(resultPath)).resolves.toMatchObject({
+        cancellation: { reason: "deadline-exceeded" },
+        status: "cancelled",
+      });
+      expect(resultExistedDuringRelease).toEqual([false]);
     } finally {
       await rm(outputRoot, { force: true, recursive: true });
     }

@@ -7,8 +7,12 @@ import type { RepoPreparationPreflightResult } from "./repo-preparation-prefligh
 
 export type RepoPreparationInput = {
   commitSha?: string;
+  /** Absolute cooperative deadline shared by provisioning, setup, and agent work. */
+  deadlineAt?: number;
   normalizedSupportingDocuments: NormalizedSupportingDocument[];
   repoUrl: string;
+  /** Stops active Repo Preparation work without producing a fallback prompt. */
+  signal?: AbortSignal;
   structuredDemoIntent: DemoBrief;
   workspaceId: string;
 };

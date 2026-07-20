@@ -2,6 +2,7 @@ import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { PipelineCancellationError } from "../00-orchestration/job/pipeline-cancellation";
 import type { DemoScript } from "../04-script-generation/demo-script/demo-script.schema";
 import type { CaptureManifest } from "../06-footage-capture/capture-scenes";
 import type { FinalVideoEmailNotifier } from "../final-output/final-video-email-notifier.interface";
@@ -19,6 +20,67 @@ import type {
 } from "./video-renderer.interface";
 
 describe("compositeVideoFromScript", () => {
+  it("settles an in-flight renderer before propagating cooperative cancellation", async () => {
+    const workspace = await mkdtemp(
+      join(tmpdir(), "makeademo-composite-test-"),
+    );
+    const capturedScenePath = join(workspace, "scene-feed.webm");
+    const captureManifestPath = join(workspace, "capture-manifest.json");
+    await writeFile(capturedScenePath, "captured scene");
+    await writeFile(
+      captureManifestPath,
+      JSON.stringify(
+        makeCaptureManifest({
+          manifestPath: captureManifestPath,
+          runDirectory: workspace,
+          scenes: [
+            {
+              durationSeconds: 1.25,
+              sceneId: "scene-feed",
+              sectionId: "demo-script",
+              videoPath: capturedScenePath,
+            },
+          ],
+        }),
+      ),
+    );
+    let renderStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      renderStarted = resolve;
+    });
+    const renderer: VideoRenderer = {
+      renderVideo(_input, ...args: unknown[]) {
+        const signal = (args[0] as { signal?: AbortSignal } | undefined)
+          ?.signal;
+        renderStarted?.();
+        return new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        });
+      },
+    };
+    const controller = new AbortController();
+    const compositing = compositeVideoFromScript({
+      captureManifestPath,
+      demoScript: makeDemoScript(),
+      outputRoot: join(workspace, "renders"),
+      renderer,
+      signal: controller.signal,
+    } as Parameters<typeof compositeVideoFromScript>[0]);
+
+    await started;
+    controller.abort(new PipelineCancellationError("signal"));
+
+    const outcome = await Promise.race([
+      compositing.catch((error: unknown) => error),
+      new Promise<"still-running">((resolve) =>
+        setTimeout(() => resolve("still-running"), 50),
+      ),
+    ]);
+    expect(outcome).toMatchObject({ reason: "signal" });
+  });
+
   it("stages Demo Script scenes using captured clip durations and presentation metadata", async () => {
     const workspace = await mkdtemp(
       join(tmpdir(), "makeademo-composite-test-"),

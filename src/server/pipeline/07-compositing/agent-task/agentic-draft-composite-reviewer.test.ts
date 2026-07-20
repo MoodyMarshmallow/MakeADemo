@@ -63,9 +63,12 @@ describe("AgenticDraftCompositeReviewer", () => {
     await writeFile(contactSheetPath, "contact sheet");
     await writeFile(sampledFramePath, "sampled frame");
     const agent = new DraftCompositeReviewAgentFixture({});
+    const controller = new AbortController();
+    const deadlineAt = Date.now() + 30_000;
 
     const decision = await agent.reviewDraftComposite({
       attempt: 1,
+      deadlineAt,
       captureManifest: {
         baseUrl: "https://preview.example.test/",
         createdAt: "2026-01-01T00:00:00.000Z",
@@ -121,6 +124,7 @@ describe("AgenticDraftCompositeReviewer", () => {
         ],
         events,
       }).preparationWorkspace,
+      signal: controller.signal,
       demoScript: canonicalDemoScript(),
     });
 
@@ -170,8 +174,10 @@ describe("AgenticDraftCompositeReviewer", () => {
       ]),
     );
     expect(agent.runner.calls[0]).toMatchObject({
+      signal: controller.signal,
       stage: "draft-composite-review",
     });
+    expect(agent.runner.calls[0]?.hardDeadlineAt).toBe(deadlineAt);
     expect(agent.runner.calls[0]?.taskPrompt.length).toBeLessThan(35_000);
   });
 

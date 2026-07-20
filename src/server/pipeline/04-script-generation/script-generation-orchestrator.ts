@@ -10,12 +10,14 @@ import type { DemoScript } from "./demo-script/demo-script.schema";
 import type { ScriptGenerationAgent } from "./script-generation-agent.interface";
 
 export type ScriptGenerationInput = {
+  deadlineAt?: number;
   demoBrief: DemoBrief;
   normalizedSupportingDocuments: NormalizedSupportingDocument[];
   agentSession?: AgentSession;
   preparationManifest: PreparationManifest;
   preparationWorkspace?: PreparationWorkspaceHandle;
   repoUrl: string;
+  signal?: AbortSignal;
 };
 
 export type ScriptGenerationDependencies = {

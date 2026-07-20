@@ -42,14 +42,19 @@ type AgentWorkspaceFixture = {
  */
 export class RecordingAgentTaskRunner implements AgentTaskRunner {
   readonly calls: Array<
-    Pick<AgentTaskRunInput, "session" | "stage" | "taskPrompt">
+    Pick<
+      AgentTaskRunInput,
+      "hardDeadlineAt" | "session" | "signal" | "stage" | "taskPrompt"
+    >
   > = [];
 
   async run<T>(input: AgentTaskRunInput<T>): Promise<AgentTaskRunResult<T>> {
     this.calls.push({
+      hardDeadlineAt: input.hardDeadlineAt,
       stage: input.stage,
       taskPrompt: input.taskPrompt,
       ...(input.session === undefined ? {} : { session: input.session }),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
     const result = await input.workspace.execute("recording-agent-turn", {
       env: {},

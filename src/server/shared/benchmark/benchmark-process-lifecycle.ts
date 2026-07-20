@@ -24,6 +24,8 @@ export type BenchmarkProcessLifecycleOptions = {
   stdoutPath: string;
   stderrPath: string;
   deadlineAt: number;
+  /** Grace for a cooperative CLI cancellation to write its terminal result. */
+  cleanupGraceMs?: number;
   resultGraceMs?: number;
   killGraceMs?: number;
   env?: NodeJS.ProcessEnv;
@@ -94,6 +96,7 @@ export async function runBenchmarkProcess(
   let resolveTermination: (() => void) | undefined;
   const resultGraceMs = input.resultGraceMs ?? 5_000;
   const killGraceMs = input.killGraceMs ?? 2_000;
+  const cleanupGraceMs = input.cleanupGraceMs ?? 60_000;
 
   const inspect = (chunk: Buffer, stream: NodeJS.WritableStream) => {
     stream.write(chunk);
@@ -136,17 +139,22 @@ export async function runBenchmarkProcess(
         child.kill("SIGTERM");
       } catch {}
     }
-    killTimer = setTimeout(() => {
-      if (settled) return;
-      try {
-        if (pid === undefined) throw new Error("missing pid");
-        process.kill(-pid, "SIGKILL");
-      } catch {
+    killTimer = setTimeout(
+      () => {
+        if (settled) return;
         try {
-          child.kill("SIGKILL");
-        } catch {}
-      }
-    }, killGraceMs);
+          if (pid === undefined) throw new Error("missing pid");
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          try {
+            child.kill("SIGKILL");
+          } catch {}
+        }
+      },
+      reason === "deadline" || reason === "signal"
+        ? cleanupGraceMs
+        : killGraceMs,
+    );
     return terminationPromise;
   };
   const unregister = input.controller?.register(terminate);

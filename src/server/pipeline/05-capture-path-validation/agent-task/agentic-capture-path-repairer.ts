@@ -1,5 +1,6 @@
 import type { AgentTaskRunner } from "../../../agent-harness/agent-session-runner.interface";
 import type { PipelineEventLogger } from "../../../shared/logging/pipeline-event-logger";
+import { throwIfPipelineDeadlineReached } from "../../00-orchestration/job/pipeline-cancellation";
 import { createRepoPreparationAgentWorkspace } from "../../03-repo-preparation/agent-task/repo-preparation-agent-workspace";
 import type { PreparationManifest } from "../../03-repo-preparation/preparation-manifest";
 import {
@@ -39,6 +40,7 @@ export class AgenticCapturePathRepairer {
   async repairCapturePathFailure(
     input: CapturePathRepairInput,
   ): Promise<CapturePathRepairResult> {
+    throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
     if (input.agentSession === undefined) {
       throw new Error("Capture Path repair requires an agent session ID.");
     }
@@ -46,7 +48,10 @@ export class AgenticCapturePathRepairer {
       throw new Error("Capture Path repair requires the prepared workspace.");
     }
     const preparationWorkspace = input.preparationWorkspace;
-    const hardDeadlineAt = Date.now() + this.options.hardTimeoutMs;
+    const hardDeadlineAt = Math.min(
+      Date.now() + this.options.hardTimeoutMs,
+      input.deadlineAt ?? Number.POSITIVE_INFINITY,
+    );
     await writeRepairSandboxLog(this.options.logger, input, {
       attempt: input.attempt,
       event: "capture-path-repair.agent-task.started",
@@ -60,6 +65,7 @@ export class AgenticCapturePathRepairer {
       attempt: input.attempt,
       taskPrompt: createCapturePathRepairPrompt(input),
       session: input.agentSession,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
       stage: "capture-path-repair",
       hardDeadlineAt,
       inactivityTimeoutMs: this.options.timeoutMs,
@@ -68,6 +74,7 @@ export class AgenticCapturePathRepairer {
         preparationWorkspace.workspace,
       ),
     });
+    throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
     if (result.exitCode !== 0) {
       const reason = `Capture Path repair agent task exited with ${result.exitCode}: ${result.failure?.message ?? "agent task failed before artifact validation."}`;
       await writeRepairSandboxLog(this.options.logger, input, {
@@ -96,6 +103,7 @@ export class AgenticCapturePathRepairer {
         ),
       timeoutMs: readTimeoutMs,
     });
+    throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
     if (scriptArtifact.status !== "succeeded") {
       await writeRepairSandboxLog(this.options.logger, input, {
         attempt: input.attempt,
@@ -122,6 +130,7 @@ export class AgenticCapturePathRepairer {
         ),
       timeoutMs: readTimeoutMs,
     });
+    throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
     if (manifestArtifact.status === "failed")
       throw new Error(manifestArtifact.reason);
     const preparationManifest =

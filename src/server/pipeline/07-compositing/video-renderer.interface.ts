@@ -48,11 +48,18 @@ export type CompositingRenderPlan = {
   width: number;
 };
 
+export type VideoRenderOptions = {
+  signal?: AbortSignal;
+};
+
 /**
  * Renders a prepared Compositing plan into one final video file.
  * Implementations must write exactly to outputPath and treat publicDir paths as
  * stable Remotion public assets for the duration of the render.
  */
 export interface VideoRenderer {
-  renderVideo(input: CompositingRenderPlan): Promise<void>;
+  renderVideo(
+    input: CompositingRenderPlan,
+    options?: VideoRenderOptions,
+  ): Promise<void>;
 }

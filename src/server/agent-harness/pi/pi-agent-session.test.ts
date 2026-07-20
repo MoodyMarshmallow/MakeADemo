@@ -30,6 +30,7 @@ function createSessionFactory() {
     state: { errorMessage?: string; messages: unknown[] };
     subscribe: ReturnType<typeof vi.fn>;
     emit: (event: unknown) => void;
+    listenerCount: () => number;
   }> = [];
   const factory: PiSessionFactory = vi.fn(async ({ modelID }) => {
     const listeners = new Set<(event: unknown) => void>();
@@ -62,6 +63,9 @@ function createSessionFactory() {
       emit(event: unknown) {
         for (const listener of listeners) listener(event);
       },
+      listenerCount() {
+        return listeners.size;
+      },
     };
     sessions.push(session as (typeof sessions)[number]);
     return { session: session as PiSessionLike };
@@ -75,6 +79,26 @@ function workspaceStub() {
       return { exitCode: 0, stderr: "", stdout: "" };
     },
   };
+}
+
+function createRawPiSdkSession() {
+  const listeners = new Set<(event: unknown) => void>();
+  const session = {
+    abort: vi.fn(async () => undefined),
+    dispose: vi.fn(),
+    isStreaming: false,
+    model: { id: "test-model" },
+    prompt: vi.fn(async () => undefined),
+    setActiveToolsByName: vi.fn(),
+    setModel: vi.fn(async () => undefined),
+    setThinkingLevel: vi.fn(),
+    state: { errorMessage: undefined, messages: [] as unknown[] },
+    subscribe: vi.fn((listener: (event: unknown) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    }),
+  };
+  return { result: { session }, session };
 }
 
 describe("PiAgentSession", () => {
@@ -267,6 +291,380 @@ describe("PiAgentSession", () => {
     expect(result.providerError).toBeUndefined();
     expect(sessions[0]?.abort).toHaveBeenCalledTimes(1);
     expect(cancelActiveCommands).toHaveBeenCalledTimes(1);
+  });
+
+  it("settles an already-cancelled task without creating a provider session", async () => {
+    const { factory, sessions } = createSessionFactory();
+    const runner = new PiAgentSession({
+      createSession: factory,
+      resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
+    });
+    const controller = new AbortController();
+    const reason = new Error("benchmark deadline elapsed");
+    const cancelActiveCommands = vi.fn();
+    controller.abort(reason);
+
+    await expect(
+      runner.run({
+        attempt: 1,
+        hardDeadlineAt: Date.now() + 1_000,
+        hardTimeoutMs: 1_000,
+        inactivityTimeoutMs: 1_000,
+        profile,
+        signal: controller.signal,
+        stage: "test",
+        taskPrompt: "cancelled",
+        workspace: { cancelActiveCommands, ...workspaceStub() },
+      }),
+    ).rejects.toBe(reason);
+
+    expect(factory).not.toHaveBeenCalled();
+    expect(sessions).toHaveLength(0);
+    expect(cancelActiveCommands).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases a provider session created after task cancellation and global disposal", async () => {
+    const base = createSessionFactory();
+    let completeCreation!: () => Promise<void>;
+    const createSession: PiSessionFactory = vi.fn(
+      (input) =>
+        new Promise<{ session: PiSessionLike }>((resolve) => {
+          completeCreation = async () =>
+            resolve((await base.factory(input)) as { session: PiSessionLike });
+        }),
+    );
+    const runner = new PiAgentSession({
+      createSession,
+      resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
+    });
+    const controller = new AbortController();
+    const removeEventListener = vi.spyOn(
+      controller.signal,
+      "removeEventListener",
+    );
+    const reason = new Error("benchmark deadline elapsed");
+    let runSettled = false;
+    const resultPromise = runner.run({
+      attempt: 1,
+      hardDeadlineAt: Date.now() + 2_000,
+      hardTimeoutMs: 2_000,
+      inactivityTimeoutMs: 2_000,
+      profile,
+      signal: controller.signal,
+      stage: "test",
+      taskPrompt: "must not start",
+      workspace: workspaceStub(),
+    });
+    const assertion = expect(resultPromise).rejects.toBe(reason);
+    void resultPromise.catch(() => {
+      runSettled = true;
+    });
+    await vi.waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
+
+    controller.abort(reason);
+    let disposalSettled = false;
+    const disposal = runner.dispose().then(() => {
+      disposalSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(runSettled).toBe(false);
+    expect(disposalSettled).toBe(false);
+
+    await completeCreation();
+    await assertion;
+    await disposal;
+    const session = base.sessions[0];
+    if (session === undefined) throw new Error("Expected late Pi session.");
+    expect(session.abort).toHaveBeenCalledTimes(1);
+    expect(session.dispose).toHaveBeenCalledTimes(1);
+    expect(session.prompt).not.toHaveBeenCalled();
+    expect(removeEventListener).toHaveBeenCalledWith(
+      "abort",
+      expect.any(Function),
+    );
+
+    await runner.dispose();
+    expect(session.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases a replacement Pi session created after task cancellation and global disposal", async () => {
+    const initial = createRawPiSdkSession();
+    const replacement = createRawPiSdkSession();
+    let completeReplacement!: () => void;
+    const createSdkSession = vi
+      .fn()
+      .mockResolvedValueOnce(initial.result)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            completeReplacement = () => resolve(replacement.result);
+          }),
+      );
+    const runner = new PiAgentSession({
+      createSdkSession,
+      resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
+    });
+    const workspace = workspaceStub();
+    const first = await runner.run({
+      attempt: 1,
+      hardDeadlineAt: Date.now() + 1_000,
+      hardTimeoutMs: 1_000,
+      inactivityTimeoutMs: 1_000,
+      profile,
+      stage: "test",
+      taskPrompt: "first",
+      workspace,
+    });
+    const controller = new AbortController();
+    const removeEventListener = vi.spyOn(
+      controller.signal,
+      "removeEventListener",
+    );
+    const reason = new Error("benchmark deadline elapsed");
+    let runSettled = false;
+    const resultPromise = runner.run({
+      attempt: 2,
+      hardDeadlineAt: Date.now() + 2_000,
+      hardTimeoutMs: 2_000,
+      inactivityTimeoutMs: 2_000,
+      profile,
+      ...(first.session === undefined ? {} : { session: first.session }),
+      signal: controller.signal,
+      stage: "test",
+      taskPrompt: "must not start",
+      tools: [
+        {
+          args: {},
+          description: "New stage tool",
+          execute: async () => "ok",
+          name: "new_stage_tool",
+        },
+      ],
+      workspace,
+    });
+    const assertion = expect(resultPromise).rejects.toBe(reason);
+    void resultPromise.catch(() => {
+      runSettled = true;
+    });
+    await vi.waitFor(() => expect(createSdkSession).toHaveBeenCalledTimes(2));
+
+    controller.abort(reason);
+    let disposalSettled = false;
+    const disposal = runner.dispose().then(() => {
+      disposalSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(runSettled).toBe(false);
+    expect(disposalSettled).toBe(false);
+
+    completeReplacement();
+    await assertion;
+    await disposal;
+    expect(initial.session.abort).toHaveBeenCalledTimes(1);
+    expect(initial.session.dispose).toHaveBeenCalledTimes(1);
+    expect(replacement.session.abort).toHaveBeenCalledTimes(1);
+    expect(replacement.session.dispose).toHaveBeenCalledTimes(1);
+    expect(replacement.session.prompt).not.toHaveBeenCalled();
+    expect(removeEventListener).toHaveBeenCalledWith(
+      "abort",
+      expect.any(Function),
+    );
+
+    await runner.dispose();
+    expect(initial.session.dispose).toHaveBeenCalledTimes(1);
+    expect(replacement.session.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels session setup before a hanging tool reconfiguration can start the provider prompt", async () => {
+    const { factory, sessions } = createSessionFactory();
+    const runner = new PiAgentSession({
+      createSession: factory,
+      resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
+    });
+    const workspace = workspaceStub();
+    const first = await runner.run({
+      attempt: 1,
+      hardDeadlineAt: Date.now() + 1_000,
+      hardTimeoutMs: 1_000,
+      inactivityTimeoutMs: 1_000,
+      profile,
+      stage: "test",
+      taskPrompt: "first",
+      workspace,
+    });
+    const session = sessions[0];
+    if (session === undefined) throw new Error("Expected Pi session.");
+    let resolveSetup!: () => void;
+    session.reconfigureTools.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSetup = resolve;
+        }),
+    );
+    const controller = new AbortController();
+    const removeEventListener = vi.spyOn(
+      controller.signal,
+      "removeEventListener",
+    );
+    const reason = new Error("benchmark deadline elapsed");
+    const cancelActiveCommands = vi.fn();
+    const resultPromise = runner.run({
+      attempt: 2,
+      hardDeadlineAt: Date.now() + 1_000,
+      hardTimeoutMs: 1_000,
+      inactivityTimeoutMs: 1_000,
+      profile,
+      ...(first.session === undefined ? {} : { session: first.session }),
+      signal: controller.signal,
+      stage: "test",
+      taskPrompt: "must not start",
+      tools: [
+        {
+          args: {},
+          description: "New stage tool",
+          execute: async () => "ok",
+          name: "new_stage_tool",
+        },
+      ],
+      workspace: { cancelActiveCommands, ...workspace },
+    });
+    await vi.waitFor(() => expect(session.reconfigureTools).toHaveBeenCalled());
+    const assertion = expect(resultPromise).rejects.toBe(reason);
+    let settled = false;
+    void resultPromise.catch(() => {
+      settled = true;
+    });
+
+    controller.abort(reason);
+
+    await vi.waitFor(() => expect(session.abort).toHaveBeenCalledTimes(1));
+    expect(cancelActiveCommands).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+    resolveSetup();
+    await assertion;
+    expect(session.prompt).toHaveBeenCalledTimes(1);
+    expect(removeEventListener).toHaveBeenCalledWith(
+      "abort",
+      expect.any(Function),
+    );
+    await Promise.resolve();
+    expect(session.abort).toHaveBeenCalledTimes(1);
+    expect(cancelActiveCommands).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels a running task once when an external cancellation races a handoff interrupt", async () => {
+    const { factory, sessions } = createSessionFactory();
+    const runner = new PiAgentSession({
+      createSession: factory,
+      resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
+    });
+    const controller = new AbortController();
+    const reason = new Error("benchmark deadline elapsed");
+    let resolveAbort!: () => void;
+    let resolveCancel!: () => void;
+    const abort = new Promise<void>((resolve) => {
+      resolveAbort = resolve;
+    });
+    const cancel = new Promise<void>((resolve) => {
+      resolveCancel = resolve;
+    });
+    const cancelActiveCommands = vi.fn(() => cancel);
+    const resultPromise = runner.run({
+      attempt: 1,
+      hardDeadlineAt: Date.now() + 1_000,
+      hardTimeoutMs: 1_000,
+      inactivityTimeoutMs: 1_000,
+      profile,
+      signal: controller.signal,
+      stage: "test",
+      taskPrompt: "cancelled",
+      toolProtocol: {
+        decode: () => ({ handoff: { ok: true }, status: "accepted" }),
+        interruptOnCompletedHandoff: true,
+        trackedNames: ["stage_submit"],
+      },
+      workspace: { cancelActiveCommands, ...workspaceStub() },
+    });
+    await vi.waitFor(() => expect(sessions[0]?.subscribe).toHaveBeenCalled());
+    const session = sessions[0];
+    if (session === undefined) throw new Error("Expected Pi session.");
+    session.abort.mockImplementation(() => abort);
+    session.emit({
+      type: "tool_execution_end",
+      toolName: "stage_submit",
+      args: { ok: true },
+      isError: false,
+      result: { content: [] },
+      toolCallId: "call-1",
+    });
+    controller.abort(reason);
+
+    await vi.waitFor(() => expect(session.abort).toHaveBeenCalledTimes(1));
+    expect(cancelActiveCommands).toHaveBeenCalledTimes(1);
+
+    resolveAbort();
+    resolveCancel();
+    await expect(resultPromise).rejects.toBe(reason);
+    expect(session.abort).toHaveBeenCalledTimes(1);
+    expect(cancelActiveCommands).toHaveBeenCalledTimes(1);
+    expect(session.listenerCount()).toBe(0);
+  });
+
+  it("waits for workspace command cancellation when provider abort rejects the prompt first", async () => {
+    const { factory, sessions } = createSessionFactory();
+    const runner = new PiAgentSession({
+      createSession: factory,
+      resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
+    });
+    const controller = new AbortController();
+    const reason = new Error("benchmark deadline elapsed");
+    let rejectPrompt!: (reason: unknown) => void;
+    let resolveCancel!: () => void;
+    const cancel = new Promise<void>((resolve) => {
+      resolveCancel = resolve;
+    });
+    const cancelActiveCommands = vi.fn(() => cancel);
+    const resultPromise = runner.run({
+      attempt: 1,
+      hardDeadlineAt: Date.now() + 1_000,
+      hardTimeoutMs: 1_000,
+      inactivityTimeoutMs: 1_000,
+      profile,
+      signal: controller.signal,
+      stage: "test",
+      taskPrompt: "cancelled",
+      workspace: { cancelActiveCommands, ...workspaceStub() },
+    });
+    await vi.waitFor(() => expect(sessions[0]?.subscribe).toHaveBeenCalled());
+    const session = sessions[0];
+    if (session === undefined) throw new Error("Expected Pi session.");
+    session.prompt.mockImplementation(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectPrompt = reject;
+        }),
+    );
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+    session.abort.mockImplementation(async () => {
+      rejectPrompt(new Error("request aborted"));
+    });
+    let settled = false;
+    const assertion = expect(resultPromise).rejects.toBe(reason);
+    void resultPromise.catch(() => {
+      settled = true;
+    });
+
+    controller.abort(reason);
+
+    await vi.waitFor(() => expect(session.abort).toHaveBeenCalledTimes(1));
+    expect(cancelActiveCommands).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+
+    resolveCancel();
+    await assertion;
+    expect(session.listenerCount()).toBe(0);
   });
 
   it("waits for provider abort and workspace cancellation before resolving a handoff", async () => {

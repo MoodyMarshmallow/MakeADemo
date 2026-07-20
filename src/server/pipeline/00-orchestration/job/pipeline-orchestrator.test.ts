@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createAgentSession } from "../../../test-support/create-agent-session";
+import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
 import { createRecordingPipelineObserver } from "./pipeline-observer";
 import { runPipelineJob } from "./pipeline-orchestrator";
 
@@ -63,6 +64,136 @@ describe("runPipelineJob", () => {
       "repo-preparation",
       "script-generation",
       "capture-path-validation",
+    ]);
+  });
+
+  it("settles active submitted-code validation before propagating Pipeline cancellation", async () => {
+    const events: string[] = [];
+    const controller = new AbortController();
+    const workspace = fakeWorkspaceHandle();
+    let settleValidation: (() => void) | undefined;
+    workspace.workspace.cancelActiveCommands = async () => {
+      events.push("validation-cancelled");
+      settleValidation?.();
+    };
+
+    await expect(
+      runPipelineJob(
+        {
+          demoBrief: { keyProductFeatures: ["validation"] },
+          normalizedSupportingDocuments: [],
+          repoSecurity: {
+            files: [{ path: "package.json", text: "{}" }],
+            repoStats: { fileCount: 1, sizeBytes: 1_000 },
+          },
+          repoUrl: "https://github.com/example/app",
+          workspaceId: "workspace_123",
+        },
+        {
+          async generateDemoScript() {
+            return demoScript();
+          },
+          async prepareRepo() {
+            return { manifest: manifest(), status: "succeeded", workspace };
+          },
+          screenRepoSecurity() {
+            return { rejections: [], status: "passed", warnings: [] };
+          },
+          async validateCapturePath() {
+            events.push("validation-started");
+            await new Promise<void>((resolve) => {
+              settleValidation = resolve;
+              queueMicrotask(() => controller.abort());
+            });
+            events.push("validation-settled");
+            return {
+              blockedNetworkAttempts: [],
+              browserUrl: "https://preview.example.test/",
+              logs: [],
+              status: "succeeded",
+              warnings: [],
+            };
+          },
+        },
+        { signal: controller.signal },
+      ),
+    ).rejects.toMatchObject({ reason: "signal" });
+    expect(events).toEqual([
+      "validation-started",
+      "validation-cancelled",
+      "validation-settled",
+    ]);
+  });
+
+  it("keeps cancelling sequential validation commands started after abort", async () => {
+    const events: string[] = [];
+    const controller = new AbortController();
+    const workspace = fakeWorkspaceHandle();
+    let activeCommand: (() => void) | undefined;
+    let markFirstCommandStarted: (() => void) | undefined;
+    const firstCommandStarted = new Promise<void>((resolve) => {
+      markFirstCommandStarted = resolve;
+    });
+    workspace.workspace.cancelActiveCommands = async () => {
+      events.push("cancel-snapshot");
+      activeCommand?.();
+    };
+    const runCommand = async (name: string) => {
+      events.push(`${name}-started`);
+      if (name === "first-command") markFirstCommandStarted?.();
+      await new Promise<void>((resolve) => {
+        activeCommand = resolve;
+      });
+      activeCommand = undefined;
+      events.push(`${name}-settled`);
+    };
+
+    const running = runPipelineJob(
+      {
+        demoBrief: { keyProductFeatures: ["validation"] },
+        normalizedSupportingDocuments: [],
+        repoSecurity: {
+          files: [{ path: "package.json", text: "{}" }],
+          repoStats: { fileCount: 1, sizeBytes: 1_000 },
+        },
+        repoUrl: "https://github.com/example/app",
+        workspaceId: "workspace_123",
+      },
+      {
+        async generateDemoScript() {
+          return demoScript();
+        },
+        async prepareRepo() {
+          return { manifest: manifest(), status: "succeeded", workspace };
+        },
+        screenRepoSecurity() {
+          return { rejections: [], status: "passed", warnings: [] };
+        },
+        async validateCapturePath() {
+          await runCommand("first-command");
+          await runCommand("second-command");
+          return {
+            blockedNetworkAttempts: [],
+            browserUrl: "https://preview.example.test/",
+            logs: [],
+            status: "succeeded",
+            warnings: [],
+          };
+        },
+      },
+      { signal: controller.signal },
+    );
+    await firstCommandStarted;
+    controller.abort();
+
+    await expect(running).rejects.toMatchObject({ reason: "signal" });
+    expect(events).toEqual([
+      "first-command-started",
+      "cancel-snapshot",
+      "first-command-settled",
+      "second-command-started",
+      "cancel-snapshot",
+      "second-command-settled",
     ]);
   });
 
@@ -461,6 +592,8 @@ describe("runPipelineJob", () => {
     const preparationAgentSession = createAgentSession();
     const repairAgentSessions: unknown[] = [];
     const observer = createRecordingPipelineObserver();
+    const controller = new AbortController();
+    const pipelineDeadlineAt = Date.now() + 900_000;
 
     try {
       const result = await runPipelineJob(
@@ -475,11 +608,15 @@ describe("runPipelineJob", () => {
           workspaceId: "workspace_123",
         },
         {
-          async generateDemoScript() {
+          async generateDemoScript(input) {
+            expect(input.signal).toBe(controller.signal);
+            expect(input.deadlineAt).toBe(pipelineDeadlineAt);
             calls.push("script-generation");
             return demoScript({ scriptId: "script_bad" });
           },
-          async prepareRepo() {
+          async prepareRepo(input) {
+            expect(input.signal).toBe(controller.signal);
+            expect(input.deadlineAt).toBeLessThan(pipelineDeadlineAt);
             calls.push("repo-preparation");
             return {
               manifest: manifest(),
@@ -489,6 +626,8 @@ describe("runPipelineJob", () => {
             };
           },
           async repairCapturePathFailure(input) {
+            expect(input.signal).toBe(controller.signal);
+            expect(input.deadlineAt).toBe(pipelineDeadlineAt);
             repairAgentSessions.push(input.agentSession);
             calls.push(
               `repair:${input.attempt}:${input.failure.failedSceneId}`,
@@ -525,7 +664,7 @@ describe("runPipelineJob", () => {
             };
           },
         },
-        { observer },
+        { deadlineAt: pipelineDeadlineAt, observer, signal: controller.signal },
       );
 
       expect(result.status).toBe("succeeded");
@@ -647,7 +786,7 @@ function demoScript(input: { scriptId?: string } = {}) {
   };
 }
 
-function fakeWorkspaceHandle() {
+function fakeWorkspaceHandle(): PreparationWorkspaceHandle {
   return {
     async release() {},
     id: "daytona_workspace",

@@ -12,9 +12,173 @@ import {
   type DraftCompositeReviewLoopInput,
   runDraftCompositeReviewLoop,
 } from "./draft-composite-review-loop";
+import { PipelineCancellationError } from "./pipeline-cancellation";
 import type { PipelineOrchestratorDependencies } from "./pipeline-orchestrator";
 
 describe("runDraftCompositeReviewLoop", () => {
+  it("does not start Compositing after the Pipeline deadline cancels Footage Capture", async () => {
+    const root = await mkdtemp(join(tmpdir(), "makeademo-review-"));
+    const calls: string[] = [];
+    const controller = new AbortController();
+    try {
+      const input = loopInput(root, {
+        captureScenes: async () => {
+          calls.push("capture");
+          controller.abort(new PipelineCancellationError("deadline-exceeded"));
+          return captureManifest(root, "capture-1");
+        },
+        compositeVideo: async () => {
+          calls.push("composite");
+          return compositeManifest(root, "composite-1");
+        },
+        reviewDraftComposite: async () => {
+          calls.push("review");
+          return { decision: "accept" };
+        },
+      });
+      input.options.signal = controller.signal;
+
+      await expect(runDraftCompositeReviewLoop(input)).rejects.toMatchObject({
+        reason: "deadline-exceeded",
+      });
+      expect(calls).toEqual(["capture"]);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("settles an active submitted-code capture command before propagating Pipeline cancellation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "makeademo-review-"));
+    const events: string[] = [];
+    const controller = new AbortController();
+    let settleCapture: (() => void) | undefined;
+    try {
+      const input = loopInput(root, {
+        captureScenes: async () => {
+          events.push("capture-started");
+          controller.abort(new PipelineCancellationError("deadline-exceeded"));
+          await new Promise<void>((resolve) => {
+            settleCapture = resolve;
+          });
+          events.push("capture-settled");
+          return captureManifest(root, "capture-1");
+        },
+        compositeVideo: async () => {
+          events.push("composite-started");
+          return compositeManifest(root, "composite-1");
+        },
+      });
+      input.options.signal = controller.signal;
+      const workspace = input.preparedDemo.preparationWorkspace?.workspace;
+      if (workspace === undefined) throw new Error("Expected test workspace.");
+      workspace.cancelActiveCommands = async () => {
+        events.push("capture-cancelled");
+        settleCapture?.();
+      };
+
+      await expect(runDraftCompositeReviewLoop(input)).rejects.toMatchObject({
+        reason: "deadline-exceeded",
+      });
+      expect(events).toEqual([
+        "capture-started",
+        "capture-cancelled",
+        "capture-settled",
+      ]);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("settles active Compositing before propagating Pipeline cancellation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "makeademo-review-"));
+    const events: string[] = [];
+    const controller = new AbortController();
+    let compositingStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      compositingStarted = resolve;
+    });
+    try {
+      const input = loopInput(root, {
+        compositeVideo: async (compositeInput) => {
+          events.push("compositing-started");
+          compositingStarted?.();
+          await new Promise<void>((_resolve, reject) => {
+            compositeInput.signal?.addEventListener(
+              "abort",
+              () => {
+                events.push("compositing-settled");
+                reject(compositeInput.signal?.reason);
+              },
+              { once: true },
+            );
+          });
+          return compositeManifest(root, "composite-1");
+        },
+      });
+      input.options.signal = controller.signal;
+      const review = runDraftCompositeReviewLoop(input);
+
+      await started;
+      controller.abort(new PipelineCancellationError("deadline-exceeded"));
+
+      await expect(review).rejects.toMatchObject({
+        reason: "deadline-exceeded",
+      });
+      expect(events).toEqual(["compositing-started", "compositing-settled"]);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("settles active evidence generation before propagating Pipeline cancellation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "makeademo-review-"));
+    const events: string[] = [];
+    const controller = new AbortController();
+    let evidenceStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      evidenceStarted = resolve;
+    });
+    try {
+      const input = loopInput(root);
+      input.options.signal = controller.signal;
+      input.options.inspectDraftCompositeEvidence = async (evidenceInput) => {
+        const signal = (
+          evidenceInput as typeof evidenceInput & { signal?: AbortSignal }
+        ).signal;
+        events.push("evidence-started");
+        evidenceStarted?.();
+        await new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () => {
+              events.push("evidence-settled");
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        });
+        return {
+          audioPresent: true,
+          contactSheetPaths: [],
+          ffmpegFindings: [],
+          sampledFramePaths: [],
+          staticSceneIds: [],
+        };
+      };
+      const review = runDraftCompositeReviewLoop(input);
+
+      await started;
+      controller.abort(new PipelineCancellationError("deadline-exceeded"));
+
+      await expect(review).rejects.toMatchObject({
+        reason: "deadline-exceeded",
+      });
+      expect(events).toEqual(["evidence-started", "evidence-settled"]);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
   it("accepts a clean draft without rerunning capture", async () => {
     const root = await mkdtemp(join(tmpdir(), "makeademo-review-"));
     const calls: string[] = [];
@@ -40,6 +204,30 @@ describe("runDraftCompositeReviewLoop", () => {
         warnings: [],
       });
       expect(calls).toEqual(["capture", "composite"]);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("reports Footage Capture, Compositing, and Draft Composite review chronologically", async () => {
+    const root = await mkdtemp(join(tmpdir(), "makeademo-review-"));
+    const progress: Array<{ stage: string; status: string }> = [];
+    try {
+      const input = loopInput(root);
+      input.options.onProgress = (event) => {
+        progress.push(event);
+      };
+
+      await runDraftCompositeReviewLoop(input);
+
+      expect(progress).toEqual([
+        { stage: "footage-capture", status: "started" },
+        { stage: "footage-capture", status: "succeeded" },
+        { stage: "compositing", status: "started" },
+        { stage: "compositing", status: "succeeded" },
+        { stage: "draft-composite-review", status: "started" },
+        { stage: "draft-composite-review", status: "succeeded" },
+      ]);
     } finally {
       await rm(root, { force: true, recursive: true });
     }

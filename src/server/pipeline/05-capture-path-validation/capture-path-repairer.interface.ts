@@ -6,11 +6,13 @@ import type { CapturePathValidationResult } from "./capture-path-validator.inter
 
 export type CapturePathRepairInput = {
   attempt: number;
+  deadlineAt?: number;
   failure: CapturePathValidationResult;
   agentSession?: AgentSession;
   preparationManifest: PreparationManifest;
   preparationWorkspace?: PreparationWorkspaceHandle;
   repoUrl: string;
+  signal?: AbortSignal;
   demoScript: DemoScript;
 };
 

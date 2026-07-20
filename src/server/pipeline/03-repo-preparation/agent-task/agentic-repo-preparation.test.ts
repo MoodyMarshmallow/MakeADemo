@@ -9,6 +9,7 @@ import type {
 } from "../../../agent-harness/agent-session-runner.interface";
 import { createPipelineEventLogger } from "../../../shared/logging/pipeline-event-logger";
 import { createAgentSession } from "../../../test-support/create-agent-session";
+import { PipelineCancellationError } from "../../00-orchestration/job/pipeline-cancellation";
 import type { PreparationWorkspaceProvider } from "../preparation-workspace-runner";
 import type {
   PreparationWorkspace,
@@ -89,6 +90,183 @@ function createRepoPreparationAgent(options: RepoPreparationTestOptions) {
 }
 
 describe("AgenticRepoPreparation", () => {
+  it("releases a workspace created just after the absolute preparation deadline", async () => {
+    const events: unknown[] = [];
+    const baseProvider = fakeProvider(events);
+    const provider: PreparationWorkspaceProvider = {
+      async create() {
+        const handle = await baseProvider.create();
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return handle;
+      },
+    };
+    const agent = createRepoPreparationAgent({ provider, timeoutMs: 1_000 });
+
+    await expect(
+      agent.prepare({
+        deadlineAt: Date.now() + 10,
+        normalizedSupportingDocuments: [],
+        repoUrl: "https://github.com/example/app",
+        structuredDemoIntent: { keyProductFeatures: ["validation"] },
+        workspaceId: "workspace_123",
+      }),
+    ).rejects.toMatchObject({ reason: "deadline-exceeded" });
+
+    expect(events.filter(isReleaseEvent)).toEqual([
+      { release: "daytona_workspace" },
+    ]);
+  });
+
+  it("cancels and settles setup before releasing when the shared signal aborts", async () => {
+    const events: unknown[] = [];
+    const baseProvider = fakeProvider(events);
+    const provider: PreparationWorkspaceProvider = {
+      async create() {
+        const handle = await baseProvider.create();
+        const execute = handle.workspace.execute.bind(handle.workspace);
+        const cancel = handle.workspace.cancelActiveCommands?.bind(
+          handle.workspace,
+        );
+        let settleClone: (() => void) | undefined;
+        handle.workspace.execute = async (command, options) => {
+          if (command.includes("git clone")) {
+            await new Promise<void>((resolve) => {
+              settleClone = resolve;
+            });
+          }
+          return execute(command, options);
+        };
+        handle.workspace.cancelActiveCommands = async () => {
+          await cancel?.();
+          settleClone?.();
+        };
+        return handle;
+      },
+    };
+    const controller = new AbortController();
+    const agent = createRepoPreparationAgent({ provider, timeoutMs: 1_000 });
+    const preparation = agent.prepare({
+      deadlineAt: Date.now() + 30_000,
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      signal: controller.signal,
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    await vi.waitFor(() => {
+      expect(events).toEqual(expect.arrayContaining([{ network: true }]));
+    });
+    controller.abort(new PipelineCancellationError("signal"));
+
+    await expect(preparation).rejects.toMatchObject({ reason: "signal" });
+    expect(events.filter(isReleaseEvent)).toEqual([
+      { release: "daytona_workspace" },
+    ]);
+  });
+
+  it("keeps cancelling setup commands that start after the shared signal aborts", async () => {
+    const events: unknown[] = [];
+    const baseProvider = fakeProvider(events);
+    let cloneAttempts = 0;
+    let cancellationCalls = 0;
+    let settleActiveClone: (() => void) | undefined;
+    const provider: PreparationWorkspaceProvider = {
+      async create() {
+        const handle = await baseProvider.create();
+        const execute = handle.workspace.execute.bind(handle.workspace);
+        handle.workspace.execute = async (command, options) => {
+          if (!command.includes("git clone")) {
+            return execute(command, options);
+          }
+          cloneAttempts += 1;
+          events.push({ cloneAttempt: cloneAttempts });
+          await new Promise<void>((resolve) => {
+            settleActiveClone = resolve;
+          });
+          settleActiveClone = undefined;
+          if (cloneAttempts === 1) {
+            return {
+              exitCode: 128,
+              stderr: "fatal: could not resolve host: github.com",
+              stdout: "",
+            };
+          }
+          return execute(command, options);
+        };
+        handle.workspace.cancelActiveCommands = async () => {
+          cancellationCalls += 1;
+          settleActiveClone?.();
+        };
+        return handle;
+      },
+    };
+    const controller = new AbortController();
+    const agent = createRepoPreparationAgent({ provider, timeoutMs: 1_000 });
+    const preparation = agent.prepare({
+      deadlineAt: Date.now() + 30_000,
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      signal: controller.signal,
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    await vi.waitFor(() => {
+      expect(events).toEqual(expect.arrayContaining([{ cloneAttempt: 1 }]));
+    });
+    controller.abort(new PipelineCancellationError("signal"));
+
+    await expect(preparation).rejects.toMatchObject({ reason: "signal" });
+    expect(cloneAttempts).toBe(2);
+    expect(cancellationCalls).toBeGreaterThanOrEqual(2);
+    expect(events.filter(isReleaseEvent)).toEqual([
+      { release: "daytona_workspace" },
+    ]);
+  });
+
+  it("releases its workspace and preserves a cooperative deadline instead of returning a preparation failure", async () => {
+    const events: unknown[] = [];
+    const controller = new AbortController();
+    const runner: AgentTaskRunner = {
+      run(input) {
+        return new Promise((_, reject) => {
+          input.signal?.addEventListener(
+            "abort",
+            () => reject(input.signal?.reason),
+            { once: true },
+          );
+          controller.abort(new PipelineCancellationError("deadline-exceeded"));
+        });
+      },
+    };
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider(events, {
+        preparationResult: successResult(),
+        validationResult: validationArtifact(),
+      }),
+      runner,
+      timeoutMs: 1_000,
+    });
+
+    await expect(
+      agent.prepare({
+        deadlineAt: Date.now() + 30_000,
+        normalizedSupportingDocuments: [],
+        repoUrl: "https://github.com/example/app",
+        signal: controller.signal,
+        structuredDemoIntent: { keyProductFeatures: ["validation"] },
+        workspaceId: "workspace_123",
+      }),
+    ).rejects.toMatchObject({ reason: "deadline-exceeded" });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        { cancelActiveCommands: true },
+        { release: "daytona_workspace" },
+      ]),
+    );
+  });
+
   it("clones the submitted repo and runs Agent Task inside Daytona", async () => {
     const events: unknown[] = [];
     const runner = new RecordingAgentTaskRunner();
@@ -1689,6 +1867,7 @@ function fakeWorkspace(
   const cloneResults = [...(input.cloneResults ?? [])];
   let dependencyInstallRequest = input.dependencyInstallRequest;
   let sandboxLogChain = Promise.resolve();
+  let settleSubmittedCodeExecution: (() => void) | undefined;
   let validationRequest = input.validationRequest;
   let validationResult = input.validationResult;
 
@@ -1885,7 +2064,9 @@ function fakeWorkspace(
       }
       if (command === "bun install") {
         if (input.submittedCodeNeverSettles === true) {
-          await new Promise(() => {});
+          await new Promise<void>((resolve) => {
+            settleSubmittedCodeExecution = resolve;
+          });
         }
         if (input.submittedCodeInstallDelayMs !== undefined) {
           await new Promise((resolve) =>
@@ -1908,7 +2089,9 @@ function fakeWorkspace(
         },
       });
       if (input.submittedCodeNeverSettles === true) {
-        await new Promise(() => {});
+        await new Promise<void>((resolve) => {
+          settleSubmittedCodeExecution = resolve;
+        });
       }
       if (input.submittedCodeInstallDelayMs !== undefined) {
         await new Promise((resolve) =>
@@ -1929,6 +2112,7 @@ function fakeWorkspace(
     async cancelActiveCommands() {
       events.push({ cancelActiveCommands: true });
       events.push({ submittedCodeNetwork: false });
+      settleSubmittedCodeExecution?.();
     },
     async uploadFiles() {
       throw new Error("Repo Preparation should clone inside Daytona.");

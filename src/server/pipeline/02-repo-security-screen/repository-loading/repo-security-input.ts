@@ -5,13 +5,21 @@ import type { RepoSecurityInputLoader } from "./repo-security-input-loader.inter
 export function readRepoSecurityInput(
   loader: RepoSecurityInputLoader,
   repoUrl: string,
-  options: { commitSha?: string } = {},
+  options: {
+    commitSha?: string;
+    deadlineAt?: number;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<RepoSecurityInput> {
   return loader.load({
     ...(options.commitSha === undefined
       ? {}
       : { commitSha: options.commitSha }),
+    ...(options.deadlineAt === undefined
+      ? {}
+      : { deadlineAt: options.deadlineAt }),
     repoUrl,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
     shouldReadText: readRepoSecurityInputTextPolicy,
   });
 }

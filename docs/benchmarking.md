@@ -19,10 +19,18 @@ process shutdowns also record `terminationReason` as `deadline`, `signal`, or
 
 The suite uses one absolute 35-minute deadline shared by all jobs and
 repetitions. Set `MAKEADEMO_BENCHMARK_TIMEOUT_MS` to a positive safe integer to
-override it. A child that emits a readable `Result JSON:` marker gets five
-seconds to exit naturally, then receives SIGTERM and SIGKILL two seconds later
-if needed. The same cleanup runs at the suite deadline; durable results already
-written remain authoritative.
+override it. Each child receives an internal Pipeline deadline 60 seconds before
+the outer benchmark watchdog. Repo Preparation reserves another 120 seconds for
+later validation and cleanup, while retaining its 30-minute maximum. On an
+internal deadline or process signal, the Pipeline cooperatively cancels active
+agent and sandbox work. Pre-Pipeline repository loading releases its dedicated
+workspace before materializing a cancelled result; later stages release the
+Preparation Workspace. The CLI then disposes agent sessions and only then emits
+`Result JSON:`. The outer watchdog allows a
+separate 60-second cleanup grace before SIGKILL. A child that has already emitted
+a readable marker retains the short five-second result grace and two-second
+forced-exit grace. Forced death remains the fallback when an external SDK call,
+including sandbox creation, never settles.
 
 ## First Pass
 

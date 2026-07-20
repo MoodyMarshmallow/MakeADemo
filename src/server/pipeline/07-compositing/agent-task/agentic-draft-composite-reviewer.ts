@@ -3,6 +3,7 @@ import { basename, join } from "node:path";
 
 import type { AgentTaskRunner } from "../../../agent-harness/agent-session-runner.interface";
 import type { PipelineEventLogger } from "../../../shared/logging/pipeline-event-logger";
+import { throwIfPipelineDeadlineReached } from "../../00-orchestration/job/pipeline-cancellation";
 import { createRepoPreparationAgentWorkspace } from "../../03-repo-preparation/agent-task/repo-preparation-agent-workspace";
 import type { PreparationWorkspaceUploadOptions } from "../../03-repo-preparation/preparation-workspace.interface";
 import type {
@@ -36,6 +37,7 @@ export class AgenticDraftCompositeReviewer {
   async review(
     input: DraftCompositeReviewerInput,
   ): Promise<DraftCompositeReviewDecision> {
+    throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
     if (input.agentSession === undefined) {
       throw new Error("Draft Composite review requires an agent session ID.");
     }
@@ -46,13 +48,18 @@ export class AgenticDraftCompositeReviewer {
     }
 
     const workspace = input.preparationWorkspace;
-    const hardDeadlineAt = Date.now() + this.options.hardTimeoutMs;
+    const hardDeadlineAt = Math.min(
+      Date.now() + this.options.hardTimeoutMs,
+      input.deadlineAt ?? Number.POSITIVE_INFINITY,
+    );
     const upload = await collectDraftReviewFiles(input);
+    throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
     logEvidenceUpload(this.options.logger, {
       bytes: upload.bytes,
       event: "draft-composite-review.evidence-upload.started",
       fileCount: upload.files.length,
     });
+    throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
     if (upload.files.length > 0) {
       try {
         await uploadWithRetry({
@@ -93,12 +100,14 @@ export class AgenticDraftCompositeReviewer {
       attempt: input.attempt,
       taskPrompt: createDraftCompositeReviewPrompt(input),
       session: input.agentSession,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
       stage: "draft-composite-review",
       hardDeadlineAt,
       inactivityTimeoutMs: this.options.timeoutMs,
       hardTimeoutMs: this.options.hardTimeoutMs,
       workspace: createRepoPreparationAgentWorkspace(workspace.workspace),
     });
+    throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
     if (result.exitCode !== 0) {
       throw new Error(
         `Draft Composite review agent task exited with ${result.exitCode}: ${result.failure?.message ?? "agent task failed before artifact validation."}`,
@@ -118,6 +127,7 @@ export class AgenticDraftCompositeReviewer {
       readTimeoutMs,
       `Draft Composite review artifact read timed out after ${readTimeoutMs}ms.`,
     );
+    throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
     if (artifact.exitCode !== 0) {
       throw new Error(
         `Draft Composite review agent task did not write ${draftCompositeReviewPath}: ${artifact.stderr}`,

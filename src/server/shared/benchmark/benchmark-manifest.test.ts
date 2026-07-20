@@ -151,6 +151,7 @@ describe("buildBenchmarkPipelineArgs", () => {
 
     expect(
       buildBenchmarkPipelineArgs({
+        deadlineAt: 1_234_567_890,
         outputRoot: ".makeademo-benchmark-runs/run-1",
         repo,
       }),
@@ -158,6 +159,8 @@ describe("buildBenchmarkPipelineArgs", () => {
       "src/server/composition/full-pipeline-cli.mts",
       "--output-root",
       ".makeademo-benchmark-runs/run-1",
+      "--deadline-at",
+      "1234567890",
       "--repo",
       "https://github.com/example/calendar",
       "--commit",

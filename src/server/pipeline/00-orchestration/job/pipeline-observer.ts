@@ -4,6 +4,8 @@ export type PipelineStage =
   | "compositing"
   | "capture-path-validation"
   | "demo-runtime-preflight"
+  | "draft-composite-review"
+  | "footage-capture"
   | "repo-preparation"
   | "repo-security-screen"
   | "script-generation";

@@ -2,6 +2,10 @@ import { spawn } from "node:child_process";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import {
+  pipelineCancellationFromSignal,
+  throwIfPipelineDeadlineReached,
+} from "../00-orchestration/job/pipeline-cancellation";
 import type { DemoScript } from "../04-script-generation/demo-script/demo-script.schema";
 import type { CaptureManifest } from "../06-footage-capture/capture-scenes";
 import type { CompositedVideoManifest } from "./composite-video";
@@ -78,9 +82,12 @@ export function collectDraftCompositeQualityFindings(input: {
 
 export async function inspectDraftCompositeEvidence(input: {
   captureManifest: CaptureManifest;
+  deadlineAt?: number;
   draftComposite: CompositedVideoManifest;
+  signal?: AbortSignal;
   timeoutMs?: number;
 }): Promise<DraftCompositeEvidence> {
+  throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
   const timeoutMs = input.timeoutMs ?? DEFAULT_EVIDENCE_COMMAND_TIMEOUT_MS;
   const { captureManifest, draftComposite } = input;
   if (draftComposite.outputVideoPath === undefined) {
@@ -118,11 +125,12 @@ export async function inspectDraftCompositeEvidence(input: {
     "review-evidence",
   );
   await mkdir(evidenceDirectory, { recursive: true });
+  throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
 
   const findings: string[] = [];
   const sampledFramePattern = join(evidenceDirectory, "sample-%03d.jpg");
   const contactSheetPath = join(evidenceDirectory, "contact-sheet.jpg");
-  const [sampledFrames, contactSheet, audioProbe] = await Promise.all([
+  const evidenceCommands = [
     runEvidenceCommand(
       "ffmpeg",
       [
@@ -136,6 +144,7 @@ export async function inspectDraftCompositeEvidence(input: {
         sampledFramePattern,
       ],
       timeoutMs,
+      input.signal,
     ),
     runEvidenceCommand(
       "ffmpeg",
@@ -150,6 +159,7 @@ export async function inspectDraftCompositeEvidence(input: {
         contactSheetPath,
       ],
       timeoutMs,
+      input.signal,
     ),
     runEvidenceCommand(
       "ffprobe",
@@ -165,8 +175,20 @@ export async function inspectDraftCompositeEvidence(input: {
         draftComposite.outputVideoPath,
       ],
       timeoutMs,
+      input.signal,
     ),
-  ]);
+  ] as const;
+  let sampledFrames: Awaited<(typeof evidenceCommands)[number]>;
+  let contactSheet: Awaited<(typeof evidenceCommands)[number]>;
+  let audioProbe: Awaited<(typeof evidenceCommands)[number]>;
+  try {
+    [sampledFrames, contactSheet, audioProbe] =
+      await Promise.all(evidenceCommands);
+  } catch (error) {
+    await Promise.allSettled(evidenceCommands);
+    throw error;
+  }
+  throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
   if (sampledFrames.exitCode !== 0) {
     findings.push(
       `ffmpeg sampled-frame extraction failed: ${formatCommandOutput(sampledFrames)}`,
@@ -184,7 +206,9 @@ export async function inspectDraftCompositeEvidence(input: {
   }
   const staticFootageProbe = await detectStaticScenes({
     captureManifest,
+    ...(input.deadlineAt === undefined ? {} : { deadlineAt: input.deadlineAt }),
     findings,
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
     timeoutMs,
   });
   const evidenceManifestPath = join(
@@ -229,7 +253,9 @@ export async function inspectDraftCompositeEvidence(input: {
 
 async function detectStaticScenes(input: {
   captureManifest: CaptureManifest;
+  deadlineAt?: number;
   findings: string[];
+  signal?: AbortSignal;
   timeoutMs: number;
 }) {
   const failedSceneIds: string[] = [];
@@ -242,6 +268,7 @@ async function detectStaticScenes(input: {
   }> = [];
 
   for (const scene of input.captureManifest.scenes) {
+    throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
     const durationSeconds = scene.durationSeconds;
     if (durationSeconds < 1) {
       sceneProbes.push({
@@ -271,6 +298,7 @@ async function detectStaticScenes(input: {
         "-",
       ],
       input.timeoutMs,
+      input.signal,
     );
 
     if (probe.exitCode !== 0) {
@@ -347,17 +375,23 @@ async function runEvidenceCommand(
   command: string,
   args: string[],
   timeoutMs: number,
+  signal?: AbortSignal,
 ) {
+  const cancellation = pipelineCancellationFromSignal(signal);
+  if (cancellation !== undefined) throw cancellation;
   return new Promise<{
     exitCode: number | null;
     stderr: string;
     stdout: string;
-  }>((resolve) => {
+  }>((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let terminationStarted = false;
+    let cancellationError: unknown;
     let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
+    let terminationSettlementTimer: ReturnType<typeof setTimeout> | undefined;
 
     const settle = (result: {
       exitCode: number | null;
@@ -369,8 +403,39 @@ async function runEvidenceCommand(
       }
       settled = true;
       clearTimeout(timeoutTimer);
-      resolve(result);
+      if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
+      if (terminationSettlementTimer !== undefined) {
+        clearTimeout(terminationSettlementTimer);
+      }
+      signal?.removeEventListener("abort", abort);
+      if (cancellationError !== undefined) {
+        reject(cancellationError);
+      } else {
+        resolve(result);
+      }
     };
+
+    const terminate = (reason: "cancelled" | "timed-out") => {
+      if (settled || terminationStarted) return;
+      terminationStarted = true;
+      clearTimeout(timeoutTimer);
+      if (reason === "cancelled") {
+        cancellationError =
+          pipelineCancellationFromSignal(signal) ?? signal?.reason;
+      } else {
+        stderr += `Command timed out after ${timeoutMs}ms.`;
+      }
+      child.kill("SIGTERM");
+      forceKillTimer = setTimeout(
+        () => child.kill("SIGKILL"),
+        Math.min(1000, Math.max(100, timeoutMs)),
+      );
+      terminationSettlementTimer = setTimeout(
+        () => settle({ exitCode: null, stderr, stdout }),
+        Math.min(2000, Math.max(500, timeoutMs)),
+      );
+    };
+    const abort = () => terminate("cancelled");
 
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
@@ -384,24 +449,14 @@ async function runEvidenceCommand(
       settle({ exitCode: 127, stderr: error.message, stdout });
     });
     child.once("close", (exitCode) => {
-      if (forceKillTimer !== undefined) {
-        clearTimeout(forceKillTimer);
-      }
       settle({ exitCode, stderr, stdout });
     });
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted === true) abort();
 
     const timeoutTimer = setTimeout(
       () => {
-        if (settled) {
-          return;
-        }
-        stderr += `Command timed out after ${timeoutMs}ms.`;
-        child.kill("SIGTERM");
-        forceKillTimer = setTimeout(
-          () => child.kill("SIGKILL"),
-          Math.min(1000, Math.max(100, timeoutMs)),
-        );
-        settle({ exitCode: null, stderr, stdout });
+        terminate("timed-out");
       },
       Math.max(1, timeoutMs),
     );

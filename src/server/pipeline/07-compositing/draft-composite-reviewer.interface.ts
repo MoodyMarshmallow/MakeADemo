@@ -17,6 +17,7 @@ export type DraftCompositeReviewDecision =
 
 export type DraftCompositeReviewerInput = {
   attempt: number;
+  deadlineAt?: number;
   captureManifest: CaptureManifest;
   derivedEvidence: {
     contactSheetPaths: string[];
@@ -32,6 +33,7 @@ export type DraftCompositeReviewerInput = {
   draftComposite: CompositedVideoManifest;
   agentSession?: AgentSession;
   preparationWorkspace?: PreparationWorkspaceHandle;
+  signal?: AbortSignal;
   demoScript: DemoScript;
 };
 

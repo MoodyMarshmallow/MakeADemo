@@ -353,6 +353,18 @@ function createPreparationWorkspaceHandle(input: {
         } catch (error) {
           firstError = error;
         }
+        try {
+          await workspace.setOutboundNetworkAccess(false);
+        } catch (error) {
+          firstError ??= error;
+        }
+        if (input.submittedCodeSandbox !== undefined) {
+          try {
+            await workspace.setSubmittedCodeNetworkAccess(false);
+          } catch (error) {
+            firstError ??= error;
+          }
+        }
         if (input.submittedCodeSandbox !== undefined) {
           try {
             await input.client.delete(input.submittedCodeSandbox);
@@ -417,24 +429,11 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     if (options.onStdout !== undefined || options.onStderr !== undefined) {
       return this.executeStreaming(command, options);
     }
-
-    const timeoutMs = options.timeoutMs ?? this.commandTimeoutMs;
-    const response = await withTimeout(
-      this.sandbox.process.executeCommand(
-        command,
-        undefined,
-        options.env,
-        toSdkTimeoutSeconds(timeoutMs),
-      ),
-      timeoutMs,
-      `Daytona command did not finish within ${timeoutMs}ms.`,
+    return this.executeCancellableCommandInSandbox(
+      this.sandbox,
+      command,
+      options,
     );
-
-    return {
-      exitCode: response.exitCode ?? 0,
-      stderr: response.stderr ?? "",
-      stdout: response.stdout ?? response.result ?? "",
-    };
   }
 
   async executeAgentCommand(
@@ -449,23 +448,11 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     if (options.onStdout !== undefined || options.onStderr !== undefined) {
       return this.executeStreaming(agentCommand, agentOptions);
     }
-
-    const timeoutMs = options.timeoutMs ?? this.commandTimeoutMs;
-    const response = await withTimeout(
-      this.sandbox.process.executeCommand(
-        agentCommand,
-        "/workspace",
-        {},
-        toSdkTimeoutSeconds(timeoutMs),
-      ),
-      timeoutMs,
-      `Daytona agent command did not finish within ${timeoutMs}ms.`,
+    return this.executeCancellableCommandInSandbox(
+      this.sandbox,
+      agentCommand,
+      agentOptions,
     );
-    return {
-      exitCode: response.exitCode ?? 0,
-      stderr: response.stderr ?? "",
-      stdout: response.stdout ?? response.result ?? "",
-    };
   }
 
   async prepareForAgent(): Promise<void> {
@@ -479,10 +466,10 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
       `find ${shellQuote("/workspace")} -xdev -exec chown --no-dereference ${shellQuote(`${agentWorkspaceUser}:${agentWorkspaceUser}`)} {} +`,
       "chmod 0755 /tmp /var/tmp",
     ].join(" && ");
-    const response = await withTimeout(
-      this.sandbox.process.executeCommand(command),
-      this.commandTimeoutMs,
-      `Daytona agent workspace handoff did not finish within ${this.commandTimeoutMs}ms.`,
+    const response = await this.executeCancellableCommandInSandbox(
+      this.sandbox,
+      command,
+      {},
     );
     if ((response.exitCode ?? 0) !== 0) {
       throw new Error("Failed to hand the cloned workspace to the agent user.");
@@ -498,6 +485,7 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     const decoder = new TextDecoder();
     const exitMarker = createExitMarker();
     const ptyForData: { current?: ManagedPty } = {};
+    let commandStarted = false;
     const pty = await this.createConnectedPty(
       this.sandbox,
       {
@@ -507,8 +495,9 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
         id: `makeademo-${randomUUID()}`,
         onData: (data) => {
           const chunk = decoder.decode(data);
-          output.push(chunk);
           ptyForData.current?.notifyData(chunk);
+          if (!commandStarted) return;
+          output.push(chunk);
           const visibleChunk = removeExitMarker(chunk, exitMarker);
           if (visibleChunk.length > 0) {
             options.onStdout?.(visibleChunk);
@@ -521,9 +510,9 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     ptyForData.current = pty;
 
     try {
-      await pty.sendInput(
-        `stty -echo\n${command}\nprintf '\\n${exitMarker}%s\\n' $?\nexit\n`,
-      );
+      await this.preparePtyTerminal(pty);
+      commandStarted = true;
+      await pty.sendInput(createNoninteractivePtyCommand(command, exitMarker));
       const result = await withTimeout(
         pty.completion(),
         timeoutMs,
@@ -598,24 +587,11 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
         options,
       );
     }
-
-    const timeoutMs = options.timeoutMs ?? this.commandTimeoutMs;
-    const response = await withTimeout(
-      this.submittedCodeSandbox.process.executeCommand(
-        command,
-        undefined,
-        options.env,
-        toSdkTimeoutSeconds(timeoutMs),
-      ),
-      timeoutMs,
-      `Daytona command did not finish within ${timeoutMs}ms.`,
+    return this.executeCancellableCommandInSandbox(
+      this.submittedCodeSandbox,
+      command,
+      options,
     );
-
-    return {
-      exitCode: response.exitCode ?? 0,
-      stderr: response.stderr ?? "",
-      stdout: response.stdout ?? response.result ?? "",
-    };
   }
 
   async executeSubmittedProject(
@@ -638,22 +614,12 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
         execution.cwd,
       );
     }
-    const timeoutMs = options.timeoutMs ?? this.commandTimeoutMs;
-    const response = await withTimeout(
-      this.submittedCodeSandbox.process.executeCommand(
-        execution.command,
-        execution.cwd,
-        projectOptions.env,
-        toSdkTimeoutSeconds(timeoutMs),
-      ),
-      timeoutMs,
-      `Daytona command did not finish within ${timeoutMs}ms.`,
+    return this.executeCancellableCommandInSandbox(
+      this.submittedCodeSandbox,
+      execution.command,
+      projectOptions,
+      execution.cwd,
     );
-    return {
-      exitCode: response.exitCode ?? 0,
-      stderr: response.stderr ?? "",
-      stdout: response.stdout ?? response.result ?? "",
-    };
   }
 
   async executeSubmittedRuntime(
@@ -676,22 +642,12 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
         execution.cwd,
       );
     }
-    const timeoutMs = options.timeoutMs ?? this.commandTimeoutMs;
-    const response = await withTimeout(
-      this.submittedCodeSandbox.process.executeCommand(
-        execution.command,
-        execution.cwd,
-        runtimeOptions.env,
-        toSdkTimeoutSeconds(timeoutMs),
-      ),
-      timeoutMs,
-      `Daytona command did not finish within ${timeoutMs}ms.`,
+    return this.executeCancellableCommandInSandbox(
+      this.submittedCodeSandbox,
+      execution.command,
+      runtimeOptions,
+      execution.cwd,
     );
-    return {
-      exitCode: response.exitCode ?? 0,
-      stderr: response.stderr ?? "",
-      stdout: response.stdout ?? response.result ?? "",
-    };
   }
 
   async setOutboundNetworkAccess(enabled: boolean): Promise<void> {
@@ -1023,6 +979,7 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     const decoder = new TextDecoder();
     const exitMarker = createExitMarker();
     let ptyForData: ManagedPty | undefined;
+    let commandStarted = false;
     const pty = await this.createConnectedPty(
       sandbox,
       {
@@ -1032,8 +989,9 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
         id: `makeademo-${randomUUID()}`,
         onData: (data) => {
           const chunk = decoder.decode(data);
-          output.push(chunk);
           ptyForData?.notifyData(chunk);
+          if (!commandStarted) return;
+          output.push(chunk);
           const visibleChunk = removeExitMarker(chunk, exitMarker);
           if (visibleChunk.length > 0) {
             options.onStdout?.(visibleChunk);
@@ -1046,9 +1004,9 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     ptyForData = pty;
 
     try {
-      await pty.sendInput(
-        `stty -echo\n${command}\nprintf '\\n${exitMarker}%s\\n' $?\nexit\n`,
-      );
+      await this.preparePtyTerminal(pty);
+      commandStarted = true;
+      await pty.sendInput(createNoninteractivePtyCommand(command, exitMarker));
       const result = await withTimeout(
         pty.completion(),
         timeoutMs,
@@ -1068,6 +1026,30 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
       this.activePtys.delete(pty);
       await pty.disconnect();
     }
+  }
+
+  private async executeCancellableCommandInSandbox(
+    sandbox: DaytonaSdkSandbox,
+    command: string,
+    options: PreparationWorkspaceExecuteOptions,
+    cwd = "/workspace",
+  ): Promise<PreparationWorkspaceCommandResult> {
+    const markers = createCancellableCommandMarkers();
+    const result = await this.executeStreamingInSandbox(
+      sandbox,
+      createCancellableCommand(command, markers),
+      {
+        ...(options.env === undefined ? {} : { env: options.env }),
+        ...(options.timeoutMs === undefined
+          ? {}
+          : { timeoutMs: options.timeoutMs }),
+      },
+      cwd,
+    );
+    if (result.exitCode === 143 && result.stderr === "PTY command cancelled.") {
+      return result;
+    }
+    return readCancellableCommandResult(result.stdout, markers);
   }
 
   private async createConnectedPty(
@@ -1109,6 +1091,123 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
       ? lastError
       : new Error("Daytona PTY startup failed.");
   }
+
+  private async preparePtyTerminal(pty: ManagedPty): Promise<void> {
+    const readyMarker = `__MAKEADEMO_PTY_READY__:${randomUUID()}:`;
+    const ready = pty.waitForMarker(readyMarker);
+    await pty.sendInput(
+      `stty -echo -onlcr -icanon && printf '\\n%s\\n' ${shellQuote(readyMarker)}\n`,
+    );
+    await withTimeout(
+      ready,
+      this.ptyConnectionTimeoutMs,
+      `Daytona PTY terminal setup did not finish within ${this.ptyConnectionTimeoutMs}ms.`,
+      () => void pty.cancel(),
+    );
+  }
+}
+
+function createNoninteractivePtyCommand(
+  command: string,
+  exitMarker: string,
+): string {
+  const script = [command, `printf '\\n${exitMarker}%s\\n' $?`].join("\n");
+  const encoded = Buffer.from(script).toString("base64");
+  return `printf '%s' ${shellQuote(encoded)} | base64 -d | /bin/sh; exit\n`;
+}
+
+type CancellableCommandMarkers = {
+  exit: string;
+  stderr: string;
+  stdout: string;
+};
+
+function createCancellableCommandMarkers(): CancellableCommandMarkers {
+  const id = randomUUID();
+  return {
+    exit: `__MAKEADEMO_COMMAND_EXIT__:${id}:`,
+    stderr: `__MAKEADEMO_COMMAND_STDERR__:${id}:`,
+    stdout: `__MAKEADEMO_COMMAND_STDOUT__:${id}:`,
+  };
+}
+
+function createCancellableCommand(
+  command: string,
+  markers: CancellableCommandMarkers,
+): string {
+  const id = randomUUID();
+  const stdoutPath = `${makeADemoArtifactDirectory}/command-${id}.stdout`;
+  const stderrPath = `${makeADemoArtifactDirectory}/command-${id}.stderr`;
+  return [
+    `mkdir -p ${shellQuote(makeADemoArtifactDirectory)}`,
+    `/bin/sh -c ${shellQuote(command)} > ${shellQuote(stdoutPath)} 2> ${shellQuote(stderrPath)}`,
+    "makeademo_command_exit_code=$?",
+    `printf '\\n%s\\n' ${shellQuote(markers.stdout)}`,
+    `base64 < ${shellQuote(stdoutPath)} | tr -d '\\n'`,
+    `printf '\\n%s\\n' ${shellQuote(markers.stderr)}`,
+    `base64 < ${shellQuote(stderrPath)} | tr -d '\\n'`,
+    `printf '\\n%s%s\\n' ${shellQuote(markers.exit)} "$makeademo_command_exit_code"`,
+    `rm -f ${shellQuote(stdoutPath)} ${shellQuote(stderrPath)}`,
+    ":",
+  ].join("\n");
+}
+
+function readCancellableCommandResult(
+  output: string,
+  markers: CancellableCommandMarkers,
+): PreparationWorkspaceCommandResult {
+  const stdoutMarker = findLastFramingMarker(output, markers.stdout, true);
+  const stderrMarker = findLastFramingMarker(output, markers.stderr, true);
+  const exitMarker = findLastFramingMarker(output, markers.exit, false);
+  if (
+    stdoutMarker === undefined ||
+    stderrMarker === undefined ||
+    exitMarker === undefined ||
+    stderrMarker.index <= stdoutMarker.index ||
+    exitMarker.index <= stderrMarker.index
+  ) {
+    throw new Error("Daytona command output framing was incomplete.");
+  }
+
+  const encodedStdout = output
+    .slice(stdoutMarker.end, stderrMarker.index)
+    .trim();
+  const encodedStderr = output.slice(stderrMarker.end, exitMarker.index).trim();
+  const exitCode = output
+    .slice(exitMarker.end)
+    .trim()
+    .match(/^(\d+)/)?.[1];
+  if (exitCode === undefined) {
+    throw new Error("Daytona command output framing was incomplete.");
+  }
+
+  return {
+    exitCode: Number(exitCode),
+    stderr: Buffer.from(encodedStderr, "base64").toString("utf8"),
+    stdout: Buffer.from(encodedStdout, "base64").toString("utf8"),
+  };
+}
+
+function findLastFramingMarker(
+  output: string,
+  marker: string,
+  includesTrailingNewline: boolean,
+): { end: number; index: number } | undefined {
+  const expression = new RegExp(
+    `\\r?\\n${escapeRegExp(marker)}${includesTrailingNewline ? "\\r?\\n" : ""}`,
+    "g",
+  );
+  let lastMatch: RegExpExecArray | null = null;
+  for (
+    let match = expression.exec(output);
+    match !== null;
+    match = expression.exec(output)
+  ) {
+    lastMatch = match;
+  }
+  return lastMatch === null
+    ? undefined
+    : { end: lastMatch.index + lastMatch[0].length, index: lastMatch.index };
 }
 
 function createSubmittedProjectExecution(
@@ -1306,6 +1405,10 @@ class ManagedPty {
     this.completionReject = reject;
   });
   private markerBuffer = "";
+  private readonly markerWaiters = new Map<
+    string,
+    { reject: (error: unknown) => void; resolve: () => void }
+  >();
   private cancelled = false;
 
   constructor(
@@ -1323,7 +1426,10 @@ class ManagedPty {
 
   async terminate(): Promise<void> {
     this.cancelled = true;
-    this.completionResolve({ error: "PTY command cancelled.", exitCode: 143 });
+    const error = new Error("PTY command cancelled.");
+    this.completionResolve({ error: error.message, exitCode: 143 });
+    for (const waiter of this.markerWaiters.values()) waiter.reject(error);
+    this.markerWaiters.clear();
     this.terminationPromise ??= this.terminateInternal();
     await this.terminationPromise;
   }
@@ -1338,11 +1444,18 @@ class ManagedPty {
 
   fail(error: unknown): void {
     this.completionReject(error);
+    for (const waiter of this.markerWaiters.values()) waiter.reject(error);
+    this.markerWaiters.clear();
   }
 
   notifyData(chunk: string): void {
     if (this.cancelled) return;
     this.markerBuffer = (this.markerBuffer + chunk).slice(-256);
+    for (const [marker, waiter] of this.markerWaiters) {
+      if (!this.markerBuffer.includes(marker)) continue;
+      this.markerWaiters.delete(marker);
+      waiter.resolve();
+    }
     const match = this.markerBuffer.match(
       new RegExp(`${escapeRegExp(this.exitMarker)}(\\d+)`),
     );
@@ -1358,6 +1471,16 @@ class ManagedPty {
 
   sendInput(data: string | Uint8Array): Promise<void> {
     return this.pty.sendInput(data);
+  }
+
+  waitForMarker(marker: string): Promise<void> {
+    if (this.markerBuffer.includes(marker)) return Promise.resolve();
+    if (this.cancelled) {
+      return Promise.reject(new Error("PTY command cancelled."));
+    }
+    return new Promise((resolve, reject) => {
+      this.markerWaiters.set(marker, { reject, resolve });
+    });
   }
 
   waitForConnection(): Promise<void> {

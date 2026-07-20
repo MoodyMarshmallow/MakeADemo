@@ -328,6 +328,63 @@ describe("DaytonaRepoSecurityInputLoader", () => {
     );
   });
 
+  it("cancels and releases repository-loading workspace before propagating Pipeline cancellation", async () => {
+    const events: string[] = [];
+    const controller = new AbortController();
+    let rejectClone: ((error: Error) => void) | undefined;
+    let markCloneStarted: (() => void) | undefined;
+    const cloneStarted = new Promise<void>((resolve) => {
+      markCloneStarted = resolve;
+    });
+    const workspace: RepositoryLoadingWorkspace = {
+      async cancelActiveCommands() {
+        events.push("clone-cancelled");
+        rejectClone?.(new Error("clone cancelled"));
+      },
+      async execute(command) {
+        if (!command.includes("git clone")) {
+          throw new Error(`Unexpected command: ${command}`);
+        }
+        events.push("clone-started");
+        markCloneStarted?.();
+        return await new Promise((_, reject) => {
+          rejectClone = reject;
+        });
+      },
+      async setOutboundNetworkAccess(enabled) {
+        events.push(`network:${enabled}`);
+      },
+    };
+    const provider: RepositoryLoadingWorkspaceProvider = {
+      async create() {
+        return {
+          id: "repo-loader-1",
+          async release() {
+            events.push("workspace-released");
+          },
+          workspace,
+        };
+      },
+    };
+    const loading = new DaytonaRepoSecurityInputLoader({ provider }).load({
+      repoUrl: "https://github.com/example/app",
+      shouldReadText: readRepoSecurityInputTextPolicy,
+      signal: controller.signal,
+    });
+    await cloneStarted;
+
+    controller.abort();
+
+    await expect(loading).rejects.toMatchObject({ reason: "signal" });
+    expect(events).toEqual([
+      "network:true",
+      "clone-started",
+      "clone-cancelled",
+      "network:false",
+      "workspace-released",
+    ]);
+  });
+
   it("logs and bounds workspace release timeouts after repo stats succeed", async () => {
     const lines: string[] = [];
     const logger = createPipelineEventLogger({

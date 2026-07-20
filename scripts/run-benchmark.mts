@@ -41,6 +41,7 @@ const benchmarkTimeoutMs = parseBenchmarkTimeout(
 );
 const suiteDeadlineAt = Date.now() + benchmarkTimeoutMs;
 const processController = createBenchmarkProcessController();
+const pipelineDeadlineReserveMs = 60_000;
 let interrupted = false;
 const handleSignal = (signal: NodeJS.Signals) => {
   interrupted = true;
@@ -112,6 +113,11 @@ async function runRepoBenchmark(input: {
   await mkdir(runDirectory, { recursive: true });
 
   const args = buildBenchmarkPipelineArgs({
+    deadlineAt: Math.max(
+      Date.now(),
+      (input.deadlineAt ?? Date.now() + input.benchmarkTimeoutMs) -
+        pipelineDeadlineReserveMs,
+    ),
     outputRoot: pipelineOutputRoot,
     repo: input.repo,
   });

@@ -79,6 +79,8 @@ export type PiAgentSessionOptions = {
   agentDir?: string;
   createModelRuntime?: () => Promise<PiModelRuntime>;
   createSession?: PiSessionFactory;
+  /** Injectable Pi SDK creation seam used by the default retained-session adapter. */
+  createSdkSession?: typeof createAgentSession;
   cwd?: string;
   /** Harness-owned tools shared by every Pipeline Stage. */
   globalTools?: readonly ToolDefinition[];
@@ -113,6 +115,10 @@ export class PiAgentSession implements AgentSessionRunner {
   private readonly options: PiAgentSessionOptions;
   private readonly sessions = new WeakMap<AgentSession, RetainedSession>();
   private readonly retainedSessions = new Set<RetainedSession>();
+  private readonly pendingProviderOwnership = new Set<Promise<void>>();
+  private readonly releasedProviderSessions = new WeakSet<PiSessionLike>();
+  private globallyDisposed = false;
+  private globalToolsClosed = false;
   private modelRuntimePromise: Promise<PiModelRuntime> | undefined;
 
   constructor(options: PiAgentSessionOptions = {}) {
@@ -122,208 +128,241 @@ export class PiAgentSession implements AgentSessionRunner {
   async run<T = never>(
     input: AgentSessionRunInput<T>,
   ): Promise<AgentSessionRunResult<T>> {
-    const retained = await this.getOrCreateSession(input);
-    await this.rebindWorkspaceTools(retained, input.workspace);
-    const stageTools = createPiStageToolDefinitions(input.tools ?? []);
-    const unregisteredTools = stageTools.filter(
-      (tool) => !retained.registeredTools.has(tool.name),
-    );
-    if (unregisteredTools.length > 0) {
-      if (retained.providerSession.reconfigureTools === undefined) {
-        throw new Error(
-          `Pi session cannot register Pipeline Stage tools after creation: ${unregisteredTools
-            .map((tool) => tool.name)
-            .join(", ")}`,
-        );
-      }
-      const registeredTools = new Map(retained.registeredTools);
-      for (const tool of unregisteredTools) {
-        registeredTools.set(tool.name, tool);
-      }
-      await retained.providerSession.reconfigureTools([
-        ...registeredTools.values(),
-      ]);
-      retained.registeredTools = registeredTools;
-    }
-    retained.providerSession.setActiveToolsByName([
-      ...retained.baseToolNames,
-      ...stageTools.map((tool) => tool.name),
-    ]);
-    const activity = createPiActivityTracker();
-    const stdoutChunks: string[] = [];
-    const stderrChunks: string[] = [];
-    let handoff: T | undefined;
-    let handoffError: string | undefined;
-    let latestToolName: string | undefined;
-    let providerError: string | undefined;
-    let interrupted = false;
-    let interruptionPromise: Promise<void> | undefined;
-    let timeoutError: AgentSessionTimeoutError | undefined;
-    const toolArguments = new Map<string, unknown>();
-
-    const emit = (channel: "stderr" | "stdout", chunk: string) => {
-      if (chunk.length === 0) return;
-      if (channel === "stdout") {
-        stdoutChunks.push(chunk);
-        this.options.onStdout?.(chunk);
-        input.onStdout?.(chunk);
-      } else {
-        stderrChunks.push(chunk);
-        this.options.onStderr?.(chunk);
-        input.onStderr?.(chunk);
-      }
-    };
-    const processEvent = (rawEvent: unknown) => {
-      const event = rawEvent as Parameters<typeof readPiTextDelta>[0];
-      activity.observe(event.type);
-      const text = readPiTextDelta(event);
-      if (text !== undefined) emit("stdout", text);
-      const tool = readPiToolExecution(event);
-      if (tool !== undefined) {
-        const toolCallId =
-          event.type === "tool_execution_start" ||
-          event.type === "tool_execution_end"
-            ? event.toolCallId
-            : undefined;
-        if (toolCallId !== undefined && tool.status === "started") {
-          toolArguments.set(toolCallId, tool.args);
-        } else if (
-          toolCallId !== undefined &&
-          tool.status === "completed" &&
-          tool.args === undefined
-        ) {
-          tool.args = toolArguments.get(toolCallId);
+    const interruption = createPiRunInterruption(input);
+    try {
+      await interruption.throwIfExternallyCancelled();
+      const retainedPromise = this.getOrCreateSession(input);
+      const lateSessionOwnership = retainedPromise.then(
+        async (session) => {
+          const providerAbort = interruption.attachProvider(
+            session.providerSession,
+          );
+          if (!interruption.externallyCancelled) return;
+          if (providerAbort !== undefined) {
+            await settleInterruption(
+              Promise.resolve(providerAbort).then(() => undefined),
+            );
+          }
+          this.disposeRetainedSession(session);
+        },
+        () => undefined,
+      );
+      interruption.attachCleanup(lateSessionOwnership);
+      const retained = await interruption.race(retainedPromise);
+      interruption.attachProvider(retained.providerSession);
+      const workspaceRebind = this.rebindWorkspaceTools(
+        retained,
+        input.workspace,
+      );
+      interruption.attachCleanup(workspaceRebind);
+      await interruption.race(workspaceRebind);
+      const stageTools = createPiStageToolDefinitions(input.tools ?? []);
+      const unregisteredTools = stageTools.filter(
+        (tool) => !retained.registeredTools.has(tool.name),
+      );
+      if (unregisteredTools.length > 0) {
+        if (retained.providerSession.reconfigureTools === undefined) {
+          throw new Error(
+            `Pi session cannot register Pipeline Stage tools after creation: ${unregisteredTools
+              .map((tool) => tool.name)
+              .join(", ")}`,
+          );
         }
-        latestToolName = tool.name;
-        activity.observe(`tool-${tool.status}`, tool.name);
-        if (
-          tool.status === "completed" &&
-          !tool.isError &&
-          input.toolProtocol !== undefined
-        ) {
-          const decoded = input.toolProtocol.decode({
-            input: tool.args,
-            name: tool.name,
-            status: "completed",
-          });
-          if (decoded.status === "invalid") {
-            handoff = undefined;
-            handoffError = decoded.reason;
-          } else if (decoded.status === "accepted") {
-            handoff = decoded.handoff;
-            handoffError = undefined;
-            if (
-              input.toolProtocol.interruptOnCompletedHandoff === true &&
-              !interrupted
-            ) {
-              interrupted = true;
-              interruptionPromise = this.interrupt(
-                input,
-                retained.providerSession,
-                tool.name,
-              );
+        const registeredTools = new Map(retained.registeredTools);
+        for (const tool of unregisteredTools) {
+          registeredTools.set(tool.name, tool);
+        }
+        const toolReconfiguration = retained.providerSession.reconfigureTools([
+          ...registeredTools.values(),
+        ]);
+        interruption.attachCleanup(toolReconfiguration);
+        await interruption.race(toolReconfiguration);
+        retained.registeredTools = registeredTools;
+      }
+      retained.providerSession.setActiveToolsByName([
+        ...retained.baseToolNames,
+        ...stageTools.map((tool) => tool.name),
+      ]);
+      await interruption.throwIfExternallyCancelled();
+      const activity = createPiActivityTracker();
+      const stdoutChunks: string[] = [];
+      const stderrChunks: string[] = [];
+      let handoff: T | undefined;
+      let handoffError: string | undefined;
+      let latestToolName: string | undefined;
+      let providerError: string | undefined;
+      let timeoutError: AgentSessionTimeoutError | undefined;
+      const toolArguments = new Map<string, unknown>();
+
+      const emit = (channel: "stderr" | "stdout", chunk: string) => {
+        if (chunk.length === 0) return;
+        if (channel === "stdout") {
+          stdoutChunks.push(chunk);
+          this.options.onStdout?.(chunk);
+          input.onStdout?.(chunk);
+        } else {
+          stderrChunks.push(chunk);
+          this.options.onStderr?.(chunk);
+          input.onStderr?.(chunk);
+        }
+      };
+      const processEvent = (rawEvent: unknown) => {
+        const event = rawEvent as Parameters<typeof readPiTextDelta>[0];
+        activity.observe(event.type);
+        const text = readPiTextDelta(event);
+        if (text !== undefined) emit("stdout", text);
+        const tool = readPiToolExecution(event);
+        if (tool !== undefined) {
+          const toolCallId =
+            event.type === "tool_execution_start" ||
+            event.type === "tool_execution_end"
+              ? event.toolCallId
+              : undefined;
+          if (toolCallId !== undefined && tool.status === "started") {
+            toolArguments.set(toolCallId, tool.args);
+          } else if (
+            toolCallId !== undefined &&
+            tool.status === "completed" &&
+            tool.args === undefined
+          ) {
+            tool.args = toolArguments.get(toolCallId);
+          }
+          latestToolName = tool.name;
+          activity.observe(`tool-${tool.status}`, tool.name);
+          if (
+            tool.status === "completed" &&
+            !tool.isError &&
+            input.toolProtocol !== undefined
+          ) {
+            const decoded = input.toolProtocol.decode({
+              input: tool.args,
+              name: tool.name,
+              status: "completed",
+            });
+            if (decoded.status === "invalid") {
+              handoff = undefined;
+              handoffError = decoded.reason;
+            } else if (decoded.status === "accepted") {
+              handoff = decoded.handoff;
+              handoffError = undefined;
+              if (
+                input.toolProtocol.interruptOnCompletedHandoff === true &&
+                !interruption.interrupted
+              ) {
+                void interruption.interrupt(tool.name);
+              }
             }
           }
         }
-      }
-      const eventError = readPiProviderError(event, {
-        ignoreAborted: interrupted,
-      });
-      if (eventError !== undefined) {
-        providerError = eventError;
-        emit("stderr", eventError);
-      }
-    };
-
-    const unsubscribe = retained.providerSession.subscribe(processEvent);
-    try {
-      await runWithPiActivityTimeout({
-        activity,
-        hardDeadlineAt: input.hardDeadlineAt,
-        hardTimeoutMs: input.hardTimeoutMs,
-        ...(input.inactivityLabel === undefined
-          ? {}
-          : { inactivityLabel: input.inactivityLabel }),
-        inactivityTimeoutMs: input.inactivityTimeoutMs,
-        label: input.profile.label,
-        onTimeout: () => {
-          interrupted = true;
-          interruptionPromise = this.interrupt(
-            input,
-            retained.providerSession,
-            "timeout",
-          );
-          return interruptionPromise;
-        },
-        run: () => retained.providerSession.prompt(input.taskPrompt),
-      });
-    } catch (error) {
-      if (!(error instanceof AgentSessionTimeoutError)) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (!(interrupted && isIntentionalAbortStateError(message))) {
-          providerError ??= message;
-          emit("stderr", message);
+        const eventError = readPiProviderError(event, {
+          ignoreAborted: interruption.interrupted,
+        });
+        if (eventError !== undefined) {
+          providerError = eventError;
+          emit("stderr", eventError);
         }
-      } else timeoutError = error;
+      };
+
+      const unsubscribe = retained.providerSession.subscribe(processEvent);
+      try {
+        await interruption.race(
+          runWithPiActivityTimeout({
+            activity,
+            hardDeadlineAt: input.hardDeadlineAt,
+            hardTimeoutMs: input.hardTimeoutMs,
+            ...(input.inactivityLabel === undefined
+              ? {}
+              : { inactivityLabel: input.inactivityLabel }),
+            inactivityTimeoutMs: input.inactivityTimeoutMs,
+            label: input.profile.label,
+            onTimeout: () => interruption.interrupt("timeout"),
+            run: () => retained.providerSession.prompt(input.taskPrompt),
+          }),
+        );
+      } catch (error) {
+        if (interruption.externallyCancelled) throw error;
+        if (!(error instanceof AgentSessionTimeoutError)) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          if (
+            !(interruption.interrupted && isIntentionalAbortStateError(message))
+          ) {
+            providerError ??= message;
+            emit("stderr", message);
+          }
+        } else timeoutError = error;
+      } finally {
+        unsubscribe();
+      }
+
+      if (interruption.interrupted) await interruption.settle();
+      await interruption.throwIfExternallyCancelled();
+      if (timeoutError !== undefined) throw timeoutError;
+
+      const stateError = retained.providerSession.state.errorMessage;
+      if (
+        providerError === undefined &&
+        stateError !== undefined &&
+        !(interruption.interrupted && isIntentionalAbortStateError(stateError))
+      ) {
+        providerError = stateError;
+      }
+      const assistantText = readPiAssistantText(
+        retained.providerSession.state.messages ?? [],
+      );
+      const structuredOutput = parsePiStructuredOutput(assistantText);
+      const lastMeaningfulActivity = activity.read();
+      return {
+        exitCode: providerError === undefined ? 0 : 1,
+        ...(handoff === undefined ? {} : { handoff }),
+        ...(handoffError === undefined ? {} : { handoffError }),
+        ...(latestToolName === undefined ? {} : { latestToolName }),
+        ...(lastMeaningfulActivity === undefined
+          ? {}
+          : { lastMeaningfulActivity }),
+        ...(providerError === undefined ? {} : { providerError }),
+        session: input.session ?? this.createOpaqueSession(retained),
+        stderr: stderrChunks.join(""),
+        stdout: stdoutChunks.join(""),
+        ...(structuredOutput === undefined ? {} : { structuredOutput }),
+      };
     } finally {
-      unsubscribe();
+      interruption.dispose();
     }
-
-    if (interruptionPromise !== undefined) {
-      await settleInterruption(interruptionPromise);
-    }
-    if (timeoutError !== undefined) throw timeoutError;
-
-    const stateError = retained.providerSession.state.errorMessage;
-    if (
-      providerError === undefined &&
-      stateError !== undefined &&
-      !(interrupted && isIntentionalAbortStateError(stateError))
-    ) {
-      providerError = stateError;
-    }
-    const assistantText = readPiAssistantText(
-      retained.providerSession.state.messages ?? [],
-    );
-    const structuredOutput = parsePiStructuredOutput(assistantText);
-    const lastMeaningfulActivity = activity.read();
-    return {
-      exitCode: providerError === undefined ? 0 : 1,
-      ...(handoff === undefined ? {} : { handoff }),
-      ...(handoffError === undefined ? {} : { handoffError }),
-      ...(latestToolName === undefined ? {} : { latestToolName }),
-      ...(lastMeaningfulActivity === undefined
-        ? {}
-        : { lastMeaningfulActivity }),
-      ...(providerError === undefined ? {} : { providerError }),
-      session: input.session ?? this.createOpaqueSession(retained),
-      stderr: stderrChunks.join(""),
-      stdout: stdoutChunks.join(""),
-      ...(structuredOutput === undefined ? {} : { structuredOutput }),
-    };
   }
 
   /** Disposes provider resources for one retained opaque session. */
   async dispose(session?: AgentSession): Promise<void> {
     if (session === undefined) {
+      this.globallyDisposed = true;
       for (const retained of this.retainedSessions) {
-        retained.providerSession.dispose();
-        retained.disposed = true;
+        this.disposeRetainedSession(retained);
       }
-      this.retainedSessions.clear();
-      await this.options.closeGlobalTools?.();
+      await settleInterruption(
+        Promise.allSettled([...this.pendingProviderOwnership]).then(
+          () => undefined,
+        ),
+      );
+      for (const retained of this.retainedSessions) {
+        this.disposeRetainedSession(retained);
+      }
+      if (!this.globalToolsClosed) {
+        this.globalToolsClosed = true;
+        await this.options.closeGlobalTools?.();
+      }
       return;
     }
     const retained = this.sessions.get(session);
     if (retained === undefined) return;
-    retained.providerSession.dispose();
-    retained.disposed = true;
-    this.retainedSessions.delete(retained);
+    this.disposeRetainedSession(retained);
   }
 
   private async getOrCreateSession<T>(
     input: AgentSessionRunInput<T>,
   ): Promise<RetainedSession> {
+    if (this.globallyDisposed) {
+      throw new Error("Pi agent session runner has been disposed.");
+    }
     if (input.session !== undefined) {
       const retained = this.sessions.get(input.session);
       if (retained === undefined) {
@@ -371,16 +410,20 @@ export class PiAgentSession implements AgentSessionRunner {
       ...createPiStageToolDefinitions(input.tools ?? []),
     ];
     const factory = this.options.createSession ?? this.createDefaultSession;
-    const created = await factory.call(this, {
-      agentDir: this.options.agentDir ?? defaultAgentDirectory,
-      cwd: this.options.cwd ?? defaultCwd,
-      customTools,
-      model,
-      modelID: input.profile.modelID,
-      providerID: input.profile.providerID,
-      systemPrompt: this.options.systemPrompt ?? universalAgentSystemPrompt,
-      thinkingLevel: input.profile.thinkingLevel,
-    });
+    const created = await this.ownProviderCreation(
+      Promise.resolve().then(() =>
+        factory.call(this, {
+          agentDir: this.options.agentDir ?? defaultAgentDirectory,
+          cwd: this.options.cwd ?? defaultCwd,
+          customTools,
+          model,
+          modelID: input.profile.modelID,
+          providerID: input.profile.providerID,
+          systemPrompt: this.options.systemPrompt ?? universalAgentSystemPrompt,
+          thinkingLevel: input.profile.thinkingLevel,
+        }),
+      ),
+    );
     const retained: RetainedSession = {
       baseToolNames: [
         ...builtinToolNames,
@@ -399,6 +442,49 @@ export class PiAgentSession implements AgentSessionRunner {
     };
     this.retainedSessions.add(retained);
     return retained;
+  }
+
+  private disposeRetainedSession(retained: RetainedSession): void {
+    if (retained.disposed) return;
+    retained.disposed = true;
+    this.retainedSessions.delete(retained);
+    retained.providerSession.dispose();
+  }
+
+  private async ownProviderCreation(
+    creation: Promise<{ session: PiSessionLike }>,
+  ): Promise<{ session: PiSessionLike }> {
+    const owned = creation.then(async (created) => {
+      if (!this.globallyDisposed) return created;
+      await this.releaseProviderSession(created.session);
+      throw new Error("Pi agent session runner has been disposed.");
+    });
+    return this.trackProviderOperation(owned);
+  }
+
+  private trackProviderOperation<Value>(
+    operation: Promise<Value>,
+  ): Promise<Value> {
+    const ownership = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.pendingProviderOwnership.add(ownership);
+    void ownership.finally(() =>
+      this.pendingProviderOwnership.delete(ownership),
+    );
+    return operation;
+  }
+
+  private async releaseProviderSession(session: PiSessionLike): Promise<void> {
+    if (this.releasedProviderSessions.has(session)) return;
+    this.releasedProviderSessions.add(session);
+    await settleInterruption(
+      Promise.resolve()
+        .then(() => session.abort())
+        .then(() => undefined),
+    );
+    session.dispose();
   }
 
   private async resolveModel(
@@ -454,6 +540,8 @@ export class PiAgentSession implements AgentSessionRunner {
   private async createDefaultSession(
     input: PiSessionFactoryInput,
   ): Promise<{ session: PiSessionLike }> {
+    const createSdkSession =
+      this.options.createSdkSession ?? createAgentSession;
     const settingsManager = SettingsManager.inMemory({
       defaultModel: input.modelID,
       defaultProvider: input.providerID,
@@ -468,7 +556,7 @@ export class PiAgentSession implements AgentSessionRunner {
     const sessionManager = SessionManager.inMemory(input.cwd);
     let currentModel = input.model;
     let currentThinkingLevel = input.thinkingLevel;
-    let result = await createAgentSession({
+    let result = await createSdkSession({
       agentDir: input.agentDir,
       cwd: input.cwd,
       customTools: [...input.customTools],
@@ -485,10 +573,60 @@ export class PiAgentSession implements AgentSessionRunner {
         ...input.customTools.map((tool) => tool.name),
       ],
     });
+    let aborted = false;
+    let abortPromise: Promise<void> | undefined;
+    let disposed = false;
+    const abort = () => {
+      if (abortPromise === undefined) {
+        aborted = true;
+        abortPromise = Promise.resolve()
+          .then(() => result.session.abort())
+          .then(() => undefined);
+      }
+      return abortPromise;
+    };
+    const dispose = () => {
+      if (disposed) return;
+      disposed = true;
+      result.session.dispose();
+    };
+    const reconfigureTools = async (tools: readonly ToolDefinition[]) => {
+      const previousSession = result.session;
+      const replacement = await createSdkSession({
+        agentDir: input.agentDir,
+        cwd: input.cwd,
+        customTools: [...tools],
+        model: currentModel as never,
+        modelRuntime: runtime as ModelRuntime,
+        noTools: "all",
+        resourceLoader,
+        sessionManager,
+        settingsManager,
+        thinkingLevel: currentThinkingLevel,
+        tools: [
+          ...builtinToolNames,
+          ...context7ToolNames,
+          ...tools.map((tool) => tool.name),
+        ],
+      });
+      if (aborted) {
+        await settleInterruption(
+          Promise.resolve()
+            .then(() => replacement.session.abort())
+            .then(() => undefined),
+        );
+      }
+      if (disposed) {
+        replacement.session.dispose();
+        return;
+      }
+      result = replacement;
+      previousSession.dispose();
+    };
     return {
       session: {
-        abort: () => result.session.abort(),
-        dispose: () => result.session.dispose(),
+        abort,
+        dispose,
         get isStreaming() {
           return result.session.isStreaming;
         },
@@ -496,27 +634,8 @@ export class PiAgentSession implements AgentSessionRunner {
           return result.session.model;
         },
         prompt: (text) => result.session.prompt(text),
-        reconfigureTools: async (tools) => {
-          const previousSession = result.session;
-          result = await createAgentSession({
-            agentDir: input.agentDir,
-            cwd: input.cwd,
-            customTools: [...tools],
-            model: currentModel as never,
-            modelRuntime: runtime as ModelRuntime,
-            noTools: "all",
-            resourceLoader,
-            sessionManager,
-            settingsManager,
-            thinkingLevel: currentThinkingLevel,
-            tools: [
-              ...builtinToolNames,
-              ...context7ToolNames,
-              ...tools.map((tool) => tool.name),
-            ],
-          });
-          previousSession.dispose();
-        },
+        reconfigureTools: (tools) =>
+          this.trackProviderOperation(reconfigureTools(tools)),
         setActiveToolsByName: (toolNames) =>
           result.session.setActiveToolsByName(toolNames),
         setModel: (model) => {
@@ -568,27 +687,131 @@ export class PiAgentSession implements AgentSessionRunner {
     retained.registeredTools = registeredTools;
     retained.workspace = workspace;
   }
+}
 
-  private async interrupt<T>(
-    input: AgentSessionRunInput<T>,
-    providerSession: PiSessionLike,
-    reason: string,
-  ): Promise<void> {
+function createPiRunInterruption<T>(input: AgentSessionRunInput<T>) {
+  let providerSession: PiSessionLike | undefined;
+  let providerAbort: Promise<unknown> | undefined;
+  let workspaceCancellation: Promise<unknown> | undefined;
+  let audit: Promise<void> | undefined;
+  let interruptionReason: string | undefined;
+  let externallyCancelled = false;
+  let externalCancellationReason: unknown;
+  let rejectExternalCancellation: ((reason: unknown) => void) | undefined;
+  const cleanups = new Set<Promise<unknown>>();
+  const externalCancellation = new Promise<never>((_resolve, reject) => {
+    rejectExternalCancellation = reject;
+  });
+  void externalCancellation.catch(() => undefined);
+
+  const startProviderAbort = () => {
+    if (providerSession === undefined || providerAbort !== undefined) return;
+    const activeProvider = providerSession;
+    providerAbort = Promise.resolve().then(() => activeProvider.abort());
+    void providerAbort.catch(() => undefined);
+  };
+  const startWorkspaceCancellation = () => {
+    workspaceCancellation ??= Promise.resolve().then(() =>
+      input.workspace.cancelActiveCommands?.(),
+    );
+    void workspaceCancellation.catch(() => undefined);
+  };
+  const currentInterruption = async (): Promise<void> => {
     await Promise.allSettled([
-      Promise.resolve().then(() => providerSession.abort()),
-      Promise.resolve().then(() => input.workspace.cancelActiveCommands?.()),
+      ...[providerAbort, workspaceCancellation, audit].filter(
+        (operation): operation is Promise<unknown> => operation !== undefined,
+      ),
+      ...cleanups,
     ]);
-    try {
-      await input.workspace.writeSandboxLog?.({
-        attempt: input.attempt,
-        event: "pi-interruption.completed",
-        reason,
-        stage: input.stage,
-      });
-    } catch {
-      // Audit logging is best effort.
+  };
+  const interrupt = (reason: string): Promise<void> => {
+    interruptionReason ??= reason;
+    startWorkspaceCancellation();
+    startProviderAbort();
+    audit ??= currentInterruption().then(async () => {
+      try {
+        await input.workspace.writeSandboxLog?.({
+          attempt: input.attempt,
+          event: "pi-interruption.completed",
+          reason: interruptionReason,
+          stage: input.stage,
+        });
+      } catch {
+        // Audit logging is best effort.
+      }
+    });
+    return currentInterruption();
+  };
+  const settle = async () => {
+    const providerAtStart = providerAbort;
+    await settleInterruption(currentInterruption());
+    if (providerAbort !== providerAtStart) {
+      await settleInterruption(currentInterruption());
     }
-  }
+  };
+  const interruptForExternalCancellation = () => {
+    if (externallyCancelled) return;
+    externallyCancelled = true;
+    externalCancellationReason = input.signal?.reason;
+    void interrupt("signal");
+    void settle().then(() => {
+      rejectExternalCancellation?.(externalCancellationReason);
+    });
+  };
+  input.signal?.addEventListener("abort", interruptForExternalCancellation, {
+    once: true,
+  });
+  if (input.signal?.aborted === true) interruptForExternalCancellation();
+
+  const throwIfExternallyCancelled = async () => {
+    if (!externallyCancelled) return;
+    await settle();
+    throw externalCancellationReason;
+  };
+
+  return {
+    attachProvider(session: PiSessionLike) {
+      if (providerSession !== undefined && providerSession !== session) {
+        throw new Error("Agent task cannot attach more than one Pi session.");
+      }
+      providerSession = session;
+      if (interruptionReason !== undefined) startProviderAbort();
+      return providerAbort;
+    },
+    attachCleanup(cleanup: Promise<unknown>) {
+      const settled = cleanup.then(
+        () => undefined,
+        () => undefined,
+      );
+      cleanups.add(settled);
+      void settled.finally(() => cleanups.delete(settled));
+    },
+    dispose() {
+      input.signal?.removeEventListener(
+        "abort",
+        interruptForExternalCancellation,
+      );
+    },
+    get externallyCancelled() {
+      return externallyCancelled;
+    },
+    get interrupted() {
+      return interruptionReason !== undefined;
+    },
+    interrupt,
+    async race<Value>(operation: Promise<Value>): Promise<Value> {
+      await throwIfExternallyCancelled();
+      try {
+        return await Promise.race([operation, externalCancellation]);
+      } catch (error) {
+        if (!externallyCancelled) throw error;
+        await settle();
+        throw externalCancellationReason;
+      }
+    },
+    settle,
+    throwIfExternallyCancelled,
+  };
 }
 
 async function settleInterruption(interruption: Promise<void>): Promise<void> {

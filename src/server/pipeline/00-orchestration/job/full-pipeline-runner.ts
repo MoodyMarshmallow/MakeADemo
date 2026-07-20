@@ -22,6 +22,11 @@ import {
   type ScriptPersistence,
   runDraftCompositeReviewLoop,
 } from "./draft-composite-review-loop";
+import {
+  type PipelineCancellationReason,
+  isPipelineCancellationError,
+  throwIfPipelineDeadlineReached,
+} from "./pipeline-cancellation";
 import type { PipelineJobInput } from "./pipeline-job";
 import { runPipelineJob } from "./pipeline-orchestrator";
 import type {
@@ -50,10 +55,12 @@ export type FullPipelineFailureContext = {
   agentAuditLogPath: string | undefined;
   resultPath: string;
   stage: "pipeline";
-  status: Exclude<
-    Awaited<ReturnType<typeof runPipelineJob>>,
-    { status: "succeeded" }
-  >["status"];
+  status:
+    | Exclude<
+        Awaited<ReturnType<typeof runPipelineJob>>,
+        { status: "succeeded" }
+      >["status"]
+    | "cancelled";
 };
 
 export class FullPipelineStageFailure extends Error {
@@ -206,6 +213,7 @@ export async function runFullPipelineJob(
       severity: "info",
       workspaceId: input.workspaceId,
     });
+    throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
 
     const initialPreparedDemo = await runPipelineJob(
       input,
@@ -292,6 +300,7 @@ export async function runFullPipelineJob(
       scriptPersistence,
       preparedDemo,
     });
+    throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
     preparedDemo = reviewResult.preparedDemo;
     scriptSummary = summarizeDemoScript(preparedDemo.demoScript);
     scriptPersistence = reviewResult.scriptPersistence;
@@ -366,6 +375,49 @@ export async function runFullPipelineJob(
       status: "succeeded",
     };
   } catch (error) {
+    if (isPipelineCancellationError(error)) {
+      const resultPath = join(runDirectory, "full-pipeline-result.json");
+      const cancellationSummary = createCancellationSummary({
+        agentAuditLogPath: options.agentAuditLogPath,
+        cancellationReason: error.reason,
+        logPath,
+        runDirectory,
+        runId,
+        sandboxLogPath,
+        scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
+      });
+      await cleanupPreparationWorkspaces({
+        handles: preparationWorkspaces,
+        log,
+      });
+      preparationWorkspaces.clear();
+      await log({
+        cancellationReason: error.reason,
+        event: "pipeline-cancelled",
+        message: error.message,
+        severity: "warn",
+        status: "cancelled",
+      });
+      terminalFailureLogged = true;
+      await writeFile(
+        resultPath,
+        `${JSON.stringify(cancellationSummary, null, 2)}\n`,
+      );
+      await log({
+        event: "result-written",
+        message: "Full pipeline cancellation result written.",
+        resultPath,
+        severity: "info",
+      });
+      throw new FullPipelineStageFailure({
+        failure: cancellationSummary.failure,
+        logPath,
+        agentAuditLogPath: options.agentAuditLogPath,
+        resultPath,
+        stage: "pipeline",
+        status: "cancelled",
+      });
+    }
     if (!terminalFailureLogged) {
       await log({
         error: readErrorMessage(error),
@@ -382,6 +434,40 @@ export async function runFullPipelineJob(
       log,
     });
   }
+}
+
+function createCancellationSummary(input: {
+  agentAuditLogPath: string | undefined;
+  cancellationReason: PipelineCancellationReason;
+  logPath: string;
+  runDirectory: string;
+  runId: string;
+  sandboxLogPath: string | undefined;
+  scriptGenerationAuditLogPath: string | undefined;
+}) {
+  const blocker =
+    input.cancellationReason === "deadline-exceeded"
+      ? "Pipeline deadline exceeded before the full Pipeline Job completed."
+      : "Pipeline cancelled by process signal before the full Pipeline Job completed.";
+  return {
+    artifacts: {
+      logPath: input.logPath,
+      ...(input.agentAuditLogPath === undefined
+        ? {}
+        : { agentAuditLogPath: input.agentAuditLogPath }),
+      ...(input.scriptGenerationAuditLogPath === undefined
+        ? {}
+        : { scriptGenerationAuditLogPath: input.scriptGenerationAuditLogPath }),
+      ...(input.sandboxLogPath === undefined
+        ? {}
+        : { sandboxLogPath: input.sandboxLogPath }),
+    },
+    cancellation: { reason: input.cancellationReason },
+    failure: { blockers: [blocker], suggestedChanges: [] },
+    runDirectory: input.runDirectory,
+    runId: input.runId,
+    status: "cancelled" as const,
+  };
 }
 
 async function cleanupPreparationWorkspaces(input: {

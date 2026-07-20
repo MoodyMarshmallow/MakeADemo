@@ -63,6 +63,7 @@ describe("benchmark process lifecycle", () => {
           stdoutPath: join(dir, `${name}.out`),
           stderrPath: join(dir, `${name}.err`),
           deadlineAt: Date.now() + 10_000,
+          cleanupGraceMs: 10,
           killGraceMs: 10,
           controller,
         }),
@@ -119,6 +120,7 @@ describe("benchmark process lifecycle", () => {
         stdoutPath: join(dir, "out"),
         stderrPath: join(dir, "err"),
         deadlineAt: Date.now(),
+        cleanupGraceMs: 10,
         killGraceMs: 10,
       }),
     ).resolves.toMatchObject({

@@ -297,10 +297,12 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
 
     expect(handle.id).toBe("sandbox_existing");
     expect(result.stdout).toBe("ok");
-    expect(calls).toEqual([
-      { get: "sandbox_existing" },
-      { executeCommand: "pwd" },
-    ]);
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        { get: "sandbox_existing" },
+        { decodedPtyScript: expect.stringContaining("/bin/sh -c 'pwd'") },
+      ]),
+    );
   });
 
   it("executes commands, updates network settings, stops, and archives the sandbox", async () => {
@@ -315,12 +317,16 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     await handle.release();
 
     expect(result).toEqual({ exitCode: 0, stderr: "", stdout: "ok" });
-    expect(calls.slice(1)).toEqual([
-      { executeCommand: "opencode run hello" },
-      { updateNetworkSettings: { networkBlockAll: true } },
-      { stop: "sandbox_123" },
-      { archive: "sandbox_123" },
-    ]);
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        {
+          decodedPtyScript: expect.stringContaining("opencode run hello"),
+        },
+        { updateNetworkSettings: { networkBlockAll: true } },
+        { stop: "sandbox_123" },
+        { archive: "sandbox_123" },
+      ]),
+    );
   });
 
   it("executes agent shell commands as the unprivileged workspace user", async () => {
@@ -334,16 +340,15 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       "printf pwned > /usr/local/bin/node",
     );
 
-    expect(calls.slice(1)).toEqual([
-      {
-        executeCommand: expect.stringMatching(
-          /runuser -u 'pwuser'.*env -i.*\/bin\/bash --noprofile --norc/,
-        ),
-      },
-    ]);
-    expect(calls).not.toContainEqual({
-      executeCommand: "printf pwned > /usr/local/bin/node",
-    });
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        {
+          decodedPtyScript: expect.stringMatching(
+            /runuser -u .*pwuser.*env -i.*\/bin\/bash --noprofile --norc/,
+          ),
+        },
+      ]),
+    );
   });
 
   it("hands the cloned workspace to the agent user without following symlinks", async () => {
@@ -355,17 +360,15 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
 
     await handle.workspace.prepareForAgent?.();
 
-    expect(calls.slice(1)).toEqual([
-      {
-        executeCommand: expect.stringMatching(
-          /find '\/workspace' -xdev -exec chown --no-dereference 'pwuser:pwuser'/,
-        ),
-      },
-    ]);
     expect(calls).toEqual(
       expect.arrayContaining([
         {
-          executeCommand: expect.stringMatching(
+          decodedPtyScript: expect.stringMatching(
+            /find .*\/workspace.* -xdev -exec chown --no-dereference .*pwuser:pwuser/,
+          ),
+        },
+        {
+          decodedPtyScript: expect.stringMatching(
             /makeademo-inspect-submitted-code-toolchain.*chmod 0750/,
           ),
         },
@@ -373,7 +376,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     );
   });
 
-  it("passes the configured command timeout to parent Daytona commands", async () => {
+  it("passes parent command environment through cancellable Daytona commands", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeCommandTimeoutClient(calls),
@@ -384,12 +387,10 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     await handle.workspace.execute("npm ci", { env: { CI: "true" } });
 
     expect(calls).toContainEqual({
-      executeCommand: {
-        command: "npm ci",
-        cwd: undefined,
-        env: { CI: "true" },
+      createPty: {
+        cwd: "/workspace",
+        envs: { CI: "true" },
         sandbox: "parent_sandbox",
-        timeout: 2,
       },
     });
   });
@@ -435,11 +436,9 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     );
 
     expect(calls).toContainEqual({
-      executeCommand: {
-        command:
-          "'mise' '--no-config' 'exec' 'node@22.23.1' '--' 'corepack' 'pnpm@11.13.0+sha512.0123456789abcdef' 'i' '--frozen-lockfile'",
+      createPty: {
         cwd: "/workspace/webapp",
-        env: {
+        envs: {
           COREPACK_DEFAULT_TO_LATEST: "0",
           COREPACK_ENABLE_AUTO_PIN: "0",
           COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
@@ -457,16 +456,18 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
           MISE_PARANOID: "1",
         },
         sandbox: "submitted_sandbox",
-        timeout: 600,
       },
     });
     expect(calls).toContainEqual({
-      executeCommand: {
-        command: "node playwright-control.mjs",
-        cwd: undefined,
-        env: undefined,
+      decodedPtyScript: {
         sandbox: "submitted_sandbox",
-        timeout: 600,
+        script: expect.stringContaining("pnpm@11.13.0+sha512.0123456789abcdef"),
+      },
+    });
+    expect(calls).toContainEqual({
+      decodedPtyScript: {
+        sandbox: "submitted_sandbox",
+        script: expect.stringContaining("node playwright-control.mjs"),
       },
     });
     expect(JSON.stringify(calls)).not.toContain("22.12.0");
@@ -497,11 +498,9 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     );
 
     expect(calls).toContainEqual({
-      executeCommand: {
-        command:
-          "'mise' '--no-config' 'exec' 'node@22.23.1' '--' 'sh' '-lc' 'pnpm run demo; printf '\\''%s'\\'' safe'",
+      createPty: {
         cwd: "/workspace",
-        env: expect.objectContaining({
+        envs: expect.objectContaining({
           COREPACK_ENABLE_NETWORK: "0",
           MISE_NO_CONFIG: "1",
           MISE_OFFLINE: "1",
@@ -509,7 +508,12 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
           NODE_ENV: "production",
         }),
         sandbox: "submitted_sandbox",
-        timeout: 600,
+      },
+    });
+    expect(calls).toContainEqual({
+      decodedPtyScript: {
+        sandbox: "submitted_sandbox",
+        script: expect.stringContaining("pnpm run demo"),
       },
     });
     expect(JSON.stringify(calls)).not.toContain("22.12.0");
@@ -589,7 +593,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     ).rejects.toThrow("Unsafe submitted project root: apps/../private");
   });
 
-  it("uses a per-call timeout override for parent Daytona commands", async () => {
+  it("accepts a per-call timeout override for parent Daytona commands", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeCommandTimeoutClient(calls),
@@ -600,12 +604,9 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     await handle.workspace.execute("opencode run hello", { timeoutMs: 2_500 });
 
     expect(calls).toContainEqual({
-      executeCommand: {
-        command: "opencode run hello",
-        cwd: undefined,
-        env: undefined,
+      decodedPtyScript: {
         sandbox: "parent_sandbox",
-        timeout: 3,
+        script: expect.stringContaining("opencode run hello"),
       },
     });
   });
@@ -621,9 +622,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     await expect(handle.workspace.execute("npm ci")).rejects.toThrow(
       "Daytona command did not finish within 1ms.",
     );
-    expect(calls).toEqual(
-      expect.arrayContaining([{ executeCommand: "npm ci" }]),
-    );
+    expect(calls).toEqual(expect.arrayContaining([{ kill: true }]));
   });
 
   it("resolves signed preview URLs for browser validation", async () => {
@@ -678,24 +677,13 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       stdout: "hello\n",
     });
     expect(streamed).toEqual(["stdout:hello\n"]);
-    expect(calls.slice(1)).toEqual([
-      {
-        createPty: {
-          cols: 120,
-          cwd: "/workspace",
-          envs: {},
-          id: expect.stringMatching(/^makeademo-/),
-          rows: 30,
-        },
-      },
-      { waitForConnection: true },
-      {
-        sendInput: expect.stringMatching(
-          /^stty -echo\nopencode run hello\nprintf '\\n__MAKEADEMO_EXIT__:[0-9a-f-]+:%s\\n' \$\?\nexit\n$/,
-        ),
-      },
-      { disconnect: true },
-    ]);
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        { waitForConnection: true },
+        { decodedPtyScript: expect.stringContaining("opencode run hello") },
+        { disconnect: true },
+      ]),
+    );
     expect(calls.filter((call) => "wait" in Object(call))).toHaveLength(0);
   });
 
@@ -926,7 +914,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     const execution = handle.workspace.execute("opencode run slow", {
       onStdout: () => {},
     });
-    await Promise.resolve();
+    await waitForPtyPayloads(calls, 1);
     await handle.release();
 
     await expect(execution).resolves.toMatchObject({ exitCode: 7 });
@@ -951,7 +939,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     const execution = handle.workspace.execute("opencode run slow", {
       onStdout: () => {},
     });
-    await Promise.resolve();
+    await waitForPtyPayloads(calls, 1);
 
     await Promise.all([
       handle.workspace.cancelActiveCommands?.(),
@@ -1057,7 +1045,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(
       calls.filter((call) => "waitForConnection" in Object(call)),
     ).toHaveLength(2);
-    expect(calls.filter((call) => "sendInput" in Object(call))).toHaveLength(1);
+    expect(calls.filter((call) => "sendInput" in Object(call))).toHaveLength(2);
   });
 
   it("retries streaming PTY startup with a fresh id after stale duplicate-id creation", async () => {
@@ -1086,7 +1074,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(result).toMatchObject({ exitCode: 7, stdout: "hello\n" });
     expect(ptyIds).toHaveLength(2);
     expect(ptyIds[1]).not.toBe(ptyIds[0]);
-    expect(calls.filter((call) => "sendInput" in Object(call))).toHaveLength(1);
+    expect(calls.filter((call) => "sendInput" in Object(call))).toHaveLength(2);
   });
 
   it("does not retry streaming PTY failures after sending the command", async () => {
@@ -1104,11 +1092,11 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     ).rejects.toThrow("Daytona command did not finish within 1ms.");
 
     expect(calls.filter((call) => "createPty" in Object(call))).toHaveLength(1);
-    expect(calls.filter((call) => "sendInput" in Object(call))).toHaveLength(1);
+    expect(calls.filter((call) => "sendInput" in Object(call))).toHaveLength(2);
     expect(calls.filter((call) => "wait" in Object(call))).toHaveLength(0);
   });
 
-  it("does not retry non-PTY command failures", async () => {
+  it("does not retry non-streaming command failures after PTY startup", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeClient(calls, { executeCommandFails: true }),
@@ -1119,12 +1107,8 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       "executeCommand failed",
     );
 
-    expect(
-      calls.filter(
-        (call) =>
-          typeof call === "object" && call !== null && "executeCommand" in call,
-      ),
-    ).toHaveLength(1);
+    expect(calls.filter((call) => "createPty" in Object(call))).toHaveLength(1);
+    expect(calls.filter((call) => "sendInput" in Object(call))).toHaveLength(2);
   });
 
   it("fails cleanly when streaming PTY startup retries are exhausted", async () => {
@@ -1379,8 +1363,12 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(result).toEqual({ exitCode: 0, stderr: "", stdout: "child ok" });
     expect(calls).toEqual(
       expect.arrayContaining([
+        { createPty: "submitted_sandbox" },
         {
-          executeCommand: { command: "npm test", sandbox: "submitted_sandbox" },
+          decodedPtyScript: {
+            sandbox: "submitted_sandbox",
+            script: expect.stringContaining("npm test"),
+          },
         },
         {
           updateNetworkSettings: {
@@ -1397,6 +1385,70 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         },
       ]),
     );
+  });
+
+  it("preserves submitted-code stdout, stderr, and exit status through cancellable execution", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient(calls, {
+        commandExitCode: 23,
+        commandStderr: "warning\n",
+        commandStdout: "result\n",
+      }),
+      commandTimeoutMs: 1,
+      submittedCodeSnapshot: "makeademo-submitted-code-browser",
+    });
+    const handle = await provider.create();
+
+    await expect(
+      handle.workspace.executeSubmittedCode?.("npm test"),
+    ).resolves.toEqual({
+      exitCode: 23,
+      stderr: "warning\n",
+      stdout: "result\n",
+    });
+  });
+
+  it("preserves submitted-code bytes when the PTY emits CRLF framing", async () => {
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient([], {
+        commandExitCode: 17,
+        commandStderr: "warning\r\n",
+        commandStdout: "first\r\nsecond\n",
+        ptyUsesCrlf: true,
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code-browser",
+    });
+    const handle = await provider.create();
+
+    await expect(
+      handle.workspace.executeSubmittedCode?.("npm test"),
+    ).resolves.toEqual({
+      exitCode: 17,
+      stderr: "warning\r\n",
+      stdout: "first\r\nsecond\n",
+    });
+  });
+
+  it("keeps interactive prompts outside submitted-code result framing", async () => {
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient([], {
+        commandStderr: "warning\n",
+        commandStdout: "abc",
+        ptyPrompt: "sandbox$ ",
+        ptyUsesCrlf: true,
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code-browser",
+    });
+    const handle = await provider.create();
+
+    await expect(
+      handle.workspace.executeSubmittedCode?.("npm test"),
+    ).resolves.toEqual({
+      exitCode: 0,
+      stderr: "warning\n",
+      stdout: "abc",
+    });
   });
 
   it("completes submitted-code streaming from its trusted marker when Daytona PTY wait never completes", async () => {
@@ -1423,9 +1475,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(calls).toEqual(
       expect.arrayContaining([
         {
-          sendInput: expect.stringMatching(
-            /^stty -echo\nnode --version\nprintf '\\n__MAKEADEMO_EXIT__:[0-9a-f-]+:%s\\n' \$\?\nexit\n$/,
-          ),
+          decodedPtyScript: expect.stringContaining("node --version"),
         },
       ]),
     );
@@ -1501,7 +1551,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     }
   });
 
-  it("passes the configured command timeout to submitted-code Daytona commands", async () => {
+  it("passes submitted-code environment through cancellable Daytona commands", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeCommandTimeoutClient(calls),
@@ -1515,12 +1565,10 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
 
     expect(calls).toContainEqual({
-      executeCommand: {
-        command: "npm test",
-        cwd: undefined,
-        env: { NODE_ENV: "test" },
+      createPty: {
+        cwd: "/workspace",
+        envs: { NODE_ENV: "test" },
         sandbox: "submitted_sandbox",
-        timeout: 2,
       },
     });
   });
@@ -1540,9 +1588,8 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
 
     expect(calls).toEqual(
       expect.arrayContaining([
-        {
-          executeCommand: { command: "npm ci", sandbox: "submitted_sandbox" },
-        },
+        { createPty: "submitted_sandbox" },
+        { killPty: "submitted_sandbox" },
       ]),
     );
   });
@@ -1839,6 +1886,197 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(calls).not.toContainEqual({ delete: "parent_sandbox" });
   });
 
+  it("reseals both sandboxes before deleting the linked child and archiving the primary", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code-browser",
+    });
+    const handle = await provider.create();
+
+    await handle.release();
+
+    expect(calls.slice(-5)).toEqual([
+      {
+        updateNetworkSettings: {
+          sandbox: "parent_sandbox",
+          settings: { networkBlockAll: true },
+        },
+      },
+      {
+        updateNetworkSettings: {
+          sandbox: "submitted_sandbox",
+          settings: { networkBlockAll: true },
+        },
+      },
+      { delete: "submitted_sandbox" },
+      { stop: "parent_sandbox" },
+      { archive: "parent_sandbox" },
+    ]);
+  });
+
+  it("cancels active primary and submitted-code commands before resealing either sandbox", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient(calls, {
+        executeCommandNeverResolves: true,
+        ptyWaitsForKill: true,
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code-browser",
+    });
+    const handle = await provider.create();
+
+    const primaryExecution = handle.workspace.execute("slow primary command", {
+      onStdout: () => {},
+    });
+    const submittedExecution = handle.workspace.executeSubmittedCode?.(
+      "slow submitted command",
+    );
+    await waitForPtyPayloads(calls, 2);
+
+    await handle.release();
+
+    await expect(primaryExecution).resolves.toMatchObject({ exitCode: 143 });
+    await expect(
+      Promise.race([
+        submittedExecution,
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("submitted command did not cancel")),
+            100,
+          ),
+        ),
+      ]),
+    ).resolves.toMatchObject({ exitCode: 143 });
+    const firstNetworkReseal = calls.findIndex(
+      (call) => "updateNetworkSettings" in Object(call),
+    );
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        { killPty: "parent_sandbox" },
+        { killPty: "submitted_sandbox" },
+      ]),
+    );
+    expect(
+      calls.findIndex(
+        (call) =>
+          "killPty" in Object(call) &&
+          (call as { killPty?: unknown }).killPty === "parent_sandbox",
+      ),
+    ).toBeLessThan(firstNetworkReseal);
+    expect(
+      calls.findIndex(
+        (call) =>
+          "killPty" in Object(call) &&
+          (call as { killPty?: unknown }).killPty === "submitted_sandbox",
+      ),
+    ).toBeLessThan(firstNetworkReseal);
+  });
+
+  it("cancels a non-streaming primary setup command before resealing the workspace", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient(calls, {
+        executeCommandNeverResolves: true,
+        ptyWaitsForKill: true,
+      }),
+    });
+    const handle = await provider.create();
+
+    const execution = handle.workspace.execute("slow setup command");
+    await waitForPtyPayloads(calls, 1);
+    await handle.release();
+
+    await expect(
+      Promise.race([
+        execution,
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("primary setup command did not cancel")),
+            100,
+          ),
+        ),
+      ]),
+    ).resolves.toMatchObject({ exitCode: 143 });
+    const primaryKill = calls.findIndex(
+      (call) =>
+        "killPty" in Object(call) &&
+        (call as { killPty?: unknown }).killPty === "parent_sandbox",
+    );
+    const networkReseal = calls.findIndex(
+      (call) => "updateNetworkSettings" in Object(call),
+    );
+    expect(primaryKill).toBeGreaterThanOrEqual(0);
+    expect(primaryKill).toBeLessThan(networkReseal);
+  });
+
+  it("cancels the primary agent handoff command before resealing the workspace", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient(calls, {
+        executeCommandNeverResolves: true,
+        ptyWaitsForKill: true,
+      }),
+    });
+    const handle = await provider.create();
+
+    const handoff = handle.workspace.prepareForAgent?.();
+    await waitForPtyPayloads(calls, 1);
+    await handle.release();
+
+    await expect(
+      Promise.race([
+        handoff,
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("agent handoff command did not cancel")),
+            100,
+          ),
+        ),
+      ]),
+    ).rejects.toThrow("Failed to hand the cloned workspace to the agent user");
+    const primaryKill = calls.findIndex(
+      (call) =>
+        "killPty" in Object(call) &&
+        (call as { killPty?: unknown }).killPty === "parent_sandbox",
+    );
+    const networkReseal = calls.findIndex(
+      (call) => "updateNetworkSettings" in Object(call),
+    );
+    expect(primaryKill).toBeGreaterThanOrEqual(0);
+    expect(primaryKill).toBeLessThan(networkReseal);
+  });
+
+  it("continues independent release cleanup after primary resealing fails", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient(calls, { failParentNetworkDisable: true }),
+      submittedCodeSnapshot: "makeademo-submitted-code-browser",
+    });
+    const handle = await provider.create();
+
+    await expect(handle.release()).rejects.toThrow(
+      "primary network reseal failed",
+    );
+    expect(calls.slice(-5)).toEqual([
+      {
+        updateNetworkSettings: {
+          sandbox: "parent_sandbox",
+          settings: { networkBlockAll: true },
+        },
+      },
+      {
+        updateNetworkSettings: {
+          sandbox: "submitted_sandbox",
+          settings: { networkBlockAll: true },
+        },
+      },
+      { delete: "submitted_sandbox" },
+      { stop: "parent_sandbox" },
+      { archive: "parent_sandbox" },
+    ]);
+  });
+
   it("still stops and archives the primary when linked submitted-code deletion fails", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
@@ -1931,12 +2169,19 @@ function fakeLinkedClient(
   options: {
     archiveAuthError?: string;
     archiveAuthFailuresBeforeSuccess?: number;
+    commandExitCode?: number;
+    commandStderr?: string;
+    commandStdout?: string;
     downloadFilesNeverResolves?: boolean;
     executeCommandNeverResolves?: boolean;
     failParentArchive?: boolean;
     failArchive?: boolean;
+    failParentNetworkDisable?: boolean;
     failSubmittedRestore?: boolean;
     failStop?: boolean;
+    ptyWaitsForKill?: boolean;
+    ptyPrompt?: string;
+    ptyUsesCrlf?: boolean;
     remoteCleanupNeverResolves?: boolean;
   } = {},
 ) {
@@ -2016,8 +2261,54 @@ function fakeCommandTimeoutSandbox(calls: unknown[], id: string) {
       return { url: `https://${id}.example.test:${port}` };
     },
     process: {
-      async createPty() {
-        throw new Error("Streaming is not exercised by command timeout tests.");
+      async createPty(ptyOptions: {
+        cwd?: string;
+        envs?: Record<string, string>;
+        onData: (data: Uint8Array) => void;
+      }) {
+        calls.push({
+          createPty: {
+            cwd: ptyOptions.cwd,
+            envs: ptyOptions.envs,
+            sandbox: id,
+          },
+        });
+        let disconnected = false;
+        let killed = false;
+        return {
+          async disconnect() {
+            if (disconnected) return;
+            disconnected = true;
+            calls.push({ disconnectPty: id });
+          },
+          async kill() {
+            if (killed) return;
+            killed = true;
+            calls.push({ killPty: id });
+          },
+          async sendInput(data: string | Uint8Array) {
+            const input = String(data);
+            calls.push({ sendInput: { data: input, sandbox: id } });
+            const readyMarker = input.match(
+              /__MAKEADEMO_PTY_READY__:[0-9a-f-]+:/,
+            )?.[0];
+            if (readyMarker !== undefined) {
+              ptyOptions.onData(new TextEncoder().encode(`\n${readyMarker}\n`));
+              return;
+            }
+            const script = decodeNoninteractivePtyCommand(input);
+            calls.push({ decodedPtyScript: { sandbox: id, script } });
+            emitFramedCommandResponse(script, ptyOptions.onData, {
+              exitCode: 0,
+              stderr: "",
+              stdout: "ok",
+            });
+          },
+          async wait() {
+            return { exitCode: 0 };
+          },
+          async waitForConnection() {},
+        };
       },
       async createSession() {},
       async deleteSession() {},
@@ -2218,12 +2509,19 @@ function fakeLinkedSandbox(
   options: {
     archiveAuthError?: string;
     archiveAuthFailuresBeforeSuccess?: number;
+    commandExitCode?: number;
+    commandStderr?: string;
+    commandStdout?: string;
     downloadFilesNeverResolves?: boolean;
     executeCommandNeverResolves?: boolean;
     failParentArchive?: boolean;
     failArchive?: boolean;
+    failParentNetworkDisable?: boolean;
     failSubmittedRestore?: boolean;
     failStop?: boolean;
+    ptyWaitsForKill?: boolean;
+    ptyPrompt?: string;
+    ptyUsesCrlf?: boolean;
     remoteCleanupNeverResolves?: boolean;
   } = {},
 ) {
@@ -2264,8 +2562,64 @@ function fakeLinkedSandbox(
       };
     },
     process: {
-      async createPty() {
-        throw new Error("Streaming is not exercised by linked sandbox tests.");
+      async createPty(ptyOptions: {
+        onData: (data: Uint8Array) => void;
+      }) {
+        calls.push({ createPty: id });
+        let disconnected = false;
+        let killed = false;
+        return {
+          async disconnect() {
+            if (disconnected) return;
+            disconnected = true;
+            calls.push({ disconnectPty: id });
+          },
+          async kill() {
+            if (killed) return;
+            killed = true;
+            calls.push({ killPty: id });
+          },
+          async sendInput(data: string | Uint8Array) {
+            const input = String(data);
+            calls.push({ sendInput: { data: input, sandbox: id } });
+            const readyMarker = input.match(
+              /__MAKEADEMO_PTY_READY__:[0-9a-f-]+:/,
+            )?.[0];
+            if (readyMarker !== undefined) {
+              const lineEnding = options.ptyUsesCrlf === true ? "\r\n" : "\n";
+              ptyOptions.onData(
+                new TextEncoder().encode(
+                  `${lineEnding}${readyMarker}${lineEnding}${options.ptyPrompt ?? ""}`,
+                ),
+              );
+              return;
+            }
+            if (
+              options.ptyWaitsForKill !== true &&
+              options.executeCommandNeverResolves !== true
+            ) {
+              const script = decodeNoninteractivePtyCommand(input);
+              calls.push({ decodedPtyScript: { sandbox: id, script } });
+              emitFramedCommandResponse(
+                script,
+                ptyOptions.onData,
+                {
+                  exitCode: options.commandExitCode ?? 0,
+                  stderr: options.commandStderr ?? "",
+                  stdout: options.commandStdout ?? stdout,
+                },
+                options.ptyUsesCrlf === true ? "\r\n" : "\n",
+              );
+            }
+          },
+          async wait() {
+            if (options.ptyWaitsForKill === true) {
+              while (!killed) await Promise.resolve();
+            }
+            return { exitCode: 0 };
+          },
+          async waitForConnection() {},
+        };
       },
       async createSession() {},
       async deleteSession() {},
@@ -2329,8 +2683,65 @@ function fakeLinkedSandbox(
     },
     async updateNetworkSettings(settings: unknown) {
       calls.push({ updateNetworkSettings: { sandbox: id, settings } });
+      if (
+        options.failParentNetworkDisable === true &&
+        id === "parent_sandbox"
+      ) {
+        throw new Error("primary network reseal failed");
+      }
     },
   };
+}
+
+function decodeNoninteractivePtyCommand(input: string): string {
+  const encoded = input.match(
+    /^printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| \/bin\/sh; exit\n$/,
+  )?.[1];
+  return encoded === undefined
+    ? input
+    : Buffer.from(encoded, "base64").toString("utf8");
+}
+
+function emitFramedCommandResponse(
+  input: string,
+  onData: (data: Uint8Array) => void,
+  result: { exitCode: number; stderr: string; stdout: string },
+  lineEnding = "\n",
+  prompt?: string,
+): void {
+  const stdoutMarker = input.match(
+    /__MAKEADEMO_COMMAND_STDOUT__:[0-9a-f-]+:/,
+  )?.[0];
+  const stderrMarker = input.match(
+    /__MAKEADEMO_COMMAND_STDERR__:[0-9a-f-]+:/,
+  )?.[0];
+  const commandExitMarker = input.match(
+    /__MAKEADEMO_COMMAND_EXIT__:[0-9a-f-]+:/,
+  )?.[0];
+  const ptyExitMarker = input.match(/__MAKEADEMO_EXIT__:[0-9a-f-]+:/)?.[0];
+  if (
+    stdoutMarker === undefined ||
+    stderrMarker === undefined ||
+    commandExitMarker === undefined ||
+    ptyExitMarker === undefined
+  ) {
+    throw new Error("cancellable command framing was missing");
+  }
+  onData(
+    new TextEncoder().encode(
+      [
+        "",
+        stdoutMarker,
+        Buffer.from(result.stdout).toString("base64"),
+        ...(prompt === undefined ? [] : [prompt]),
+        stderrMarker,
+        Buffer.from(result.stderr).toString("base64"),
+        `${commandExitMarker}${result.exitCode}`,
+        `${ptyExitMarker}0`,
+        "",
+      ].join(lineEnding),
+    ),
+  );
 }
 
 function fakeClient(
@@ -2462,8 +2873,30 @@ function fakeClient(
             resolveKill?.();
           },
           async sendInput(data: string | Uint8Array) {
+            const input = String(data);
             calls.push({ sendInput: data });
-            const exitMarker = String(data).match(
+            const readyMarker = input.match(
+              /__MAKEADEMO_PTY_READY__:[0-9a-f-]+:/,
+            )?.[0];
+            if (readyMarker !== undefined) {
+              ptyOptions.onData(new TextEncoder().encode(`\n${readyMarker}\n`));
+              return;
+            }
+            if (options.executeCommandFails === true) {
+              throw new Error("executeCommand failed");
+            }
+            if (options.executeCommandNeverResolves === true) return;
+            const script = decodeNoninteractivePtyCommand(input);
+            calls.push({ decodedPtyScript: script });
+            if (script.includes("__MAKEADEMO_COMMAND_STDOUT__:")) {
+              emitFramedCommandResponse(script, ptyOptions.onData, {
+                exitCode: 0,
+                stderr: "",
+                stdout: "ok",
+              });
+              return;
+            }
+            const exitMarker = script.match(
               /__MAKEADEMO_EXIT__:[0-9a-f-]+:/,
             )?.[0];
             if (exitMarker === undefined) {
@@ -2636,6 +3069,32 @@ function deferred<T>() {
   });
 
   return { promise, reject, resolve };
+}
+
+async function waitForPtyPayloads(
+  calls: unknown[],
+  expectedCount: number,
+): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const count = calls.filter((call) => {
+      if (typeof call !== "object" || call === null || !("sendInput" in call)) {
+        return false;
+      }
+      const value = (call as { sendInput?: unknown }).sendInput;
+      const input =
+        typeof value === "string"
+          ? value
+          : typeof value === "object" && value !== null && "data" in value
+            ? (value as { data?: unknown }).data
+            : undefined;
+      return (
+        typeof input === "string" && input.includes("| base64 -d | /bin/sh")
+      );
+    }).length;
+    if (count >= expectedCount) return;
+    await Promise.resolve();
+  }
+  throw new Error(`Expected ${expectedCount} PTY command payloads to start.`);
 }
 
 function countOccurrences(text: string, needle: string): number {

@@ -48,10 +48,13 @@ describe("AgenticCapturePathRepairer", () => {
   it("sends Capture Path Validation failure evidence back to the same Agent Session for repair", async () => {
     const events: unknown[] = [];
     const session = createAgentSession();
+    const controller = new AbortController();
+    const deadlineAt = Date.now() + 30_000;
     const agent = new CapturePathRepairAgentFixture({});
 
     const result = await agent.repairCapturePathFailure({
       ...capturePathRepairInput({}, events),
+      deadlineAt,
       agentSession: session,
       failure: {
         blockedNetworkAttempts: [],
@@ -66,14 +69,17 @@ describe("AgenticCapturePathRepairer", () => {
         status: "failed",
         warnings: [],
       },
+      signal: controller.signal,
     });
 
     expect(result.demoScript.scriptId).toBe("script_conduit");
     expect(result.demoScript).not.toHaveProperty("demoPlan");
     expect(agent.runner.calls[0]).toMatchObject({
       session,
+      signal: controller.signal,
       stage: "capture-path-repair",
     });
+    expect(agent.runner.calls[0]?.hardDeadlineAt).toBe(deadlineAt);
     expect(agent.runner.calls[0]?.taskPrompt.length).toBeLessThan(35_000);
     expect(events).toEqual(
       expect.arrayContaining([

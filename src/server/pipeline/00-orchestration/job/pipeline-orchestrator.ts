@@ -14,6 +14,11 @@ import type {
   CapturePathValidationInput,
   CapturePathValidationResult,
 } from "../../05-capture-path-validation/capture-path-validator.interface";
+import {
+  isPipelineCancellationError,
+  runSettledPipelineOperation,
+  throwIfPipelineDeadlineReached,
+} from "./pipeline-cancellation";
 import type { PipelineJobInput, PipelineJobResult } from "./pipeline-job";
 import {
   type PipelineObservabilityEvent,
@@ -40,10 +45,14 @@ type PipelineProgressEvent = {
 };
 
 export type PipelineOrchestratorOptions = {
+  /** Absolute deadline for this Pipeline Job, supplied by the non-interactive CLI. */
+  deadlineAt?: number;
   context?: Omit<PipelineObservationContext, "workspaceId">;
   now?: () => number;
   observer?: PipelineObserver;
   onProgress?: (event: PipelineProgressEvent) => Promise<unknown> | unknown;
+  /** Cooperatively stops active Pipeline work without recasting it as a stage failure. */
+  signal?: AbortSignal;
 };
 
 /**
@@ -53,6 +62,7 @@ export type PipelineOrchestratorOptions = {
  */
 export type CapturePathValidationRepairLifecycleInput = {
   agentSession?: AgentSession;
+  deadlineAt?: number;
   context: PipelineObservationContext;
   dependencies: PipelineOrchestratorDependencies;
   demoScript: DemoScript;
@@ -65,6 +75,7 @@ export type CapturePathValidationRepairLifecycleInput = {
   preparationManifest: CapturePathValidationInput["preparationManifest"];
   preparationWorkspace: CapturePathValidationInput["preparationWorkspace"];
   repoUrl: string;
+  signal?: AbortSignal;
 };
 
 /**
@@ -94,6 +105,8 @@ export async function runPipelineJob(
   };
   const observer = options.observer ?? noopPipelineObserver;
   const now = options.now ?? Date.now;
+
+  throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
 
   const securityStartedAt = reportStageStarted("repo-security-screen", {
     context,
@@ -152,6 +165,7 @@ export async function runPipelineJob(
     stage: "repo-security-screen",
     status: "succeeded",
   });
+  throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
 
   const preparationStartedAt = reportStageStarted("repo-preparation", {
     context,
@@ -172,8 +186,14 @@ export async function runPipelineJob(
       repoUrl: input.repoUrl,
       structuredDemoIntent: input.demoBrief,
       workspaceId: input.workspaceId,
+      ...(options.deadlineAt === undefined
+        ? {}
+        : { deadlineAt: repoPreparationDeadlineAt(options.deadlineAt, now()) }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
+    throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
   } catch (error) {
+    if (isPipelineCancellationError(error)) throw error;
     reportStageFinished("repo-preparation", "failed", {
       context,
       error,
@@ -227,6 +247,7 @@ export async function runPipelineJob(
     stage: "repo-preparation",
     status: "succeeded",
   });
+  throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
 
   const scriptStartedAt = reportStageStarted("script-generation", {
     context,
@@ -241,6 +262,9 @@ export async function runPipelineJob(
 
   let demoScript: DemoScript;
   const scriptGenerationInput = {
+    ...(options.deadlineAt === undefined
+      ? {}
+      : { deadlineAt: options.deadlineAt }),
     demoBrief: input.demoBrief,
     normalizedSupportingDocuments: input.normalizedSupportingDocuments,
     ...(preparation.agentSession === undefined
@@ -251,11 +275,14 @@ export async function runPipelineJob(
       ? {}
       : { preparationWorkspace: preparation.workspace }),
     repoUrl: input.repoUrl,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   } satisfies ScriptGenerationInput;
   const preparationManifest = preparation.manifest;
   try {
     demoScript = await dependencies.generateDemoScript(scriptGenerationInput);
+    throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
   } catch (error) {
+    if (isPipelineCancellationError(error)) throw error;
     reportStageFinished("script-generation", "failed", {
       context,
       error,
@@ -284,12 +311,15 @@ export async function runPipelineJob(
     status: "succeeded",
   });
 
-  const capturePathLifecycle = await runCapturePathValidationAndRepair({
+  const capturePathOperation = runCapturePathValidationAndRepair({
     ...(preparation.agentSession === undefined
       ? {}
       : { agentSession: preparation.agentSession }),
     context,
     dependencies,
+    ...(options.deadlineAt === undefined
+      ? {}
+      : { deadlineAt: options.deadlineAt }),
     demoScript,
     now,
     observer,
@@ -297,7 +327,17 @@ export async function runPipelineJob(
     preparationManifest,
     preparationWorkspace,
     repoUrl: input.repoUrl,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
+  const capturePathLifecycle = await runSettledPipelineOperation({
+    deadlineAt: options.deadlineAt,
+    onCancel: async () => {
+      await preparationWorkspace.workspace.cancelActiveCommands?.();
+    },
+    operation: capturePathOperation,
+    signal: options.signal,
+  });
+  throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
   if (capturePathLifecycle.status === "failed") {
     return {
       capturePathValidation: capturePathLifecycle.capturePathValidation,
@@ -317,6 +357,22 @@ export async function runPipelineJob(
   };
 }
 
+const repoPreparationMaximumDurationMs = 1_800_000;
+const pipelineReserveAfterRepoPreparationMs = 120_000;
+
+function repoPreparationDeadlineAt(
+  pipelineDeadlineAt: number,
+  preparationStartedAt: number,
+): number {
+  return Math.max(
+    preparationStartedAt,
+    Math.min(
+      preparationStartedAt + repoPreparationMaximumDurationMs,
+      pipelineDeadlineAt - pipelineReserveAfterRepoPreparationMs,
+    ),
+  );
+}
+
 /**
  * Runs the authoritative Capture Path Validation gate and bounded repair
  * lifecycle. It keeps the caller's retained agent session and workspace while
@@ -332,6 +388,7 @@ export async function runCapturePathValidationAndRepair(
   const repairAttemptLimit = readCapturePathRepairAttemptLimit();
 
   while (true) {
+    throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
     const capturePathValidation =
       failure ??
       (await runCapturePathValidation({
@@ -344,6 +401,7 @@ export async function runCapturePathValidationAndRepair(
         preparationWorkspace: input.preparationWorkspace,
         demoScript,
       }));
+    throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
 
     if (capturePathValidation.status === "succeeded") {
       return {
@@ -370,6 +428,9 @@ export async function runCapturePathValidationAndRepair(
     repairAttempt += 1;
     const repair = await input.dependencies.repairCapturePathFailure({
       attempt: repairAttempt,
+      ...(input.deadlineAt === undefined
+        ? {}
+        : { deadlineAt: input.deadlineAt }),
       failure: capturePathValidation,
       ...(input.agentSession === undefined
         ? {}
@@ -377,8 +438,10 @@ export async function runCapturePathValidationAndRepair(
       preparationManifest,
       preparationWorkspace: input.preparationWorkspace,
       repoUrl: input.repoUrl,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
       demoScript,
     });
+    throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
     preparationManifest = repair.preparationManifest;
     demoScript = repair.demoScript;
     failure = undefined;

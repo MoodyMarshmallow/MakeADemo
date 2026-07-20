@@ -2,6 +2,7 @@ import { copyFile, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { throwIfPipelineDeadlineReached } from "../00-orchestration/job/pipeline-cancellation";
 import {
   type DemoScript,
   parseDemoScript,
@@ -64,6 +65,7 @@ export type CompositedVideoManifest = {
 
 export type CompositeVideoFromScriptInput = {
   captureManifestPath: string;
+  deadlineAt?: number;
   demoRequestId?: string;
   demoRequestStore?: DemoRequestFinalVideoStore;
   finalVideoEmailNotifier?: FinalVideoEmailNotifier;
@@ -77,12 +79,14 @@ export type CompositeVideoFromScriptInput = {
   scriptDirectory?: string;
   demoScript?: unknown;
   scriptPath?: string;
+  signal?: AbortSignal;
 };
 
 export async function compositeVideoFromScript(
   input: CompositeVideoFromScriptInput,
 ): Promise<CompositedVideoManifest> {
   assertFinalVideoDependencies(input);
+  throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
 
   const projectRoot = input.projectRoot ?? process.cwd();
   const outputRoot = input.outputRoot ?? ".demo-composite-renders";
@@ -150,8 +154,12 @@ export async function compositeVideoFromScript(
   };
 
   await writeFile(renderPlanPath, `${JSON.stringify(renderPlan, null, 2)}\n`);
+  throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
   const renderer = input.renderer ?? (await createDefaultRenderer());
-  await renderer.renderVideo(renderPlan);
+  await renderer.renderVideo(renderPlan, {
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  });
+  throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
   const finalVideo = await storeAndLinkFinalVideo({
     demoRequestId: input.demoRequestId,
     demoRequestStore: input.demoRequestStore,

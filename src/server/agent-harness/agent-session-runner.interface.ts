@@ -69,6 +69,8 @@ export type AgentSessionRunInput<T = never> = {
   inactivityLabel?: string;
   inactivityTimeoutMs: number;
   profile: AgentSessionProfile;
+  /** Cancels this task while preserving the caller's cancellation reason. */
+  signal?: AbortSignal;
   taskPrompt: string;
   /** Stage-owned tools for this turn; never inferred from provider configuration. */
   tools?: readonly AgentToolDefinition[];

@@ -4,6 +4,7 @@ import {
   type PipelineEventLogger,
   createPipelineEventLogger,
 } from "../../../shared/logging/pipeline-event-logger";
+import { throwIfPipelineDeadlineReached } from "../../00-orchestration/job/pipeline-cancellation";
 import { createRepoPreparationAgentWorkspace } from "../../03-repo-preparation/agent-task/repo-preparation-agent-workspace";
 import { validateDemoScriptCandidate } from "../demo-script-candidate-validator";
 import type { DemoScript } from "../demo-script/demo-script.schema";
@@ -59,10 +60,14 @@ export class AgenticScriptGenerator implements ScriptGenerationAgent {
   async generateDemoScript(
     input: AgenticScriptGenerationInput,
   ): Promise<DemoScript> {
-    const hardDeadlineAt = Date.now() + this.hardTimeoutMs;
+    const hardDeadlineAt = Math.min(
+      Date.now() + this.hardTimeoutMs,
+      input.deadlineAt ?? Number.POSITIVE_INFINITY,
+    );
     let prompt = createScriptGenerationPrompt(input);
     let lastFailure = "Script Generation did not produce a valid Demo Script.";
     for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
+      throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
       if (Date.now() >= hardDeadlineAt) {
         throw new Error(
           `Script Generation exceeded its hard cap of ${this.hardTimeoutMs}ms.`,
@@ -78,6 +83,7 @@ export class AgenticScriptGenerator implements ScriptGenerationAgent {
         attempt,
         taskPrompt: prompt,
         session: input.agentSession,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
         stage: "script-generation",
         hardDeadlineAt,
         inactivityTimeoutMs: this.timeoutMs,
@@ -86,6 +92,7 @@ export class AgenticScriptGenerator implements ScriptGenerationAgent {
           input.preparationWorkspace.workspace,
         ),
       });
+      throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
 
       if (result.exitCode !== 0) {
         const retryReason = `Script Generation agent task exited with ${result.exitCode}.`;
@@ -115,6 +122,7 @@ export class AgenticScriptGenerator implements ScriptGenerationAgent {
           hardDeadlineAt,
         ),
       });
+      throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
       if (artifact.status === "failed") {
         lastFailure = artifact.reason;
         await writeScriptGenerationSandboxLog(this.logger, input, {

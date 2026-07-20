@@ -62,6 +62,10 @@ export type SubmittedProjectRuntimeRequest = {
  * must not expose agent-only secrets to submitted app build or runtime commands.
  */
 export interface PreparationWorkspace {
+  /**
+   * Terminates active primary and submitted-code commands and waits for their
+   * provider command handles to settle before returning.
+   */
   cancelActiveCommands?(): Promise<void>;
   downloadFiles?(files: PreparationWorkspaceDownloadFile[]): Promise<void>;
   execute(

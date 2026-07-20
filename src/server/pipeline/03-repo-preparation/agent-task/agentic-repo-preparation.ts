@@ -8,6 +8,11 @@ import {
   type PipelineEventLogger,
   createPipelineEventLogger,
 } from "../../../shared/logging/pipeline-event-logger";
+import {
+  PipelineCancellationError,
+  pipelineCancellationFromSignal,
+  throwIfPipelineCancelled,
+} from "../../00-orchestration/job/pipeline-cancellation";
 import { runPlannedDependencyInstallWithNetworkWindow } from "../dependency-install-network-window";
 import { evaluateDependencyNetworkRequest } from "../dependency-network-gate";
 import {
@@ -108,13 +113,41 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
   }
 
   async prepare(input: RepoPreparationInput): Promise<RepoPreparationResult> {
-    return this.prepareOnce(input);
+    const budget = createPreparationBudget(input);
+    try {
+      return await this.prepareOnce({ ...input, signal: budget.signal });
+    } finally {
+      budget.dispose();
+    }
   }
 
   private async prepareOnce(
     input: RepoPreparationInput,
   ): Promise<RepoPreparationResult> {
-    const handle = await this.provider.create();
+    const deadlineAt = input.deadlineAt ?? Date.now() + this.hardTimeoutMs;
+    this.throwIfCancelled(input, deadlineAt);
+    const creation = this.provider.create();
+    let handle: PreparationWorkspaceHandle;
+    try {
+      handle = await waitForPreparationOperation(creation, input.signal);
+    } catch (error) {
+      if (pipelineCancellationFromSignal(input.signal) !== undefined) {
+        const lateHandle = await creation.catch(() => undefined);
+        if (lateHandle !== undefined) {
+          await cancelActiveCommandsQuietly(lateHandle);
+          await releaseQuietly(lateHandle);
+        }
+        throw preparationCancellation(error, input.signal);
+      }
+      throw error;
+    }
+    try {
+      this.throwIfCancelled(input, deadlineAt);
+    } catch (error) {
+      await cancelActiveCommandsQuietly(handle);
+      await releaseQuietly(handle);
+      throw error;
+    }
     await this.writeSandboxLog(handle.workspace, {
       event: "workspace-created",
       timeoutMs: this.timeoutMs,
@@ -122,11 +155,21 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     });
     let result: TimedRunResult<PreparationSetupResult>;
     try {
-      result = await raceWithTimeout(
-        this.runPreparation(handle, input),
-        this.timeoutMs,
-      );
+      result = await runSettledPreparationOperation({
+        operation: this.runPreparation(handle, input),
+        onCancel: () => cancelActiveCommandsQuietly(handle),
+        signal: input.signal,
+        timeoutMs: Math.max(
+          1,
+          Math.min(this.timeoutMs, deadlineAt - Date.now()),
+        ),
+      });
     } catch (error) {
+      if (isPreparationCancellation(error, input.signal)) {
+        await cancelActiveCommandsQuietly(handle);
+        await releaseQuietly(handle);
+        throw preparationCancellation(error, input.signal);
+      }
       await this.writeSandboxLog(handle.workspace, {
         error: readErrorMessage(error),
         event: "preparation-error",
@@ -144,6 +187,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     }
 
     if (result.status !== "succeeded") {
+      this.throwIfCancelled(input, deadlineAt);
       await this.writeSandboxLog(handle.workspace, {
         event: "preparation-timeout",
         workspaceId: handle.id,
@@ -170,8 +214,14 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
           input,
           result.value.prompt,
           result.value.baselineSourceControlledPaths,
+          deadlineAt,
         );
       } catch (error) {
+        if (isPreparationCancellation(error, input.signal)) {
+          await cancelActiveCommandsQuietly(handle);
+          await releaseQuietly(handle);
+          throw preparationCancellation(error, input.signal);
+        }
         await this.writeSandboxLog(handle.workspace, {
           error: readErrorMessage(error),
           event: "preparation-error",
@@ -206,6 +256,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     handle: PreparationWorkspaceHandle,
     input: RepoPreparationInput,
   ): Promise<PreparationSetupResult> {
+    throwIfPipelineCancelled(input.signal);
     const bootstrap = await bootstrapRepoPreparationWorkspace({
       ...(input.commitSha === undefined ? {} : { commitSha: input.commitSha }),
       ...(this.cloneFailureDiagnosticsContext === undefined
@@ -217,10 +268,12 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
       repoUrl: input.repoUrl,
       workspace: handle.workspace,
     });
+    throwIfPipelineCancelled(input.signal);
     if (bootstrap.failure !== undefined) {
       return { result: bootstrap.failure, status: "result" };
     }
     const toolchain = await inspectSubmittedCodeToolchain(handle.workspace);
+    throwIfPipelineCancelled(input.signal);
     if (toolchain.mode === "unsupported") {
       await this.writeSandboxLog(handle.workspace, {
         code: toolchain.code,
@@ -263,6 +316,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
       );
     }
     await handle.workspace.prepareForAgent();
+    throwIfPipelineCancelled(input.signal);
 
     return {
       baselineSourceControlledPaths:
@@ -277,6 +331,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     input: RepoPreparationInput,
     initialPrompt: string,
     baselineSourceControlledPaths: string[],
+    hardDeadlineAt: number,
   ): Promise<AgentTaskLoopResult> {
     let prompt = initialPrompt;
     let agentSession: AgentSession | undefined;
@@ -285,7 +340,6 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
       readManifest: () =>
         readPreparationManifestFile(handle.workspace, preparationManifestPath),
     });
-    const hardDeadlineAt = Date.now() + this.hardTimeoutMs;
     for (let attempt = 0; attempt < maximumAgentTaskTurns; attempt += 1) {
       const initialDeadlineAt = Math.min(
         Date.now() + this.timeoutMs,
@@ -293,16 +347,20 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
       );
       let deadlineAt = initialDeadlineAt;
       if (Date.now() >= hardDeadlineAt) {
-        return this.timeoutPreparation(
-          handle,
-          `Repo Preparation exceeded its hard cap of ${this.hardTimeoutMs}ms.`,
-          {
-            timeoutKind: "hard-cap",
-            hardTimeoutMs: this.hardTimeoutMs,
-            inactivityTimeoutMs: this.timeoutMs,
-          },
-        );
+        if (input.deadlineAt === undefined) {
+          return this.timeoutPreparation(
+            handle,
+            `Repo Preparation exceeded its hard cap of ${this.hardTimeoutMs}ms.`,
+            {
+              timeoutKind: "hard-cap",
+              hardTimeoutMs: this.hardTimeoutMs,
+              inactivityTimeoutMs: this.timeoutMs,
+            },
+          );
+        }
+        throw new PipelineCancellationError("deadline-exceeded");
       }
+      throwIfPipelineCancelled(input.signal);
       await this.writeSandboxLog(handle.workspace, {
         attempt: attempt + 1,
         event: "agent-task.started",
@@ -316,6 +374,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         inactivityLabel: "Repo Preparation agent",
         inactivityTimeoutMs: this.timeoutMs,
         ...(agentSession === undefined ? {} : { session: agentSession }),
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
         stage: "repo-preparation",
         taskPrompt: prompt,
         tools: createRepoPreparationStageTools(controlState),
@@ -323,16 +382,20 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         workspace: createRepoPreparationAgentWorkspace(handle.workspace),
       });
       if (Date.now() >= hardDeadlineAt) {
-        return this.timeoutPreparation(
-          handle,
-          `Repo Preparation exceeded its hard cap of ${this.hardTimeoutMs}ms.`,
-          {
-            timeoutKind: "hard-cap",
-            hardTimeoutMs: this.hardTimeoutMs,
-            inactivityTimeoutMs: this.timeoutMs,
-          },
-        );
+        if (input.deadlineAt === undefined) {
+          return this.timeoutPreparation(
+            handle,
+            `Repo Preparation exceeded its hard cap of ${this.hardTimeoutMs}ms.`,
+            {
+              timeoutKind: "hard-cap",
+              hardTimeoutMs: this.hardTimeoutMs,
+              inactivityTimeoutMs: this.timeoutMs,
+            },
+          );
+        }
+        throw new PipelineCancellationError("deadline-exceeded");
       }
+      throwIfPipelineCancelled(input.signal);
       if (
         Date.now() > initialDeadlineAt &&
         agentTaskResult.lastMeaningfulActivity !== undefined
@@ -447,13 +510,16 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
           executedExecutable: plannedInstall.install.executable,
           requestedCommand: dependencyRequest.command,
         });
-        const installRun = await raceWithTimeout(
-          runPlannedDependencyInstallWithNetworkWindow({
+        const installRun = await runSettledPreparationOperation({
+          operation: runPlannedDependencyInstallWithNetworkWindow({
             toolchainPlan: plannedInstall,
             workspace: handle.workspace,
           }),
-          Math.max(1, deadlineAt - Date.now()),
-        );
+          onCancel: () => cancelActiveCommandsQuietly(handle),
+          signal: input.signal,
+          timeoutMs: Math.max(1, deadlineAt - Date.now()),
+        });
+        this.throwIfCancelled(input, hardDeadlineAt);
         if (installRun.status !== "succeeded") {
           return this.timeoutPreparation(
             handle,
@@ -586,6 +652,10 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         status: "done";
       }
   > {
+    this.throwIfCancelled(
+      input.input,
+      input.input.deadlineAt ?? Number.POSITIVE_INFINITY,
+    );
     await this.writeSandboxLog(input.handle.workspace, {
       event: "preparation-preflight.requested",
       remainingMs: input.deadlineAt - Date.now(),
@@ -603,8 +673,8 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     let manifest: ReturnType<typeof readPreparationManifest> | undefined;
     let runtimePreflight: RepoPreparationPreflightResult;
     try {
-      const validationRun = await raceWithTimeout(
-        (async () => {
+      const validationRun = await runSettledPreparationOperation({
+        operation: (async () => {
           const refreshedToolchain = await inspectSubmittedCodeToolchain(
             input.handle.workspace,
           );
@@ -627,13 +697,22 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
             workspace: input.handle,
           });
         })(),
-        Math.max(1, input.deadlineAt - Date.now()),
+        onCancel: () => cancelActiveCommandsQuietly(input.handle),
+        signal: input.input.signal,
+        timeoutMs: Math.max(1, input.deadlineAt - Date.now()),
+      });
+      this.throwIfCancelled(
+        input.input,
+        input.input.deadlineAt ?? Number.POSITIVE_INFINITY,
       );
       if (validationRun.status !== "succeeded") {
         return { reason: validationRun.reason, status: "timeout" };
       }
       runtimePreflight = validationRun.value;
     } catch (error) {
+      if (isPreparationCancellation(error, input.input.signal)) {
+        throw preparationCancellation(error, input.input.signal);
+      }
       runtimePreflight = createRuntimePreflightHandoffFailure(
         readErrorMessage(error),
       );
@@ -712,6 +791,13 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
   ): Promise<void> {
     await writePreparationSandboxLog(this.logger, workspace, event);
   }
+
+  private throwIfCancelled(input: RepoPreparationInput, deadlineAt: number) {
+    throwIfPipelineCancelled(input.signal);
+    if (Date.now() >= deadlineAt) {
+      throw new PipelineCancellationError("deadline-exceeded");
+    }
+  }
 }
 
 type AgentTaskLoopResult = RepoPreparationResult;
@@ -741,37 +827,156 @@ type PreparationSetupResult =
     }
   | { result: RepoPreparationResult; status: "result" };
 
-function raceWithTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-): Promise<TimedRunResult<T>> {
+function waitForPreparationOperation<T>(
+  operation: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
   return new Promise((resolve, reject) => {
-    let settled = false;
-    const timeout = setTimeout(() => {
-      settled = true;
-      resolve({
-        reason: `Repo Preparation agent timed out after ${timeoutMs}ms.`,
-        status: "timed-out",
-      });
-    }, timeoutMs);
-
-    promise.then(
+    let cancellationStarted = false;
+    const abort = () => {
+      cancellationStarted = true;
+      void operation.then(
+        () => reject(preparationCancellation(undefined, signal)),
+        () => reject(preparationCancellation(undefined, signal)),
+      );
+    };
+    if (signal?.aborted === true) {
+      abort();
+      return;
+    }
+    signal?.addEventListener("abort", abort, { once: true });
+    operation.then(
       (value) => {
-        clearTimeout(timeout);
-        if (!settled) {
-          settled = true;
-          resolve({ status: "succeeded", value });
-        }
+        signal?.removeEventListener("abort", abort);
+        if (!cancellationStarted) resolve(value);
       },
       (error: unknown) => {
-        clearTimeout(timeout);
-        if (!settled) {
-          settled = true;
-          reject(error);
-        }
+        signal?.removeEventListener("abort", abort);
+        if (!cancellationStarted) reject(error);
       },
     );
   });
+}
+
+function runSettledPreparationOperation<T>(input: {
+  onCancel: () => Promise<void>;
+  operation: Promise<T>;
+  signal: AbortSignal | undefined;
+  timeoutMs: number;
+}): Promise<TimedRunResult<T>> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let cancellationStarted = false;
+    let operationSettled = false;
+    let resolveOperationSettlement: (() => void) | undefined;
+    const operationSettlement = new Promise<void>((resolve) => {
+      resolveOperationSettlement = resolve;
+    });
+    const finishCancellation = async (kind: "signal" | "timeout") => {
+      if (cancellationStarted || settled) return;
+      cancellationStarted = true;
+      clearTimeout(timeout);
+      input.signal?.removeEventListener("abort", abort);
+      while (!operationSettled) {
+        await input.onCancel().catch(() => undefined);
+        if (operationSettled) break;
+        await Promise.race([
+          operationSettlement,
+          waitForPreparationCancellationCadence(),
+        ]);
+      }
+      await input.operation.catch(() => undefined);
+      settled = true;
+      if (kind === "signal") {
+        reject(preparationCancellation(undefined, input.signal));
+      } else {
+        resolve({
+          reason: `Repo Preparation agent timed out after ${input.timeoutMs}ms.`,
+          status: "timed-out",
+        });
+      }
+    };
+    const abort = () => void finishCancellation("signal");
+    const timeout = setTimeout(
+      () => void finishCancellation("timeout"),
+      input.timeoutMs,
+    );
+    if (input.signal?.aborted === true) {
+      abort();
+    } else {
+      input.signal?.addEventListener("abort", abort, { once: true });
+    }
+    input.operation.then(
+      (value) => {
+        operationSettled = true;
+        resolveOperationSettlement?.();
+        if (cancellationStarted || settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        input.signal?.removeEventListener("abort", abort);
+        resolve({ status: "succeeded", value });
+      },
+      (error: unknown) => {
+        operationSettled = true;
+        resolveOperationSettlement?.();
+        if (cancellationStarted || settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        input.signal?.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function waitForPreparationCancellationCadence(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 25));
+}
+
+function createPreparationBudget(input: RepoPreparationInput): {
+  dispose: () => void;
+  signal: AbortSignal;
+} {
+  const controller = new AbortController();
+  const abortFromParent = () =>
+    controller.abort(preparationCancellation(undefined, input.signal));
+  input.signal?.addEventListener("abort", abortFromParent, { once: true });
+  if (input.signal?.aborted === true) abortFromParent();
+  const timeout =
+    input.deadlineAt === undefined
+      ? undefined
+      : setTimeout(
+          () =>
+            controller.abort(
+              new PipelineCancellationError("deadline-exceeded"),
+            ),
+          Math.max(0, input.deadlineAt - Date.now()),
+        );
+  return {
+    dispose() {
+      if (timeout !== undefined) clearTimeout(timeout);
+      input.signal?.removeEventListener("abort", abortFromParent);
+    },
+    signal: controller.signal,
+  };
+}
+
+function isPreparationCancellation(
+  error: unknown,
+  signal: AbortSignal | undefined,
+) {
+  return error instanceof PipelineCancellationError || signal?.aborted === true;
+}
+
+function preparationCancellation(
+  error: unknown,
+  signal: AbortSignal | undefined,
+): PipelineCancellationError {
+  if (error instanceof PipelineCancellationError) return error;
+  return (
+    pipelineCancellationFromSignal(signal) ??
+    new PipelineCancellationError("signal")
+  );
 }
 
 async function releaseQuietly(

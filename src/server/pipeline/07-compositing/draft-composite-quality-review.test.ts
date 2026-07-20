@@ -8,8 +8,9 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
+import { PipelineCancellationError } from "../00-orchestration/job/pipeline-cancellation";
 import type { DemoScript } from "../04-script-generation/demo-script/demo-script.schema";
 import type { CaptureManifest } from "../06-footage-capture/capture-scenes";
 import type { CompositedVideoManifest } from "./composite-video";
@@ -86,6 +87,55 @@ describe("collectDraftCompositeQualityFindings", () => {
 });
 
 describe("inspectDraftCompositeEvidence", () => {
+  it("terminates all active evidence commands before propagating cancellation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "makeademo-evidence-"));
+    const bin = join(root, "bin");
+    const processLog = join(root, "processes.log");
+    await mkdir(bin, { recursive: true });
+    await writeFile(join(root, "draft.mp4"), "draft");
+    const hanging = `#!/bin/sh
+printf 'started %s\n' "$$" >> '${processLog}'
+trap 'printf "terminated %s\\n" "$$" >> "${processLog}"; exit 0' TERM INT
+while :; do :; done
+`;
+    await writeFile(join(bin, "ffmpeg"), hanging, { mode: 0o755 });
+    await writeFile(join(bin, "ffprobe"), hanging, { mode: 0o755 });
+    const previousPath = process.env.PATH;
+    process.env.PATH = bin;
+    const controller = new AbortController();
+    try {
+      const inspection = inspectDraftCompositeEvidence({
+        captureManifest: {
+          ...({} as CaptureManifest),
+          qualityFindings: [],
+          scenes: [],
+        },
+        draftComposite: {
+          ...({} as CompositedVideoManifest),
+          durationInFrames: 30,
+          fps: 30,
+          outputVideoPath: join(root, "draft.mp4"),
+          runDirectory: root,
+        },
+        signal: controller.signal,
+        timeoutMs: 1_000,
+      } as Parameters<typeof inspectDraftCompositeEvidence>[0]);
+      await vi.waitFor(async () => {
+        const log = await readFile(processLog, "utf8").catch(() => "");
+        expect(log.match(/^started /gm)).toHaveLength(3);
+      });
+
+      controller.abort(new PipelineCancellationError("signal"));
+
+      await expect(inspection).rejects.toMatchObject({ reason: "signal" });
+      const log = await readFile(processLog, "utf8");
+      expect(log.match(/^terminated /gm)).toHaveLength(3);
+    } finally {
+      process.env.PATH = previousPath;
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
   it("probes each captured Scene clip directly for static footage", async () => {
     const root = await mkdtemp(join(tmpdir(), "makeademo-evidence-"));
     const bin = join(root, "bin");

@@ -1,4 +1,4 @@
-import { relative, resolve, sep } from "node:path";
+import { basename, dirname, relative, resolve, sep } from "node:path";
 
 import type { BenchmarkStatusLevel } from "./benchmark-manifest";
 
@@ -21,6 +21,8 @@ export type BenchmarkResult = {
   failureMessage?: string;
   failureStage?: string;
   infrastructureFailureKind?:
+    | "pipeline-cancelled"
+    | "pipeline-deadline-exceeded"
     | "process-terminated"
     | "terminal-result-unavailable";
   logPath?: string;
@@ -42,10 +44,12 @@ export type BenchmarkTerminalPipelineResult = {
     logPath?: string;
   };
   failure?: { blockers?: string[] };
+  cancellationReason?: "deadline-exceeded" | "signal";
   resultPath: string;
   status:
     | "capture-path-validation-failed"
     | "preparation-failed"
+    | "cancelled"
     | "security-rejected"
     | "succeeded";
 };
@@ -111,7 +115,9 @@ export function buildBenchmarkResult(
 ): BenchmarkResult {
   const terminalResult = input.fullPipelineResult;
   const disposition =
-    terminalResult === undefined ? "inconclusive" : "completed";
+    terminalResult === undefined || terminalResult.status === "cancelled"
+      ? "inconclusive"
+      : "completed";
   const status =
     terminalResult?.status === "succeeded" ? "succeeded" : "failed";
   const latestStage =
@@ -126,9 +132,13 @@ export function buildBenchmarkResult(
   const infrastructureFailureKind =
     disposition === "completed"
       ? undefined
-      : input.lifecycle.terminationReason === undefined
-        ? "terminal-result-unavailable"
-        : "process-terminated";
+      : terminalResult?.status === "cancelled"
+        ? terminalResult.cancellationReason === "deadline-exceeded"
+          ? "pipeline-deadline-exceeded"
+          : "pipeline-cancelled"
+        : input.lifecycle.terminationReason === undefined
+          ? "terminal-result-unavailable"
+          : "process-terminated";
   const stageOutcomes = input.fullPipelineLog.stageOutcomes ?? [];
 
   return {
@@ -164,7 +174,7 @@ export function buildBenchmarkResult(
         ? {}
         : { pipelineStatus: terminalResult.status }),
       stageOutcomes:
-        terminalResult === undefined
+        terminalResult === undefined || terminalResult.status === "cancelled"
           ? stageOutcomes.filter((outcome) => outcome.status !== "failed")
           : stageOutcomes,
       succeededEvents: input.fullPipelineLog.succeededEvents ?? [],
@@ -203,6 +213,14 @@ export function readBenchmarkTerminalPipelineResult(input: {
   if (!isRecord(input.value)) return undefined;
 
   const result = input.value;
+  const owningRunDirectory = dirname(resolve(input.resultPath));
+  if (
+    result.runId !== basename(owningRunDirectory) ||
+    typeof result.runDirectory !== "string" ||
+    resolve(result.runDirectory) !== owningRunDirectory
+  ) {
+    return undefined;
+  }
   if (result.status === "succeeded") {
     if (!isSuccessSummary(result)) return undefined;
     return {
@@ -215,11 +233,29 @@ export function readBenchmarkTerminalPipelineResult(input: {
   if (
     result.status !== "capture-path-validation-failed" &&
     result.status !== "preparation-failed" &&
-    result.status !== "security-rejected"
+    result.status !== "security-rejected" &&
+    result.status !== "cancelled"
   ) {
     return undefined;
   }
   if (!isFailureSummary(result)) return undefined;
+  if (result.status === "cancelled") {
+    const cancellation = result.cancellation;
+    if (
+      !isRecord(cancellation) ||
+      (cancellation.reason !== "deadline-exceeded" &&
+        cancellation.reason !== "signal")
+    ) {
+      return undefined;
+    }
+    return {
+      artifacts: { logPath: result.artifacts.logPath },
+      cancellationReason: cancellation.reason,
+      failure: { blockers: result.failure.blockers },
+      resultPath: input.resultPath,
+      status: "cancelled",
+    };
+  }
   return {
     artifacts: { logPath: result.artifacts.logPath },
     failure: { blockers: result.failure.blockers },
@@ -454,6 +490,7 @@ function failureStageForTerminalStatus(
       return "repo-preparation";
     case "security-rejected":
       return "repo-security-screen";
+    case "cancelled":
     case "succeeded":
     case undefined:
       return undefined;

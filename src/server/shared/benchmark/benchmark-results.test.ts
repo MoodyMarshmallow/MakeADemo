@@ -60,6 +60,19 @@ describe("readBenchmarkTerminalPipelineResult", () => {
     ).toBeUndefined();
   });
 
+  it("rejects a result whose run identity does not own its containing directory", () => {
+    expect(
+      readBenchmarkTerminalPipelineResult({
+        pipelineOutputRoot,
+        resultPath,
+        value: {
+          ...successfulTerminalSummary(),
+          runId: "full-pipeline-some-other-run",
+        },
+      }),
+    ).toBeUndefined();
+  });
+
   it("accepts the real full-pipeline success and failure summaries from the run output", () => {
     expect(
       readBenchmarkTerminalPipelineResult({
@@ -75,6 +88,27 @@ describe("readBenchmarkTerminalPipelineResult", () => {
         value: failedTerminalSummary(),
       }),
     ).toMatchObject({ resultPath, status: "preparation-failed" });
+  });
+
+  it("accepts a durable cooperative cancellation result from this benchmark run", () => {
+    expect(
+      readBenchmarkTerminalPipelineResult({
+        pipelineOutputRoot,
+        resultPath,
+        value: {
+          artifacts: { logPath: "/runs/pipeline-log.jsonl" },
+          cancellation: { reason: "deadline-exceeded" },
+          failure: {
+            blockers: ["Pipeline deadline exceeded."],
+            suggestedChanges: [],
+          },
+          runDirectory:
+            "/runs/ghost/pipeline/full-pipeline-2026-07-20T00-00-00-000Z",
+          runId: "full-pipeline-2026-07-20T00-00-00-000Z",
+          status: "cancelled",
+        },
+      }),
+    ).toMatchObject({ status: "cancelled" });
   });
 });
 
@@ -136,6 +170,45 @@ describe("inferBenchmarkStatusLevel", () => {
 });
 
 describe("buildBenchmarkResult", () => {
+  it("keeps a cooperative pipeline deadline inconclusive at the last trusted milestone", () => {
+    expect(
+      buildBenchmarkResult({
+        benchmarkRunId: "run-1",
+        benchmarkTimeoutMs: 960_000,
+        command: ["bun", "src/server/composition/full-pipeline-cli.mts"],
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
+        durationMs: 900_000,
+        endedAt: "2026-07-20T00:15:00.000Z",
+        expectedLevel: "L5",
+        fullPipelineLog: {
+          latestStage: "repo-preparation",
+          stageOutcomes: [
+            { stage: "repo-security-screen", status: "succeeded" },
+            { stage: "repo-preparation", status: "started" },
+          ],
+          succeededEvents: [],
+        },
+        fullPipelineResult: {
+          cancellationReason: "deadline-exceeded",
+          resultPath: "/runs/full-pipeline-result.json",
+          status: "cancelled",
+        },
+        lifecycle: { exitCode: 1, killed: false },
+        repoId: "ghost",
+        repoUrl: "https://github.com/TryGhost/Ghost",
+        runDirectory: ".makeademo-benchmark-runs/run-1/ghost-r1",
+        startedAt: "2026-07-20T00:00:00.000Z",
+        stderrPath: "stderr.log",
+        stdoutPath: "stdout.log",
+      }),
+    ).toMatchObject({
+      disposition: "inconclusive",
+      failureStage: "repo-preparation",
+      infrastructureFailureKind: "pipeline-deadline-exceeded",
+      statusLevel: "L0",
+    });
+  });
+
   it("marks a terminated run without a terminal result inconclusive at its latest started stage", () => {
     expect(
       buildBenchmarkResult({
@@ -211,6 +284,49 @@ describe("buildBenchmarkResult", () => {
       statusLevel: "L0",
     });
   });
+
+  it.each(["footage-capture", "compositing"])(
+    "reports %s as the active stage when cooperative cancellation interrupts it",
+    (activeStage) => {
+      expect(
+        buildBenchmarkResult({
+          benchmarkRunId: "run-1",
+          benchmarkTimeoutMs: 960_000,
+          command: ["bun", "src/server/composition/full-pipeline-cli.mts"],
+          commitSha: "0123456789abcdef0123456789abcdef01234567",
+          durationMs: 960_000,
+          endedAt: "2026-07-20T00:16:00.000Z",
+          expectedLevel: "L5",
+          fullPipelineLog: {
+            stageOutcomes: [
+              { stage: "capture-path-validation", status: "succeeded" },
+              { stage: activeStage, status: "started" },
+            ],
+            succeededEvents: [],
+          },
+          fullPipelineResult: {
+            cancellationReason: "deadline-exceeded",
+            resultPath: "/runs/full-pipeline-result.json",
+            status: "cancelled",
+          },
+          lifecycle: {
+            exitCode: null,
+            killed: false,
+          },
+          repoId: "ghost",
+          repoUrl: "https://github.com/TryGhost/Ghost",
+          runDirectory: ".makeademo-benchmark-runs/run-1/ghost-r1",
+          startedAt: "2026-07-20T00:00:00.000Z",
+          stderrPath: "stderr.log",
+          stdoutPath: "stdout.log",
+        }),
+      ).toMatchObject({
+        disposition: "inconclusive",
+        failureStage: activeStage,
+        infrastructureFailureKind: "pipeline-deadline-exceeded",
+      });
+    },
+  );
 
   it("keeps a readable successful terminal result completed after result grace", () => {
     const result = buildBenchmarkResult({
@@ -468,7 +584,7 @@ function successfulTerminalSummary() {
       status: "accepted",
       warnings: [],
     },
-    runDirectory: "/runs/full-pipeline-2026-07-20T00-00-00-000Z",
+    runDirectory: "/runs/ghost/pipeline/full-pipeline-2026-07-20T00-00-00-000Z",
     runId: "full-pipeline-2026-07-20T00-00-00-000Z",
     script: { sceneCount: 1, scriptId: "script-1", title: "Demo" },
     status: "succeeded",
@@ -479,7 +595,7 @@ function failedTerminalSummary() {
   return {
     artifacts: { logPath: "/runs/pipeline-log.jsonl" },
     failure: { blockers: ["Setup failed"], suggestedChanges: [] },
-    runDirectory: "/runs/full-pipeline-2026-07-20T00-00-00-000Z",
+    runDirectory: "/runs/ghost/pipeline/full-pipeline-2026-07-20T00-00-00-000Z",
     runId: "full-pipeline-2026-07-20T00-00-00-000Z",
     status: "preparation-failed",
   };

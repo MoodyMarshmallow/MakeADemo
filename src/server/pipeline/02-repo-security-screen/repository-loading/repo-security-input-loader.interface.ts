@@ -2,7 +2,11 @@ import type { RepoSecurityInput } from "../repo-security-screen";
 
 export type RepoSecurityInputLoadInput = {
   commitSha?: string;
+  /** Absolute Pipeline Job deadline shared with repository loading. */
+  deadlineAt?: number;
   repoUrl: string;
+  /** Cancels repository loading and requires owned workspace release. */
+  signal?: AbortSignal;
   /** Returns true only for paths whose text Stage 02 authorizes the loader to read. */
   shouldReadText(path: string): boolean;
 };
