@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
+import type { AgentSessionRunner } from "../agent-harness/agent-session-runner.interface";
 import { runPipelineJob } from "../pipeline/00-orchestration/job/pipeline-orchestrator";
 import type { PreparationWorkspaceHandle } from "../pipeline/03-repo-preparation/preparation-workspace-runner";
 import type { RepoPreparationAgent } from "../pipeline/03-repo-preparation/repo-preparation-agent.interface";
@@ -8,12 +9,65 @@ import type { ScriptGenerationAgent } from "../pipeline/04-script-generation/scr
 import type { CapturePathRepairer } from "../pipeline/05-capture-path-validation/capture-path-repairer.interface";
 import type { BrowserValidator } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/browser-validator.interface";
 import type { SandboxRunner } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/sandbox-runner.interface";
+import { resolveProductionAgentModelConfig } from "./production-agent-model-config";
 import {
   createDaytonaFreshCaptureStatePreparer,
+  createProductionPipeline,
   createProductionPipelineDependencies,
 } from "./production-pipeline";
 
 describe("production Pipeline assembly", () => {
+  it("assembles the full Pipeline surface around injected Agent Harness runners without network work", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetch = vi.fn(() => {
+      throw new Error(
+        "Production Pipeline construction must not make a network request.",
+      );
+    });
+    const dispose = vi.fn(async () => undefined);
+    const agentSessionRunner: AgentSessionRunner = {
+      dispose,
+      async run() {
+        return { exitCode: 0, stderr: "", stdout: "" };
+      },
+    };
+    globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+
+    try {
+      const pipeline = createProductionPipeline({
+        agentModel: resolveProductionAgentModelConfig({
+          modelID: "gpt-5.6",
+          providerID: "openai",
+        }),
+        agentSessionRunner,
+        daytonaApiKey: "test-daytona-api-key",
+      });
+
+      expect(fetch).not.toHaveBeenCalled();
+      expect(Object.keys(pipeline).sort()).toEqual([
+        "disposeAgentSessions",
+        "pipelineDependencies",
+        "prepareFreshCaptureState",
+        "repoSecurityInputLoader",
+        "reviewDraftComposite",
+      ]);
+      expect(pipeline.pipelineDependencies).toMatchObject({
+        generateDemoScript: expect.any(Function),
+        prepareRepo: expect.any(Function),
+        screenRepoSecurity: expect.any(Function),
+        validateCapturePath: expect.any(Function),
+      });
+      expect(pipeline.prepareFreshCaptureState).toEqual(expect.any(Function));
+      expect(pipeline.repoSecurityInputLoader).toBeDefined();
+      expect(pipeline.reviewDraftComposite).toEqual(expect.any(Function));
+
+      await pipeline.disposeAgentSessions();
+      expect(dispose).toHaveBeenCalledTimes(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("runs Repo Preparation, Script Generation, and Capture Path Validation through the Pipeline Job", async () => {
     const repoPreparationAgent: RepoPreparationAgent = {
       async prepare() {
