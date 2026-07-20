@@ -2,9 +2,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { uploadSubmittedCodeWorkspaceFiles } from "../03-repo-preparation/preparation-workspace-upload";
-import type { PreparationWorkspace } from "../03-repo-preparation/preparation-workspace.interface";
-import { executeSubmittedCode } from "../03-repo-preparation/submitted-code-execution";
+import { uploadSubmittedCodeWorkspaceFiles } from "../../03-repo-preparation/preparation-workspace-upload";
+import type { PreparationWorkspace } from "../../03-repo-preparation/preparation-workspace.interface";
+import { executeSubmittedCode } from "../../03-repo-preparation/submitted-code-execution";
 import {
   type CaptureSdkBlockedNetworkEvent,
   parseCaptureSdkBlockedNetworkEvents,

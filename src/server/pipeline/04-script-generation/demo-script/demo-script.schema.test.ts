@@ -3,8 +3,9 @@ import { parseDemoScript } from "./demo-script.schema";
 
 describe("parseDemoScript", () => {
   it("accepts a complete Demo Script artifact", () => {
-    expect(parseDemoScript(validDemoScript())).toMatchObject({
+    expect(parseDemoScript(validDemoScript())).toEqual({
       demoPlaywrightScript: expect.stringContaining("await scene"),
+      format: "16:9",
       presentation: {
         music: { enabled: true, trackId: "focus" },
         textOverlays: [expect.objectContaining({ sceneId: "scene_one" })],
@@ -18,7 +19,28 @@ describe("parseDemoScript", () => {
         },
       ],
       scriptId: "script_001",
+      title: "Demo Script",
+      version: 1,
     });
+  });
+
+  it("rejects legacy Scene descriptions and unsupported output formats at Script Generation", () => {
+    expect(() =>
+      parseDemoScript({
+        ...validDemoScript(),
+        scenes: [
+          {
+            description: "Show main content.",
+            expectedVisibleOutcome: "Main content is visible.",
+            id: "scene_one",
+          },
+        ],
+      }),
+    ).toThrow("scenes[0].humanReadableDescription must be a non-empty string");
+
+    expect(() =>
+      parseDemoScript({ ...validDemoScript(), format: "4:3" }),
+    ).toThrow("format must be 16:9");
   });
 
   it("rejects missing required Demo Script fields", () => {

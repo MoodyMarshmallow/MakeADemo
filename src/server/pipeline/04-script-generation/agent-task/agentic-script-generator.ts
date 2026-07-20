@@ -6,19 +6,18 @@ import {
 } from "../../../shared/logging/pipeline-event-logger";
 import { createRepoPreparationAgentWorkspace } from "../../03-repo-preparation/agent-task/repo-preparation-agent-workspace";
 import { validateDemoScriptCandidate } from "../demo-script-candidate-validator";
-import type { DemoScriptPackage } from "../demo-script-package";
+import type { DemoScript } from "../demo-script/demo-script.schema";
 import type {
   AgenticScriptGenerationInput,
   ScriptGenerationAgent,
 } from "../script-generation-agent.interface";
 import {
-  attachPipelineMetadata,
   boundedArtifactTimeout,
   createDemoScriptCaptureContractPrompt,
-  createScriptPackageSchemaPrompt,
+  createDemoScriptSchemaPrompt,
   demoScriptPath,
+  readDemoScriptArtifact,
   readErrorMessage,
-  readScriptPackageArtifact,
   truncateForPrompt,
 } from "./demo-script-artifacts";
 
@@ -57,13 +56,12 @@ export class AgenticScriptGenerator implements ScriptGenerationAgent {
     this.hardTimeoutMs = options.hardTimeoutMs ?? defaultHardTimeoutMs;
   }
 
-  async generateScriptPackage(
+  async generateDemoScript(
     input: AgenticScriptGenerationInput,
-  ): Promise<DemoScriptPackage> {
+  ): Promise<DemoScript> {
     const hardDeadlineAt = Date.now() + this.hardTimeoutMs;
     let prompt = createScriptGenerationPrompt(input);
-    let lastFailure =
-      "Script Generation did not produce a valid script package.";
+    let lastFailure = "Script Generation did not produce a valid Demo Script.";
     for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
       if (Date.now() >= hardDeadlineAt) {
         throw new Error(
@@ -75,7 +73,7 @@ export class AgenticScriptGenerator implements ScriptGenerationAgent {
         event: "script-generation.agent-task.started",
         agentSession: input.agentSession,
       });
-      await removePreviousScriptPackage(input);
+      await removePreviousDemoScript(input);
       const result = await this.runner.run({
         attempt,
         taskPrompt: prompt,
@@ -108,7 +106,7 @@ export class AgenticScriptGenerator implements ScriptGenerationAgent {
         continue;
       }
 
-      const artifact = await readInitialScriptPackageArtifact({
+      const artifact = await readInitialDemoScriptArtifact({
         attempt,
         input,
         logger: this.logger,
@@ -141,12 +139,12 @@ export class AgenticScriptGenerator implements ScriptGenerationAgent {
           event: "script-generation.demo-script-candidate.succeeded",
           scriptId: demoScript.scriptId,
         });
-        return attachPipelineMetadata(demoScript, input);
+        return demoScript;
       } catch (error) {
         lastFailure = readErrorMessage(error);
         await writeScriptGenerationSandboxLog(this.logger, input, {
           attempt,
-          event: "script-generation.script-package.invalid",
+          event: "script-generation.demo-script.invalid",
           level: scriptGenerationAttemptFailureLevel(attempt, this.maxAttempts),
           reason: lastFailure,
         });
@@ -299,7 +297,7 @@ async function writeScriptGenerationRetryLog(
   });
 }
 
-async function removePreviousScriptPackage(
+async function removePreviousDemoScript(
   input: AgenticScriptGenerationInput,
 ): Promise<void> {
   await input.preparationWorkspace.workspace.execute(
@@ -307,7 +305,7 @@ async function removePreviousScriptPackage(
   );
 }
 
-async function readInitialScriptPackageArtifact(input: {
+async function readInitialDemoScriptArtifact(input: {
   attempt: number;
   input: AgenticScriptGenerationInput;
   logger: PipelineEventLogger;
@@ -338,7 +336,7 @@ async function readInitialScriptPackageArtifact(input: {
 
     try {
       const artifact = await withTimeout(
-        readScriptPackageArtifact(input.input, { timeoutMs: input.timeoutMs }),
+        readDemoScriptArtifact(input.input, { timeoutMs: input.timeoutMs }),
         remainingMs,
         timeoutMessage,
       );
@@ -422,7 +420,7 @@ function createScriptGenerationPrompt(
     "## Artifact Path",
     demoScriptPath,
     "",
-    createScriptPackageSchemaPrompt(),
+    createDemoScriptSchemaPrompt(),
     "",
     "## Pipeline Context",
     "```json",
@@ -456,7 +454,7 @@ function createScriptGenerationRepairPrompt(reason: string): string {
     `Repair the Demo Script and overwrite ${demoScriptPath}.`,
     "Do not modify app source. Include real user interactions and feature-specific assertions.",
     "",
-    createScriptPackageSchemaPrompt(),
+    createDemoScriptSchemaPrompt(),
   ].join("\n");
 }
 

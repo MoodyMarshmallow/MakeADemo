@@ -3,20 +3,17 @@ import type { PipelineOrchestratorDependencies } from "../pipeline/00-orchestrat
 import { screenRepoSecurity } from "../pipeline/02-repo-security-screen/repo-security-screen";
 import type { RepoPreparationAgent } from "../pipeline/03-repo-preparation/repo-preparation-agent.interface";
 import { prepareRepo } from "../pipeline/03-repo-preparation/repo-preparer";
-import { DefaultDemoPlanner } from "../pipeline/04-script-generation/demo-planning/default-demo-planner";
-import { PreparationManifestProjectExplorer } from "../pipeline/04-script-generation/project-exploration/preparation-manifest-project-explorer";
-import { DefaultScriptComposer } from "../pipeline/04-script-generation/script-composition/default-script-composer";
 import type { ScriptGenerationAgent } from "../pipeline/04-script-generation/script-generation-agent.interface";
-import { generateDemoScriptPackage } from "../pipeline/04-script-generation/script-generation-orchestrator";
+import { generateDemoScript } from "../pipeline/04-script-generation/script-generation-orchestrator";
 import type { CapturePathRepairer } from "../pipeline/05-capture-path-validation/capture-path-repairer.interface";
 import {
   type CapturePathSceneValidator,
   validateCapturePath,
 } from "../pipeline/05-capture-path-validation/capture-path-validator";
+import type { BrowserValidator } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/browser-validator.interface";
+import { runDemoRuntimePreflight } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/demo-runtime-preflight";
+import type { SandboxRunner } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/sandbox-runner.interface";
 import { DefaultCapturePathSceneValidator } from "../pipeline/05-capture-path-validation/playwright-capture-path-scene-validator";
-import type { BrowserValidator } from "../pipeline/05-capture-path-validation/project-runtime-preflight/browser-validator.interface";
-import { validateProject } from "../pipeline/05-capture-path-validation/project-runtime-preflight/project-validator";
-import type { SandboxRunner } from "../pipeline/05-capture-path-validation/project-runtime-preflight/sandbox-runner.interface";
 import { PlaywrightBrowserValidator } from "../shared/integrations/browser/playwright-browser-validator";
 import { DaytonaRepoSecurityInputLoader } from "../shared/integrations/daytona/daytona-repo-security-input-loader";
 import { DaytonaSdkPreparationWorkspaceProvider } from "../shared/integrations/daytona/daytona-sdk-preparation-workspace-provider";
@@ -56,14 +53,11 @@ export function createProductionPipelineDependencies(
     options.sceneValidator ?? new DefaultCapturePathSceneValidator();
 
   return {
-    generateScriptPackage(input) {
-      return generateDemoScriptPackage(input, {
-        demoPlanner: new DefaultDemoPlanner(),
-        projectExplorer: new PreparationManifestProjectExplorer(),
+    generateDemoScript(input) {
+      return generateDemoScript(input, {
         ...(options.scriptGenerationAgent === undefined
           ? {}
           : { scriptGenerationAgent: options.scriptGenerationAgent }),
-        scriptComposer: new DefaultScriptComposer(),
       });
     },
     prepareRepo(input) {
@@ -81,8 +75,8 @@ export function createProductionPipelineDependencies(
     validateCapturePath(input) {
       return validateCapturePath(input, {
         sceneValidator,
-        validateProject(projectInput) {
-          return validateProject(projectInput, {
+        runRuntimePreflight(projectInput) {
+          return runDemoRuntimePreflight(projectInput, {
             browserValidator,
             sandboxRunner: options.sandboxRunner,
           });

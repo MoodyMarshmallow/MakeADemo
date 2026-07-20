@@ -1,6 +1,6 @@
 import type { AgentSession } from "../../agent-harness/agent-session";
 import type { PreparationWorkspaceHandle } from "../03-repo-preparation/preparation-workspace-runner";
-import type { DemoScriptPackage } from "../04-script-generation/demo-script-package";
+import type { DemoScript } from "../04-script-generation/demo-script/demo-script.schema";
 import type { CaptureManifest } from "../06-footage-capture/capture-scenes";
 import type { CompositedVideoManifest } from "./composite-video";
 
@@ -32,7 +32,7 @@ export type DraftCompositeReviewerInput = {
   draftComposite: CompositedVideoManifest;
   agentSession?: AgentSession;
   preparationWorkspace?: PreparationWorkspaceHandle;
-  scriptPackage: DemoScriptPackage;
+  demoScript: DemoScript;
 };
 
 /**

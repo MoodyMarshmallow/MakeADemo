@@ -157,20 +157,7 @@ describe("AgenticDraftCompositeReviewer", () => {
           repairScope: "demo-script",
         },
       ]),
-      scriptPackage: {
-        ...interactivePackage(),
-        assumptions: [],
-        demoPlan: {
-          featureOrder: ["article feed"],
-          narrative: "Conduit article feed demo",
-          risks: [],
-        },
-        exploration: {
-          assumptions: [],
-          productSurfaces: [],
-          summary: "Prepared Conduit with local articles.",
-        },
-      },
+      demoScript: interactivePackage(),
     });
 
     expect(decision).toEqual({
@@ -465,20 +452,7 @@ function draftCompositeReviewInput(
       viewUrl: "file:///tmp/draft.mp4",
     },
     agentSession: createAgentSession(),
-    scriptPackage: {
-      ...interactivePackage(),
-      assumptions: [],
-      demoPlan: {
-        featureOrder: ["article feed"],
-        narrative: "Conduit article feed demo",
-        risks: [],
-      },
-      exploration: {
-        assumptions: [],
-        productSurfaces: [],
-        summary: "Prepared Conduit with local articles.",
-      },
-    },
+    demoScript: interactivePackage(),
   };
 }
 
@@ -736,7 +710,6 @@ function testLogger(logs: Array<Record<string, unknown>>) {
 
 function interactivePackage() {
   return {
-    audio: { enabled: true, music: { id: "clean" as const } },
     demoPlaywrightScript:
       "import { setup, scene } from './makeademo-capture-sdk';\nawait setup(async ({ page, baseUrl }) => { await page.goto(baseUrl + '#/'); });\nawait scene('scene_feed', async ({ page, expect }) => {\n  await page.getByText('Global Feed').click();\n  await page.getByText('demo').click();\n  await expect(page.getByText('demo')).toBeVisible();\n});",
     format: "16:9",

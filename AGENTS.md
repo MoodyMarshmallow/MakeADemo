@@ -33,7 +33,7 @@ The codebase should remain minimal and adaptable while preserving clean seams be
 ## Main Objectives
 
 - Keep the codebase minimal: add the smallest correct module or interface that solves the current need.
-- Keep the codebase aligned to the MakeADemo Pipeline: Context Gathering, Project Validation, Script Generation, Footage Capture, Compositing, and final output.
+- Keep the codebase aligned to the MakeADemo Pipeline: Context Gathering, Repo Security Screen, Repo Preparation, Script Generation, Capture Path Validation, Footage Capture, Compositing, and final output.
 - Prefer deep modules: put meaningful product behavior behind small interfaces, and avoid shallow pass-through helpers.
 - Maintain clear seams between pipeline stages, external services, persistence, sandbox execution, browser automation, and rendering.
 - Preserve full test coverage for behavior that defines a seam, adapter, or user-visible flow.

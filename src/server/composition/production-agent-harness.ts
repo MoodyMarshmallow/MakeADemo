@@ -10,9 +10,11 @@ import { createAgentSessionRunner } from "../agent-harness/create-agent-session-
 import { classifyProviderFailure } from "../agent-harness/provider-failure-classifier";
 import { AgenticRepoPreparation } from "../pipeline/03-repo-preparation/agent-task/agentic-repo-preparation";
 import type { PreparationWorkspaceProvider } from "../pipeline/03-repo-preparation/preparation-workspace-runner";
+import type { RepoPreparationPreflightResult } from "../pipeline/03-repo-preparation/repo-preparation-preflight.interface";
 import { AgenticScriptGenerator } from "../pipeline/04-script-generation/agent-task/agentic-script-generator";
 import { AgenticCapturePathRepairer } from "../pipeline/05-capture-path-validation/agent-task/agentic-capture-path-repairer";
-import { validateProject } from "../pipeline/05-capture-path-validation/project-runtime-preflight/project-validator";
+import { runDemoRuntimePreflight } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/demo-runtime-preflight";
+import type { DemoRuntimePreflightResult } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/validation-result";
 import { AgenticDraftCompositeReviewer } from "../pipeline/07-compositing/agent-task/agentic-draft-composite-reviewer";
 import { PlaywrightBrowserValidator } from "../shared/integrations/browser/playwright-browser-validator";
 import { DaytonaSandboxRunner } from "../shared/integrations/sandbox/daytona-sandbox-runner";
@@ -124,15 +126,17 @@ export function createProductionAgentHarness(
     ...(repoPreparationTimeoutMs === undefined
       ? {}
       : { timeoutMs: repoPreparationTimeoutMs }),
-    validatePreparation: ({ manifest, workspace }) =>
-      validateProject(
-        { preparationManifest: manifest, preparationWorkspace: workspace },
-        {
-          browserValidator: new PlaywrightBrowserValidator(),
-          sandboxRunner: new DaytonaSandboxRunner({
-            releaseWorkspaceOnCleanup: false,
-          }),
-        },
+    runRuntimePreflight: async ({ manifest, workspace }) =>
+      toRepoPreparationPreflightResult(
+        await runDemoRuntimePreflight(
+          { preparationManifest: manifest, preparationWorkspace: workspace },
+          {
+            browserValidator: new PlaywrightBrowserValidator(),
+            sandboxRunner: new DaytonaSandboxRunner({
+              releaseWorkspaceOnCleanup: false,
+            }),
+          },
+        ),
       ),
   });
   const scriptGenerationAgent = new AgenticScriptGenerator({
@@ -179,6 +183,54 @@ export function createProductionAgentHarness(
       draftCompositeReviewer,
     ),
     scriptGenerationAgent,
+  };
+}
+
+/**
+ * Adapts Capture Path Validation's richer preflight result at production
+ * assembly, so Repo Preparation depends only on its own repair-oriented port.
+ */
+function toRepoPreparationPreflightResult(
+  result: DemoRuntimePreflightResult,
+): RepoPreparationPreflightResult {
+  return {
+    blockedNetworkAttempts: result.blockedNetworkAttempts.map((attempt) => ({
+      ...attempt,
+    })),
+    ...(result.browserUrl === undefined
+      ? {}
+      : { browserUrl: result.browserUrl }),
+    ...(result.evidence === undefined
+      ? {}
+      : {
+          evidence: {
+            ...(result.evidence.browser === undefined
+              ? {}
+              : { browser: { ...result.evidence.browser } }),
+            ...(result.evidence.serverLog === undefined
+              ? {}
+              : { serverLog: { ...result.evidence.serverLog } }),
+          },
+        }),
+    ...(result.failureKind === undefined
+      ? {}
+      : { failureKind: result.failureKind }),
+    ...(result.failureReason === undefined
+      ? {}
+      : { failureReason: result.failureReason }),
+    ...(result.localUrl === undefined ? {} : { localUrl: result.localUrl }),
+    logs: [...result.logs],
+    ...(result.previewUrl === undefined
+      ? {}
+      : { previewUrl: result.previewUrl }),
+    ...(result.screenshot === undefined
+      ? {}
+      : { screenshot: { ...result.screenshot } }),
+    ...(result.screenshotArtifactId === undefined
+      ? {}
+      : { screenshotArtifactId: result.screenshotArtifactId }),
+    status: result.status,
+    warnings: [...result.warnings],
   };
 }
 

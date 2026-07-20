@@ -46,7 +46,7 @@ describe("Repo Preparation control state", () => {
     const state = createState(async () => currentManifest);
     state.recordValidation({
       manifest,
-      validation: {
+      runtimePreflight: {
         blockedNetworkAttempts: [],
         logs: [],
         status: "succeeded",

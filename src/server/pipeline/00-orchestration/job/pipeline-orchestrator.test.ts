@@ -22,11 +22,9 @@ describe("runPipelineJob", () => {
         workspaceId: "workspace_123",
       },
       {
-        async generateScriptPackage({ preparationManifest }) {
+        async generateDemoScript() {
           calls.push("script-generation");
-          return scriptPackage({
-            assumptions: preparationManifest.assumptions,
-          });
+          return demoScript();
         },
         async prepareRepo(input) {
           calls.push("repo-preparation");
@@ -44,8 +42,7 @@ describe("runPipelineJob", () => {
         async validateCapturePath(input) {
           calls.push("capture-path-validation");
           expect(input.preparationWorkspace?.id).toBe("daytona_workspace");
-          expect(input.demoScriptCandidate.scriptId).toBe("script_test");
-          expect(input.demoScriptPackage.scriptId).toBe("script_test");
+          expect(input.demoScript.scriptId).toBe("script_test");
           return {
             blockedNetworkAttempts: [],
             browserUrl: "https://preview.example.test/",
@@ -59,8 +56,7 @@ describe("runPipelineJob", () => {
 
     expect(result.status).toBe("succeeded");
     if (result.status === "succeeded") {
-      expect(result.acceptedDemoScript.scriptId).toBe("script_test");
-      expect(result.demoScriptPackage).toBe(result.acceptedDemoScript);
+      expect(result.demoScript.scriptId).toBe("script_test");
     }
     expect(calls).toEqual([
       "repo-security-screen",
@@ -85,10 +81,8 @@ describe("runPipelineJob", () => {
         workspaceId: "workspace_123",
       },
       {
-        async generateScriptPackage({ preparationManifest }) {
-          return scriptPackage({
-            assumptions: preparationManifest.assumptions,
-          });
+        async generateDemoScript() {
+          return demoScript();
         },
         async prepareRepo() {
           return {
@@ -144,10 +138,8 @@ describe("runPipelineJob", () => {
           workspaceId: "workspace_123",
         },
         {
-          async generateScriptPackage({ preparationManifest }) {
-            return scriptPackage({
-              assumptions: preparationManifest.assumptions,
-            });
+          async generateDemoScript() {
+            return demoScript();
           },
           async prepareRepo() {
             return {
@@ -206,20 +198,9 @@ describe("runPipelineJob", () => {
         workspaceId: "workspace_123",
       },
       {
-        async generateScriptPackage({ preparationManifest }) {
+        async generateDemoScript() {
           now += 40;
-          return {
-            ...scriptPackage({
-              assumptions: preparationManifest.assumptions,
-            }),
-            assumptions: preparationManifest.assumptions,
-            demoPlan: {
-              featureOrder: ["validation"],
-              narrative: "Demo it",
-              risks: ["copy risk"],
-            },
-            exploration: { assumptions: [], productSurfaces: [], summary: "" },
-          };
+          return demoScript();
         },
         async prepareRepo() {
           now += 20;
@@ -426,11 +407,11 @@ describe("runPipelineJob", () => {
         workspaceId: "workspace_123",
       },
       {
-        async generateScriptPackage({ agentSession, preparationWorkspace }) {
+        async generateDemoScript({ agentSession, preparationWorkspace }) {
           calls.push("script-generation");
           expect(agentSession).toBe(preparationAgentSession);
           expect(preparationWorkspace?.id).toBe("daytona_workspace");
-          return scriptPackage({ assumptions: [] });
+          return demoScript();
         },
         async prepareRepo() {
           calls.push("repo-preparation");
@@ -445,10 +426,10 @@ describe("runPipelineJob", () => {
           calls.push("repo-security-screen");
           return { rejections: [], status: "passed", warnings: [] };
         },
-        async validateCapturePath({ preparationWorkspace, demoScriptPackage }) {
+        async validateCapturePath({ preparationWorkspace, demoScript }) {
           calls.push("capture-path-validation");
           expect(preparationWorkspace?.id).toBe("daytona_workspace");
-          expect(demoScriptPackage.scriptId).toBe("script_test");
+          expect(demoScript.scriptId).toBe("script_test");
           return {
             blockedNetworkAttempts: [],
             browserUrl: "https://preview.example.test/",
@@ -472,7 +453,7 @@ describe("runPipelineJob", () => {
     ]);
   });
 
-  it("repairs the script package after capture path validation fails and reruns validation", async () => {
+  it("repairs the Demo Script after Capture Path Validation fails and reruns validation", async () => {
     const previousRepairAttempts =
       process.env.MAKEADEMO_CAPTURE_PATH_REPAIR_ATTEMPTS;
     process.env.MAKEADEMO_CAPTURE_PATH_REPAIR_ATTEMPTS = "1";
@@ -494,9 +475,9 @@ describe("runPipelineJob", () => {
           workspaceId: "workspace_123",
         },
         {
-          async generateScriptPackage() {
+          async generateDemoScript() {
             calls.push("script-generation");
-            return scriptPackage({ assumptions: [], scriptId: "script_bad" });
+            return demoScript({ scriptId: "script_bad" });
           },
           async prepareRepo() {
             calls.push("repo-preparation");
@@ -514,10 +495,7 @@ describe("runPipelineJob", () => {
             );
             return {
               preparationManifest: input.preparationManifest,
-              demoScriptPackage: scriptPackage({
-                assumptions: [],
-                scriptId: "script_repaired",
-              }),
+              demoScript: demoScript({ scriptId: "script_repaired" }),
             };
           },
           screenRepoSecurity() {
@@ -525,10 +503,8 @@ describe("runPipelineJob", () => {
             return { rejections: [], status: "passed", warnings: [] };
           },
           async validateCapturePath(input) {
-            calls.push(
-              `capture-path-validation:${input.demoScriptPackage.scriptId}`,
-            );
-            if (input.demoScriptPackage.scriptId === "script_bad") {
+            calls.push(`capture-path-validation:${input.demoScript.scriptId}`);
+            if (input.demoScript.scriptId === "script_bad") {
               return {
                 blockedNetworkAttempts: [],
                 browserUrl: "https://preview.example.test/",
@@ -554,7 +530,7 @@ describe("runPipelineJob", () => {
 
       expect(result.status).toBe("succeeded");
       if (result.status === "succeeded") {
-        expect(result.demoScriptPackage.scriptId).toBe("script_repaired");
+        expect(result.demoScript.scriptId).toBe("script_repaired");
       }
       expect(calls).toEqual([
         "repo-security-screen",
@@ -602,7 +578,7 @@ describe("runPipelineJob", () => {
         workspaceId: "workspace_123",
       },
       {
-        async generateScriptPackage() {
+        async generateDemoScript() {
           throw new Error(
             "script generation should not run after preparation fails",
           );
@@ -648,20 +624,10 @@ function manifest() {
   };
 }
 
-function scriptPackage(input: {
-  assumptions: string[];
-  scriptId?: string;
-}) {
+function demoScript(input: { scriptId?: string } = {}) {
   return {
-    assumptions: input.assumptions,
-    demoPlan: {
-      featureOrder: ["validation"],
-      narrative: "Demo it",
-      risks: [],
-    },
     demoPlaywrightScript:
       "await scene('scene_validation', async () => { await page.goto(baseUrl); });",
-    exploration: { assumptions: [], productSurfaces: [], summary: "" },
     format: "16:9",
     presentation: {
       music: { enabled: false as const },

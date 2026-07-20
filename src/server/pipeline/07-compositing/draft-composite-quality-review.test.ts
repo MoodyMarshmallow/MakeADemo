@@ -10,8 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import type { DemoScript } from "../04-script-generation/demo-script/demo-script.schema";
 import type { CaptureManifest } from "../06-footage-capture/capture-scenes";
-import type { DemoScript } from "../06-footage-capture/demo-script.schema";
 import type { CompositedVideoManifest } from "./composite-video";
 import {
   type DraftCompositeEvidence,
@@ -46,7 +46,7 @@ describe("collectDraftCompositeQualityFindings", () => {
         durationInFrames: 121 * 30,
         fps: 30,
       },
-      scriptPackage: {
+      demoScript: {
         ...({} as DemoScript),
         presentation: {
           ...({} as DemoScript["presentation"]),
@@ -74,7 +74,7 @@ describe("collectDraftCompositeQualityFindings", () => {
         staticSceneIds: [],
       },
       finalVideo: { durationInFrames: 30, fps: 30 },
-      scriptPackage: {
+      demoScript: {
         presentation: { music: { enabled: true, trackId: "focus" } },
       } as DemoScript,
     });

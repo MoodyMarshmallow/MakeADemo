@@ -137,7 +137,7 @@ export type FullPipelineRunnerOptions = PipelineOrchestratorOptions & {
   inspectDraftCompositeEvidence?: (input: {
     captureManifest: CaptureManifest;
     draftComposite: CompositedVideoManifest;
-    scriptPackage: PreparedDemoResult["demoScriptPackage"];
+    demoScript: PreparedDemoResult["demoScript"];
   }) => Promise<DraftCompositeEvidence>;
   prepareFreshCaptureState?: (input: {
     attempt: number;
@@ -263,12 +263,12 @@ export async function runFullPipelineJob(
       throw new Error("Capture Path Validation did not return a browser URL.");
     }
 
-    let scriptSummary = summarizeScriptPackage(preparedDemo.demoScriptPackage);
+    let scriptSummary = summarizeDemoScript(preparedDemo.demoScript);
     let scriptPersistence = await persistGeneratedScript({
       demoRequestId: options.context?.demoRequestId,
       log,
       runDirectory,
-      scriptPackage: preparedDemo.demoScriptPackage,
+      demoScript: preparedDemo.demoScript,
       scriptStore: options.demoRequestScriptStore,
       scriptSummary,
     });
@@ -280,20 +280,20 @@ export async function runFullPipelineJob(
       log,
       options: pipelineOptions,
       runDirectory,
-      persistScript: (scriptPackage) =>
+      persistScript: (demoScript) =>
         persistGeneratedScript({
           demoRequestId: options.context?.demoRequestId,
           log,
           runDirectory,
-          scriptPackage,
+          demoScript,
           scriptStore: options.demoRequestScriptStore,
-          scriptSummary: summarizeScriptPackage(scriptPackage),
+          scriptSummary: summarizeDemoScript(demoScript),
         }),
       scriptPersistence,
       preparedDemo,
     });
     preparedDemo = reviewResult.preparedDemo;
-    scriptSummary = summarizeScriptPackage(preparedDemo.demoScriptPackage);
+    scriptSummary = summarizeDemoScript(preparedDemo.demoScript);
     scriptPersistence = reviewResult.scriptPersistence;
     const { captureManifest, finalVideo, reviewSummary } = reviewResult;
     await writeDraftCompositeReviewMetadata({
@@ -337,8 +337,8 @@ export async function runFullPipelineJob(
       runId,
       script: {
         sceneCount: scriptSummary.sceneCount,
-        scriptId: preparedDemo.demoScriptPackage.scriptId,
-        title: preparedDemo.demoScriptPackage.title,
+        scriptId: preparedDemo.demoScript.scriptId,
+        title: preparedDemo.demoScript.title,
       },
       status: "succeeded",
     };
@@ -445,27 +445,27 @@ async function persistGeneratedScript(input: {
   demoRequestId: string | undefined;
   log: (entry: FullPipelineLogInput) => Promise<void>;
   runDirectory: string;
-  scriptPackage: Extract<
+  demoScript: Extract<
     Awaited<ReturnType<typeof runPipelineJob>>,
     { status: "succeeded" }
-  >["demoScriptPackage"];
+  >["demoScript"];
   scriptStore: DemoRequestScriptStore | undefined;
-  scriptSummary: ReturnType<typeof summarizeScriptPackage>;
+  scriptSummary: ReturnType<typeof summarizeDemoScript>;
 }): Promise<ScriptPersistence> {
   if (input.scriptStore === undefined) {
     const scriptPath = join(input.runDirectory, "demo-script.json");
     await writeFile(
       scriptPath,
-      `${JSON.stringify(input.scriptPackage, null, 2)}\n`,
+      `${JSON.stringify(input.demoScript, null, 2)}\n`,
     );
     await input.log({
       event: "demo-script-written",
       message: scriptGeneratedMessage(input.scriptSummary),
       sceneCount: input.scriptSummary.sceneCount,
-      scriptId: input.scriptPackage.scriptId,
+      scriptId: input.demoScript.scriptId,
       scriptPath,
       severity: "info",
-      title: input.scriptPackage.title,
+      title: input.demoScript.title,
     });
 
     return { scriptPath };
@@ -479,23 +479,23 @@ async function persistGeneratedScript(input: {
 
   await input.scriptStore.saveGeneratedScript({
     demoRequestId: input.demoRequestId,
-    script: input.scriptPackage,
+    script: input.demoScript,
   });
   await input.log({
     demoRequestId: input.demoRequestId,
     event: "demo-script-saved",
     message: scriptGeneratedMessage(input.scriptSummary),
     sceneCount: input.scriptSummary.sceneCount,
-    scriptId: input.scriptPackage.scriptId,
+    scriptId: input.demoScript.scriptId,
     severity: "info",
-    title: input.scriptPackage.title,
+    title: input.demoScript.title,
   });
 
   return { demoRequestId: input.demoRequestId };
 }
 
 function scriptGeneratedMessage(
-  scriptSummary: ReturnType<typeof summarizeScriptPackage>,
+  scriptSummary: ReturnType<typeof summarizeDemoScript>,
 ) {
   return `Accepted Demo Script ready: ${scriptSummary.sceneCount} scene(s).`;
 }
@@ -542,14 +542,14 @@ function severityForPipelineStageStatus(
   return "info";
 }
 
-function summarizeScriptPackage(
-  scriptPackage: Extract<
+function summarizeDemoScript(
+  demoScript: Extract<
     Awaited<ReturnType<typeof runPipelineJob>>,
     { status: "succeeded" }
-  >["demoScriptPackage"],
+  >["demoScript"],
 ) {
   return {
-    sceneCount: scriptPackage.scenes.length,
+    sceneCount: demoScript.scenes.length,
   };
 }
 

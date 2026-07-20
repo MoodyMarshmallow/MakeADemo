@@ -82,9 +82,9 @@ function createRepoPreparationAgent(options: RepoPreparationTestOptions) {
   return new AgenticRepoPreparation({
     ...agentOptions,
     runner: agentOptions.runner ?? new RecordingAgentTaskRunner(),
-    validatePreparation:
-      agentOptions.validatePreparation ??
-      (async () => validationArtifact().validation),
+    runRuntimePreflight:
+      agentOptions.runRuntimePreflight ??
+      (async () => validationArtifact().runtimePreflight),
   });
 }
 
@@ -725,7 +725,7 @@ describe("AgenticRepoPreparation", () => {
     }));
     const validationResults = [
       ...validationFailures,
-      validationArtifact().validation,
+      validationArtifact().runtimePreflight,
     ];
     const agent = createRepoPreparationAgent({
       provider: fakeProvider(events, {
@@ -750,8 +750,8 @@ describe("AgenticRepoPreparation", () => {
       }),
       runner,
       timeoutMs: 1_000,
-      validatePreparation: async () =>
-        validationResults.shift() ?? validationArtifact().validation,
+      runRuntimePreflight: async () =>
+        validationResults.shift() ?? validationArtifact().runtimePreflight,
     });
 
     const result = await agent.prepare({
@@ -835,7 +835,7 @@ describe("AgenticRepoPreparation", () => {
       hardTimeoutMs: 1_800_000,
       runner,
       timeoutMs: 1_000,
-      validatePreparation: async () => finalValidation,
+      runRuntimePreflight: async () => finalValidation,
     });
 
     const result = await agent.prepare({
@@ -849,7 +849,7 @@ describe("AgenticRepoPreparation", () => {
       blockers: ["The settings panel is not interactable."],
       status: "failed",
       suggestedChanges: ["Repair the settings panel interaction state."],
-      validation: finalValidation,
+      runtimePreflight: finalValidation,
     });
     expect(runner.calls).toHaveLength(9);
     expect(new Set(runner.calls.map((call) => call.hardDeadlineAt)).size).toBe(
@@ -985,7 +985,7 @@ describe("AgenticRepoPreparation", () => {
         },
       }),
       timeoutMs: 1_000,
-      validatePreparation: async () => ({
+      runRuntimePreflight: async () => ({
         blockedNetworkAttempts: [],
         failureKind: "submitted-code-workspace-sync-failed",
         failureReason:
@@ -1051,7 +1051,7 @@ describe("AgenticRepoPreparation", () => {
         },
       }),
       timeoutMs: 1_000,
-      validatePreparation: async () => ({
+      runRuntimePreflight: async () => ({
         blockedNetworkAttempts: [],
         failureReason:
           'Failed to restore prepared files in submitted-code sandbox (exit code 2). stderr: sh: 1: Syntax error: "(" unexpected',
@@ -1201,9 +1201,9 @@ describe("AgenticRepoPreparation", () => {
         validationRequestReadNeverSettles: true,
       }),
       timeoutMs: 250,
-      validatePreparation: async () => {
+      runRuntimePreflight: async () => {
         validationStarted = true;
-        return validationArtifact().validation;
+        return validationArtifact().runtimePreflight;
       },
     });
 
@@ -1249,9 +1249,9 @@ describe("AgenticRepoPreparation", () => {
       provider: fakeProvider(events),
       runner,
       timeoutMs: 1_000,
-      validatePreparation: async () => {
+      runRuntimePreflight: async () => {
         validationStarted = true;
-        return validationArtifact().validation;
+        return validationArtifact().runtimePreflight;
       },
     });
 
@@ -1295,7 +1295,7 @@ describe("AgenticRepoPreparation", () => {
         },
       }),
       timeoutMs: 1_000,
-      validatePreparation: async (input) => {
+      runRuntimePreflight: async (input) => {
         validations.push(input);
         return {
           blockedNetworkAttempts: [],
@@ -1317,7 +1317,7 @@ describe("AgenticRepoPreparation", () => {
     expect(result).toMatchObject({
       manifest: { demoCommand: "npm run demo:makeademo" },
       status: "succeeded",
-      validation: { status: "succeeded" },
+      runtimePreflight: { status: "succeeded" },
       workspace: { id: "daytona_workspace" },
     });
     expect(validations).toEqual([
@@ -1342,7 +1342,7 @@ describe("AgenticRepoPreparation", () => {
       }),
       runner,
       timeoutMs: 1_000,
-      validatePreparation: async () => ({
+      runRuntimePreflight: async () => ({
         blockedNetworkAttempts: [],
         logs: ["validated"],
         status: "succeeded",
@@ -1401,9 +1401,9 @@ describe("AgenticRepoPreparation", () => {
         },
       }),
       timeoutMs: 1_000,
-      validatePreparation: async () => {
+      runRuntimePreflight: async () => {
         validationStarted = true;
-        return validationArtifact().validation;
+        return validationArtifact().runtimePreflight;
       },
     });
 
@@ -1546,9 +1546,9 @@ describe("AgenticRepoPreparation", () => {
         ],
       }),
       timeoutMs: 1_000,
-      validatePreparation: async () => {
+      runRuntimePreflight: async () => {
         validationStarted = true;
-        return validationArtifact().validation;
+        return validationArtifact().runtimePreflight;
       },
     });
 
@@ -1978,7 +1978,7 @@ function validationArtifact() {
   return {
     manifest: successResult().manifest,
     status: "succeeded",
-    validation: {
+    runtimePreflight: {
       blockedNetworkAttempts: [],
       logs: ["validated"],
       status: "succeeded" as const,

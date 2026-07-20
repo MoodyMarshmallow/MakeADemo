@@ -1,4 +1,4 @@
-import type { SceneDescription } from "./demo-script.schema";
+import type { SceneDescription } from "../04-script-generation/demo-script/demo-script.schema";
 
 export type RecordSceneInput = {
   baseUrl: string;

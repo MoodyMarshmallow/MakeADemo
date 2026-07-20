@@ -1,8 +1,8 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { PreparationWorkspaceHandle } from "../03-repo-preparation/preparation-workspace-runner";
-import { assertDemoScriptCaptureSdkContract } from "./capture-sdk-contract";
-import { parseDemoScript } from "./demo-script.schema";
+import { assertDemoScriptCaptureSdkContract } from "../04-script-generation/demo-script/capture-sdk-contract";
+import { parseDemoScript } from "../04-script-generation/demo-script/demo-script.schema";
 import { PreparedWorkspacePlaywrightSceneRecorder } from "./playwright-scene-recorder";
 import type { SceneClipTrimLogger } from "./scene-clip-trimmer";
 import type { SceneRecorder } from "./scene-recorder.interface";
@@ -37,7 +37,7 @@ export type CaptureScenesFromScriptInput = {
   preparationWorkspace?: PreparationWorkspaceHandle;
   recorder?: SceneRecorder;
   runId?: string;
-  scriptPackage?: unknown;
+  demoScript?: unknown;
   scriptPath?: string;
   tempRoot?: string;
 };
@@ -52,17 +52,17 @@ export async function captureScenesFromScript(
   const rawScenesDirectory = join(runDirectory, "raw-scenes");
   await mkdir(rawScenesDirectory, { recursive: true });
 
-  const scriptPackage = await readScriptPackage(input);
-  assertDemoScriptCaptureSdkContract(scriptPackage);
+  const demoScript = await readDemoScript(input);
+  assertDemoScriptCaptureSdkContract(demoScript);
   const recorder = input.recorder ?? createPreparedWorkspaceRecorder(input);
   const scenes: CapturedSceneManifestEntry[] = [];
 
   try {
     const recordedScenes = await recorder.recordScenes({
       baseUrl: input.baseUrl,
-      demoPlaywrightScript: scriptPackage.demoPlaywrightScript,
+      demoPlaywrightScript: demoScript.demoPlaywrightScript,
       runDirectory,
-      scenes: scriptPackage.scenes,
+      scenes: demoScript.scenes,
       sectionId: "demo-script",
     });
 
@@ -77,7 +77,7 @@ export async function captureScenesFromScript(
       runDirectory,
       runId,
       scenes,
-      scriptId: scriptPackage.scriptId,
+      scriptId: demoScript.scriptId,
       markerLogPath: join(runDirectory, "scene-markers.jsonl"),
       ...(keepTemp
         ? {
@@ -90,7 +90,7 @@ export async function captureScenesFromScript(
         : {}),
       qualityFindings: [],
       temporary: true,
-      title: scriptPackage.title,
+      title: demoScript.title,
     };
 
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -116,13 +116,13 @@ function createPreparedWorkspaceRecorder(input: CaptureScenesFromScriptInput) {
   });
 }
 
-async function readScriptPackage(input: CaptureScenesFromScriptInput) {
-  if (input.scriptPackage !== undefined) {
-    return parseDemoScript(input.scriptPackage);
+async function readDemoScript(input: CaptureScenesFromScriptInput) {
+  if (input.demoScript !== undefined) {
+    return parseDemoScript(input.demoScript);
   }
 
   if (input.scriptPath === undefined) {
-    throw new Error("scriptPath or scriptPackage is required");
+    throw new Error("scriptPath or demoScript is required");
   }
 
   return parseDemoScript(JSON.parse(await readFile(input.scriptPath, "utf8")));

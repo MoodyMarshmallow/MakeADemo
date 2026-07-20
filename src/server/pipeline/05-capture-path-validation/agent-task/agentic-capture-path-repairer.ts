@@ -3,20 +3,21 @@ import type { PipelineEventLogger } from "../../../shared/logging/pipeline-event
 import { createRepoPreparationAgentWorkspace } from "../../03-repo-preparation/agent-task/repo-preparation-agent-workspace";
 import type { PreparationManifest } from "../../03-repo-preparation/preparation-manifest";
 import {
-  attachPipelineMetadata,
   boundedArtifactTimeout,
-  createCapturePathRepairPrompt,
+  readDemoScriptArtifact,
   readErrorMessage,
-  readPostRepairArtifact,
-  readPreparationManifestArtifact,
-  readScriptPackageArtifact,
-  writeRepairSandboxLog,
 } from "../../04-script-generation/agent-task/demo-script-artifacts";
 import { validateDemoScriptCandidate } from "../../04-script-generation/demo-script-candidate-validator";
 import type {
   CapturePathRepairInput,
   CapturePathRepairResult,
 } from "../capture-path-repairer.interface";
+import {
+  createCapturePathRepairPrompt,
+  readPostRepairArtifact,
+  readPreparationManifestArtifact,
+  writeRepairSandboxLog,
+} from "./capture-path-repair-artifacts";
 
 export type AgenticCapturePathRepairerOptions = {
   hardTimeoutMs: number;
@@ -89,7 +90,7 @@ export class AgenticCapturePathRepairer {
       input,
       logger: this.options.logger,
       read: () =>
-        readScriptPackageArtifact(
+        readDemoScriptArtifact(
           { preparationWorkspace },
           { timeoutMs: readTimeoutMs },
         ),
@@ -134,7 +135,7 @@ export class AgenticCapturePathRepairer {
       const reason = readErrorMessage(error);
       await writeRepairSandboxLog(this.options.logger, input, {
         attempt: input.attempt,
-        event: "capture-path-repair.script-package.invalid",
+        event: "capture-path-repair.demo-script.invalid",
         reason,
       });
       throw new Error(reason);
@@ -149,16 +150,7 @@ export class AgenticCapturePathRepairer {
     );
     return {
       preparationManifest,
-      demoScriptPackage: attachPipelineMetadata(demoScript, {
-        demoBrief: {
-          keyProductFeatures: input.demoScriptPackage.demoPlan.featureOrder,
-        },
-        normalizedSupportingDocuments: [],
-        agentSession: input.agentSession,
-        preparationManifest,
-        preparationWorkspace,
-        repoUrl: input.repoUrl,
-      }),
+      demoScript,
     };
   }
 }

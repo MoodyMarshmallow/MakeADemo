@@ -1,16 +1,16 @@
-import {
-  boundValidationEvidence,
-  redactValidationEvidence,
-  validationEvidenceCaps,
-} from "../../05-capture-path-validation/project-runtime-preflight/validation-evidence";
-import type { ProjectValidationResult } from "../../05-capture-path-validation/project-runtime-preflight/validation-result";
 import type { readPreparationManifest } from "../preparation-manifest";
 import type { PreparationWorkspaceCommandResult } from "../preparation-workspace.interface";
 import type { RepoPreparationInput } from "../repo-preparation-agent.interface";
+import type { RepoPreparationPreflightResult } from "../repo-preparation-preflight.interface";
 import {
   preparationManifestDirectory,
   preparationManifestPath,
 } from "./repo-preparation-artifact-handoff";
+import {
+  boundRepoPreparationEvidence,
+  redactRepoPreparationEvidence,
+  repoPreparationEvidenceCaps,
+} from "./repo-preparation-evidence";
 
 const dependencyInstallOutputTailMaxLength = 1_500;
 export function createDaytonaRepoPreparationPrompt(
@@ -259,7 +259,7 @@ export function createValidationFeedbackPrompt(input: {
   manifest: ReturnType<typeof readPreparationManifest> | undefined;
   manifestPath: string;
   remainingBudgetMs: number;
-  validation: ProjectValidationResult;
+  runtimePreflight: RepoPreparationPreflightResult;
 }): string {
   const prompt = [
     "# MakeADemo Validation Feedback",
@@ -270,7 +270,11 @@ export function createValidationFeedbackPrompt(input: {
     "",
     "## Preparation Preflight Result",
     "```json",
-    JSON.stringify(createValidationRepairProjection(input.validation), null, 2),
+    JSON.stringify(
+      createRuntimePreflightRepairProjection(input.runtimePreflight),
+      null,
+      2,
+    ),
     "```",
     "",
     ...(input.manifest === undefined
@@ -291,7 +295,7 @@ export function createValidationFeedbackPrompt(input: {
     "",
     "## Debugging Guidance",
     "- If `blockedNetworkAttempts` is non-empty, remove or replace every listed external runtime request with local mocks, bundled assets, or system defaults.",
-    ...(input.validation.blockedNetworkAttempts.length === 0
+    ...(input.runtimePreflight.blockedNetworkAttempts.length === 0
       ? []
       : [
           `- Remaining Repo Preparation budget: about ${formatDuration(input.remainingBudgetMs)}. Patch those listed runtime requests first, then rerun preflight before spending time on broader investigation.`,
@@ -307,14 +311,16 @@ export function createValidationFeedbackPrompt(input: {
   return prompt;
 }
 
-function createValidationRepairProjection(validation: ProjectValidationResult) {
+function createRuntimePreflightRepairProjection(
+  runtimePreflight: RepoPreparationPreflightResult,
+) {
   return {
-    blockedNetworkAttempts: validation.blockedNetworkAttempts
+    blockedNetworkAttempts: runtimePreflight.blockedNetworkAttempts
       .map((attempt) => ({
         ...attempt,
         ...(attempt.url === undefined
           ? {}
-          : { url: redactValidationEvidence(attempt.url) }),
+          : { url: redactRepoPreparationEvidence(attempt.url) }),
       }))
       .filter(
         (attempt, index, attempts) =>
@@ -325,44 +331,44 @@ function createValidationRepairProjection(validation: ProjectValidationResult) {
           ) === index,
       )
       .slice(0, 8),
-    browserUrl: validation.browserUrl,
+    browserUrl: runtimePreflight.browserUrl,
     evidence:
-      validation.evidence === undefined
+      runtimePreflight.evidence === undefined
         ? undefined
         : {
-            ...(validation.evidence.serverLog === undefined
+            ...(runtimePreflight.evidence.serverLog === undefined
               ? {}
               : {
-                  serverLog: boundValidationEvidence(
-                    validation.evidence.serverLog.text,
+                  serverLog: boundRepoPreparationEvidence(
+                    runtimePreflight.evidence.serverLog.text,
                     2 * 1024,
                   ),
                 }),
-            ...(validation.evidence.browser === undefined
+            ...(runtimePreflight.evidence.browser === undefined
               ? {}
               : {
-                  browser: boundValidationEvidence(
-                    validation.evidence.browser.text,
+                  browser: boundRepoPreparationEvidence(
+                    runtimePreflight.evidence.browser.text,
                     2 * 1024,
                   ),
                 }),
           },
-    failureKind: validation.failureKind,
+    failureKind: runtimePreflight.failureKind,
     failureReason:
-      validation.failureReason === undefined
+      runtimePreflight.failureReason === undefined
         ? undefined
-        : boundValidationEvidence(
-            validation.failureReason,
-            validationEvidenceCaps.failureReason,
+        : boundRepoPreparationEvidence(
+            runtimePreflight.failureReason,
+            repoPreparationEvidenceCaps.failureReason,
           ).text,
-    localUrl: validation.localUrl,
-    logs: createRepairLogs(validation.logs),
-    previewUrl: validation.previewUrl,
-    screenshot: validation.screenshot,
+    localUrl: runtimePreflight.localUrl,
+    logs: createRepairLogs(runtimePreflight.logs),
+    previewUrl: runtimePreflight.previewUrl,
+    screenshot: runtimePreflight.screenshot,
     warnings: [
       ...new Set(
-        validation.warnings.map(
-          (warning) => boundValidationEvidence(warning, 512).text,
+        runtimePreflight.warnings.map(
+          (warning) => boundRepoPreparationEvidence(warning, 512).text,
         ),
       ),
     ].slice(0, 8),
@@ -383,7 +389,10 @@ function createRepairLogs(logs: string[]) {
     if (remaining <= 0 || included.length >= maxLogCount) {
       break;
     }
-    const excerpt = boundValidationEvidence(log, Math.min(2 * 1024, remaining));
+    const excerpt = boundRepoPreparationEvidence(
+      log,
+      Math.min(2 * 1024, remaining),
+    );
     included.push(excerpt.text);
     used += excerpt.text.length;
   }
@@ -395,7 +404,7 @@ function createBoundedManifestProjection(
   manifest: NonNullable<ReturnType<typeof readPreparationManifest>>,
 ) {
   return {
-    excerpt: boundValidationEvidence(
+    excerpt: boundRepoPreparationEvidence(
       JSON.stringify(manifest, null, 2),
       4 * 1024,
     ).text,

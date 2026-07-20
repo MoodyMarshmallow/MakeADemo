@@ -1,5 +1,5 @@
-import type { ProjectValidationResult } from "../../05-capture-path-validation/project-runtime-preflight/validation-result";
 import type { RepoPreparationAgent } from "../repo-preparation-agent.interface";
+import type { RepoPreparationPreflightResult } from "../repo-preparation-preflight.interface";
 import type {
   DependencyInstallRequest,
   ValidationRequest,
@@ -10,11 +10,11 @@ type PreparationResult = Awaited<ReturnType<RepoPreparationAgent["prepare"]>>;
 export type RepoPreparationControlState = {
   readSubmittedResult(): PreparationResult | undefined;
   readValidation():
-    | { manifest: unknown; validation: ProjectValidationResult }
+    | { manifest: unknown; runtimePreflight: RepoPreparationPreflightResult }
     | undefined;
   recordValidation(input: {
     manifest: unknown;
-    validation: ProjectValidationResult;
+    runtimePreflight: RepoPreparationPreflightResult;
   }): void;
   requestDependencyInstall(input: DependencyInstallRequest): Promise<void>;
   requestValidation(input: ValidationRequest): Promise<void>;
@@ -44,7 +44,7 @@ export function createRepoPreparationControlState(input: {
   let dependencyInstallRequest: DependencyInstallRequest | undefined;
   let submittedResult: PreparationResult | undefined;
   let validation:
-    | { manifest: unknown; validation: ProjectValidationResult }
+    | { manifest: unknown; runtimePreflight: RepoPreparationPreflightResult }
     | undefined;
   let validationRequest: ValidationRequest | undefined;
 
@@ -69,7 +69,7 @@ export function createRepoPreparationControlState(input: {
       const latestValidation = validation;
       if (
         latestValidation === undefined ||
-        latestValidation.validation.status !== "succeeded"
+        latestValidation.runtimePreflight.status !== "succeeded"
       ) {
         throw new Error(
           "Run makeademo_validate_preparation and wait for a passing preparation preflight result before submitting.",

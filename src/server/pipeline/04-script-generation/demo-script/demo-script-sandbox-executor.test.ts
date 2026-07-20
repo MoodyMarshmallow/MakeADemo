@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
-import type { PreparationWorkspace } from "../03-repo-preparation/preparation-workspace.interface";
+import type { PreparationWorkspace } from "../../03-repo-preparation/preparation-workspace.interface";
 import {
   DemoScriptTypeValidationError,
   executeDemoScriptInSandbox,

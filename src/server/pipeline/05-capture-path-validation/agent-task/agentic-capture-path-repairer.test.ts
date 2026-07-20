@@ -104,23 +104,11 @@ describe("AgenticCapturePathRepairer", () => {
       preparationManifest: preparationManifest(),
       preparationWorkspace: workspaceHandle(events, [interactivePackage()]),
       repoUrl: "https://github.com/example/conduit",
-      demoScriptPackage: {
-        ...interactivePackage(),
-        assumptions: [],
-        demoPlan: {
-          featureOrder: ["article feed"],
-          narrative: "Conduit article feed demo",
-          risks: [],
-        },
-        exploration: {
-          assumptions: [],
-          productSurfaces: [],
-          summary: "Prepared Conduit with local articles.",
-        },
-      },
+      demoScript: interactivePackage(),
     });
 
-    expect(result.demoScriptPackage.scriptId).toBe("script_conduit");
+    expect(result.demoScript.scriptId).toBe("script_conduit");
+    expect(result.demoScript).not.toHaveProperty("demoPlan");
     expect(agent.runner.calls[0]).toMatchObject({
       session,
       stage: "capture-path-repair",
@@ -187,7 +175,7 @@ describe("AgenticCapturePathRepairer", () => {
 
       if (mode === "transient") {
         const result = await operation;
-        expect(result.demoScriptPackage.scriptId).toBe("script_conduit");
+        expect(result.demoScript.scriptId).toBe("script_conduit");
         expect(
           events.filter(
             (event) =>
@@ -264,23 +252,10 @@ describe("AgenticCapturePathRepairer", () => {
         rejectSandboxLogEvents: ["capture-path-repair.agent-task.started"],
       }),
       repoUrl: "https://github.com/example/conduit",
-      demoScriptPackage: {
-        ...interactivePackage(),
-        assumptions: [],
-        demoPlan: {
-          featureOrder: ["article feed"],
-          narrative: "Conduit article feed demo",
-          risks: [],
-        },
-        exploration: {
-          assumptions: [],
-          productSurfaces: [],
-          summary: "Prepared Conduit with local articles.",
-        },
-      },
+      demoScript: interactivePackage(),
     });
 
-    expect(result.demoScriptPackage.scriptId).toBe("script_conduit");
+    expect(result.demoScript.scriptId).toBe("script_conduit");
     expect(fallbackLogs).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -330,20 +305,7 @@ describe("AgenticCapturePathRepairer", () => {
           },
         ]),
         repoUrl: "https://github.com/example/conduit",
-        demoScriptPackage: {
-          ...interactivePackage(),
-          assumptions: [],
-          demoPlan: {
-            featureOrder: ["article feed"],
-            narrative: "Conduit article feed demo",
-            risks: [],
-          },
-          exploration: {
-            assumptions: [],
-            productSurfaces: [],
-            summary: "Prepared Conduit with local articles.",
-          },
-        },
+        demoScript: interactivePackage(),
       }),
     ).rejects.toThrow(
       "Scene scene_feed must include a visible Playwright assertion before it ends.",
@@ -353,7 +315,7 @@ describe("AgenticCapturePathRepairer", () => {
       expect.arrayContaining([
         {
           sandboxLog: expect.objectContaining({
-            event: "capture-path-repair.script-package.invalid",
+            event: "capture-path-repair.demo-script.invalid",
             reason:
               "Scene scene_feed must include a visible Playwright assertion before it ends.",
             stage: "capture-path-repair",
@@ -394,7 +356,7 @@ describe("AgenticCapturePathRepairer", () => {
       expect.arrayContaining([
         {
           sandboxLog: expect.objectContaining({
-            event: "capture-path-repair.script-package.invalid",
+            event: "capture-path-repair.demo-script.invalid",
             stage: "capture-path-repair",
             reason: expect.stringMatching(/TS7034|TS7005/),
           }),
@@ -658,20 +620,7 @@ function capturePathRepairInput(
       helperOptions,
     ),
     repoUrl: "https://github.com/example/conduit",
-    demoScriptPackage: {
-      ...interactivePackage(),
-      assumptions: [],
-      demoPlan: {
-        featureOrder: ["article feed"],
-        narrative: "Conduit article feed demo",
-        risks: [],
-      },
-      exploration: {
-        assumptions: [],
-        productSurfaces: [],
-        summary: "Prepared Conduit with local articles.",
-      },
-    },
+    demoScript: interactivePackage(),
   };
 }
 
@@ -691,7 +640,6 @@ function testLogger(logs: Array<Record<string, unknown>>) {
 
 function interactivePackage() {
   return {
-    audio: { enabled: true, music: { id: "clean" as const } },
     demoPlaywrightScript:
       "import { setup, scene } from './makeademo-capture-sdk';\nawait setup(async ({ page, baseUrl }) => { await page.goto(baseUrl + '#/'); });\nawait scene('scene_feed', async ({ page, expect }) => {\n  await page.getByText('Global Feed').click();\n  await page.getByText('demo').click();\n  await expect(page.getByText('demo')).toBeVisible();\n});",
     format: "16:9",

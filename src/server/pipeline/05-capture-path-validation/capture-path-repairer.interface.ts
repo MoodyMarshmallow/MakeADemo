@@ -1,10 +1,7 @@
 import type { AgentSession } from "../../agent-harness/agent-session";
 import type { PreparationManifest } from "../03-repo-preparation/preparation-manifest";
 import type { PreparationWorkspaceHandle } from "../03-repo-preparation/preparation-workspace-runner";
-import type {
-  DemoScriptCandidate,
-  DemoScriptPackage,
-} from "../04-script-generation/demo-script-package";
+import type { DemoScript } from "../04-script-generation/demo-script/demo-script.schema";
 import type { CapturePathValidationResult } from "./capture-path-validator.interface";
 
 export type CapturePathRepairInput = {
@@ -14,12 +11,12 @@ export type CapturePathRepairInput = {
   preparationManifest: PreparationManifest;
   preparationWorkspace?: PreparationWorkspaceHandle;
   repoUrl: string;
-  demoScriptPackage: DemoScriptPackage;
+  demoScript: DemoScript;
 };
 
 export type CapturePathRepairResult = {
   preparationManifest: PreparationManifest;
-  demoScriptPackage: DemoScriptCandidate;
+  demoScript: DemoScript;
 };
 
 /**

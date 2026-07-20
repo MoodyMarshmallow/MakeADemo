@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { DemoScript } from "../06-footage-capture/demo-script.schema";
-import { assertCaptureReadyScriptQuality } from "./script-package-quality";
+import { assertCaptureReadyScriptQuality } from "./demo-script-quality";
+import type { DemoScript } from "./demo-script/demo-script.schema";
 
 describe("assertCaptureReadyScriptQuality", () => {
   it("accepts a setup body smoke check when Scenes use finite product interactions", () => {

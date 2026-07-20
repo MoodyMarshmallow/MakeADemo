@@ -53,7 +53,7 @@ describe("runDraftCompositeReviewLoop", () => {
       const dependencies = loopDependencies(() => {});
       dependencies.repairCapturePathFailure = async (input) => ({
         preparationManifest: input.preparationManifest,
-        demoScriptPackage: { ...input.demoScriptPackage, scriptId: "repaired" },
+        demoScript: { ...input.demoScript, scriptId: "repaired" },
       });
       const result = await runDraftCompositeReviewLoop(
         loopInput(root, {
@@ -87,7 +87,7 @@ describe("runDraftCompositeReviewLoop", () => {
         "capture:capture-2",
         "composite:composite-2",
       ]);
-      expect(result.preparedDemo.demoScriptPackage.scriptId).toBe("repaired");
+      expect(result.preparedDemo.demoScript.scriptId).toBe("repaired");
       expect(persisted).toBe(1);
     } finally {
       await rm(root, { force: true, recursive: true });
@@ -248,8 +248,7 @@ function loopDependencies(
   onPrepare: () => void,
 ): PipelineOrchestratorDependencies {
   return {
-    generateScriptPackage: async () =>
-      succeededPreparedDemo().demoScriptPackage,
+    generateDemoScript: async () => succeededPreparedDemo().demoScript,
     prepareRepo: async () => {
       onPrepare();
       return {
@@ -273,43 +272,13 @@ function loopDependencies(
     }),
     repairCapturePathFailure: async () => ({
       preparationManifest: succeededPreparedDemo().preparationManifest,
-      demoScriptPackage: succeededPreparedDemo().demoScriptPackage,
+      demoScript: succeededPreparedDemo().demoScript,
     }),
   };
 }
 
 function succeededPreparedDemo(): DraftCompositeReviewLoopInput["preparedDemo"] {
   return {
-    acceptedDemoScript: {
-      assumptions: [],
-      demoPlan: {
-        featureOrder: ["article feed"],
-        narrative: "Show the feed.",
-        risks: [],
-      },
-      demoPlaywrightScript: "",
-      exploration: {
-        assumptions: [],
-        productSurfaces: ["article feed"],
-        summary: "Prepared app.",
-      },
-      format: "16:9",
-      presentation: {
-        music: { enabled: false },
-        textOverlays: [],
-        transitions: [],
-      },
-      scenes: [
-        {
-          expectedVisibleOutcome: "Feed visible.",
-          humanReadableDescription: "Show feed.",
-          id: "scene_article_feed",
-        },
-      ],
-      scriptId: "script_test",
-      title: "Demo",
-      version: 1,
-    },
     capturePathValidation: {
       browserUrl: "https://preview.example.test/",
       status: "succeeded",
@@ -317,19 +286,8 @@ function succeededPreparedDemo(): DraftCompositeReviewLoopInput["preparedDemo"] 
       logs: [],
       warnings: [],
     },
-    demoScriptPackage: {
-      assumptions: [],
-      demoPlan: {
-        featureOrder: ["article feed"],
-        narrative: "Show the feed.",
-        risks: [],
-      },
+    demoScript: {
       demoPlaywrightScript: "",
-      exploration: {
-        assumptions: [],
-        productSurfaces: ["article feed"],
-        summary: "Prepared app.",
-      },
       format: "16:9",
       presentation: {
         music: { enabled: false },

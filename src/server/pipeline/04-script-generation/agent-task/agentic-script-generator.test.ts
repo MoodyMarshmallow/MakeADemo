@@ -70,10 +70,10 @@ class ScriptGenerationAgentFixture {
     });
   }
 
-  generateScriptPackage(
-    ...input: Parameters<AgenticScriptGenerator["generateScriptPackage"]>
+  generateDemoScript(
+    ...input: Parameters<AgenticScriptGenerator["generateDemoScript"]>
   ) {
-    return this.scriptGenerator.generateScriptPackage(...input);
+    return this.scriptGenerator.generateDemoScript(...input);
   }
 }
 
@@ -83,7 +83,7 @@ describe("AgenticScriptGenerator", () => {
     const session = createAgentSession();
     const agent = new ScriptGenerationAgentFixture({});
 
-    const result = await agent.generateScriptPackage({
+    const result = await agent.generateDemoScript({
       ...scriptGenerationInput(),
       agentSession: session,
       preparationWorkspace: workspaceHandle(events, [interactivePackage()]),
@@ -94,7 +94,7 @@ describe("AgenticScriptGenerator", () => {
       expectedVisibleOutcome: "Filtered demo articles are visible.",
       id: "scene_feed",
     });
-    expect(result.demoPlan.featureOrder).toEqual(["article feed"]);
+    expect(result).not.toHaveProperty("demoPlan");
     expect(agent.runner.calls[0]).toMatchObject({
       session,
       stage: "script-generation",
@@ -108,7 +108,7 @@ describe("AgenticScriptGenerator", () => {
       maxAttempts: 2,
     });
 
-    const result = await agent.generateScriptPackage({
+    const result = await agent.generateDemoScript({
       ...scriptGenerationInput(),
       agentSession: createAgentSession(),
       preparationWorkspace: workspaceHandle(events, [
@@ -130,7 +130,7 @@ describe("AgenticScriptGenerator", () => {
     });
 
     await expect(
-      agent.generateScriptPackage({
+      agent.generateDemoScript({
         ...scriptGenerationInput(),
         agentSession: createAgentSession(),
         preparationWorkspace: workspaceHandle(events, [interactivePackage()], {
@@ -144,7 +144,7 @@ describe("AgenticScriptGenerator", () => {
     const events: unknown[] = [];
     const agent = new ScriptGenerationAgentFixture({});
 
-    const result = await agent.generateScriptPackage({
+    const result = await agent.generateDemoScript({
       ...scriptGenerationInput(),
       agentSession: createAgentSession(),
       preparationWorkspace: workspaceHandle(events, [interactivePackage()], {
@@ -190,7 +190,7 @@ describe("AgenticScriptGenerator", () => {
       maxAttempts: 2,
     });
 
-    const result = await agent.generateScriptPackage({
+    const result = await agent.generateDemoScript({
       ...scriptGenerationInput(),
       agentSession: createAgentSession(),
       preparationWorkspace: workspaceHandle(events, [
@@ -222,7 +222,7 @@ describe("AgenticScriptGenerator", () => {
       maxAttempts: 1,
     });
 
-    const result = await agent.generateScriptPackage({
+    const result = await agent.generateDemoScript({
       ...scriptGenerationInput(),
       agentSession: createAgentSession(),
       preparationWorkspace: workspaceHandle(
@@ -258,7 +258,7 @@ describe("AgenticScriptGenerator", () => {
       maxAttempts: 2,
     });
 
-    const result = await agent.generateScriptPackage({
+    const result = await agent.generateDemoScript({
       ...scriptGenerationInput(),
       agentSession: createAgentSession(),
       preparationWorkspace: workspaceHandle(events, [
@@ -272,7 +272,7 @@ describe("AgenticScriptGenerator", () => {
       expect.arrayContaining([
         {
           sandboxLog: expect.objectContaining({
-            event: "script-generation.script-package.invalid",
+            event: "script-generation.demo-script.invalid",
             reason: expect.stringContaining("must import { setup, scene }"),
             stage: "script-generation",
           }),
@@ -293,7 +293,7 @@ describe("AgenticScriptGenerator", () => {
     const events: unknown[] = [];
     const agent = new ScriptGenerationAgentFixture({});
 
-    await agent.generateScriptPackage({
+    await agent.generateDemoScript({
       ...scriptGenerationInput(),
       normalizedSupportingDocuments: [
         {
@@ -315,7 +315,7 @@ describe("AgenticScriptGenerator", () => {
       maxAttempts: 2,
     });
 
-    const result = await agent.generateScriptPackage({
+    const result = await agent.generateDemoScript({
       ...scriptGenerationInput(),
       agentSession: createAgentSession(),
       preparationWorkspace: workspaceHandle(events, [interactivePackage()], {
@@ -356,7 +356,7 @@ describe("AgenticScriptGenerator", () => {
     });
 
     await expect(
-      agent.generateScriptPackage({
+      agent.generateDemoScript({
         ...scriptGenerationInput(),
         agentSession: createAgentSession(),
         preparationWorkspace: workspaceHandle(events, [interactivePackage()], {
@@ -384,7 +384,7 @@ describe("AgenticScriptGenerator", () => {
       logger: testLogger(fallbackLogs),
     });
 
-    const result = await agent.generateScriptPackage({
+    const result = await agent.generateDemoScript({
       ...scriptGenerationInput(),
       agentSession: createAgentSession(),
       preparationWorkspace: workspaceHandle(events, [interactivePackage()], {
@@ -416,7 +416,7 @@ describe("AgenticScriptGenerator", () => {
 
     const result = await Promise.race([
       agent
-        .generateScriptPackage({
+        .generateDemoScript({
           ...scriptGenerationInput(),
           agentSession: createAgentSession(),
           preparationWorkspace: workspaceHandle(
@@ -703,7 +703,6 @@ function scriptGenerationInput() {
 
 function interactivePackage() {
   return {
-    audio: { enabled: true, music: { id: "clean" as const } },
     demoPlaywrightScript:
       "import { setup, scene } from './makeademo-capture-sdk';\nawait setup(async ({ page, baseUrl }) => { await page.goto(baseUrl + '#/'); });\nawait scene('scene_feed', async ({ page, expect }) => {\n  await page.getByText('Global Feed').click();\n  await page.getByText('demo').click();\n  await expect(page.getByText('demo')).toBeVisible();\n});",
     format: "16:9",

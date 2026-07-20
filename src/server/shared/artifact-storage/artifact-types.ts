@@ -1,4 +1,4 @@
-type ArtifactKind = "log" | "screenshot" | "demo-script-package";
+type ArtifactKind = "log" | "screenshot" | "demo-script";
 
 export type PipelineArtifact = {
   contents: string;

@@ -39,9 +39,9 @@ export async function prepareRepo(
         ? {}
         : { agentSession: result.agentSession }),
       status: "succeeded",
-      ...(result.validation === undefined
+      ...(result.runtimePreflight === undefined
         ? {}
-        : { validation: result.validation }),
+        : { runtimePreflight: result.runtimePreflight }),
       ...(result.workspace === undefined
         ? {}
         : { workspace: result.workspace }),

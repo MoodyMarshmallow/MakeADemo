@@ -59,7 +59,7 @@ type DraftCompositeReviewLoopOptions = PipelineOrchestratorOptions & {
   inspectDraftCompositeEvidence?: (input: {
     captureManifest: CaptureManifest;
     draftComposite: CompositedVideoManifest;
-    scriptPackage: PreparedDemoResult["demoScriptPackage"];
+    demoScript: PreparedDemoResult["demoScript"];
   }) => Promise<DraftCompositeEvidence>;
   prepareFreshCaptureState?: (input: {
     attempt: number;
@@ -82,7 +82,7 @@ export type DraftCompositeReviewLoopInput = {
   ) => Promise<void>;
   options: DraftCompositeReviewLoopOptions;
   persistScript: (
-    scriptPackage: PreparedDemoResult["demoScriptPackage"],
+    demoScript: PreparedDemoResult["demoScript"],
   ) => Promise<ScriptPersistence>;
   runDirectory: string;
   scriptPersistence: ScriptPersistence;
@@ -161,7 +161,7 @@ export async function runDraftCompositeReviewLoop(
           keepTemp: true,
           log: input.log,
           runId: `capture-${runSuffix}`,
-          scriptPackage: preparedDemo.demoScriptPackage,
+          demoScript: preparedDemo.demoScript,
           ...(scriptPersistence.scriptPath === undefined
             ? {}
             : { scriptPath: scriptPersistence.scriptPath }),
@@ -221,7 +221,7 @@ export async function runDraftCompositeReviewLoop(
           outputRoot: join(input.runDirectory, "composite"),
           runId: `composite-${runSuffix}`,
           scriptDirectory: input.runDirectory,
-          scriptPackage: preparedDemo.demoScriptPackage,
+          demoScript: preparedDemo.demoScript,
           ...(scriptPersistence.scriptPath === undefined
             ? {}
             : { scriptPath: scriptPersistence.scriptPath }),
@@ -241,9 +241,7 @@ export async function runDraftCompositeReviewLoop(
       latestFinalVideo = finalVideo;
 
       if (candidateNeedsPersistence) {
-        scriptPersistence = await input.persistScript(
-          preparedDemo.demoScriptPackage,
-        );
+        scriptPersistence = await input.persistScript(preparedDemo.demoScript);
         candidateNeedsPersistence = false;
       }
       validDraftCheckpoint = {
@@ -294,7 +292,7 @@ export async function runDraftCompositeReviewLoop(
           captureManifest,
           finalVideo,
           options: input.options,
-          scriptPackage: preparedDemo.demoScriptPackage,
+          demoScript: preparedDemo.demoScript,
         });
       } catch (error) {
         await input.log({
@@ -331,7 +329,7 @@ export async function runDraftCompositeReviewLoop(
         captureManifest,
         draftEvidence,
         finalVideo,
-        scriptPackage: preparedDemo.demoScriptPackage,
+        demoScript: preparedDemo.demoScript,
       });
 
       phase = "reviewer";
@@ -381,7 +379,7 @@ export async function runDraftCompositeReviewLoop(
           ...(preparedDemo.preparationWorkspace === undefined
             ? {}
             : { preparationWorkspace: preparedDemo.preparationWorkspace }),
-          scriptPackage: preparedDemo.demoScriptPackage,
+          demoScript: preparedDemo.demoScript,
         });
       } catch (error) {
         await input.log({
@@ -472,7 +470,7 @@ export async function runDraftCompositeReviewLoop(
             workspaceId: input.input.workspaceId,
           },
           dependencies: input.dependencies,
-          demoScriptCandidate: preparedDemo.demoScriptPackage,
+          demoScript: preparedDemo.demoScript,
           failure: {
             blockedNetworkAttempts: [],
             failureReason: `Draft Composite review requested Demo Script repair: ${decision.reason}`,
@@ -494,9 +492,8 @@ export async function runDraftCompositeReviewLoop(
         }
         preparedDemo = {
           ...preparedDemo,
-          acceptedDemoScript: repairLifecycle.demoScriptCandidate,
+          demoScript: repairLifecycle.demoScript,
           capturePathValidation: repairLifecycle.capturePathValidation,
-          demoScriptPackage: repairLifecycle.demoScriptCandidate,
           preparationManifest: repairLifecycle.preparationManifest,
         };
         browserUrl =
@@ -580,12 +577,12 @@ async function readDraftCompositeEvidence(input: {
   captureManifest: CaptureManifest;
   finalVideo: CompositedVideoManifest;
   options: DraftCompositeReviewLoopOptions;
-  scriptPackage: PreparedDemoResult["demoScriptPackage"];
+  demoScript: PreparedDemoResult["demoScript"];
 }): Promise<DraftCompositeEvidence> {
   const evidence = await input.options.inspectDraftCompositeEvidence?.({
     captureManifest: input.captureManifest,
     draftComposite: input.finalVideo,
-    scriptPackage: input.scriptPackage,
+    demoScript: input.demoScript,
   });
 
   return (

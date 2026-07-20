@@ -1,10 +1,10 @@
 import { join } from "node:path";
 
-import { readCaptureSdkBrowserActionEvents } from "../06-footage-capture/capture-sdk-event.schema";
+import { readCaptureSdkBrowserActionEvents } from "../04-script-generation/demo-script/capture-sdk-event.schema";
 import {
   DemoScriptTypeValidationError,
   executeDemoScriptInSandbox,
-} from "../06-footage-capture/demo-script-sandbox-executor";
+} from "../04-script-generation/demo-script/demo-script-sandbox-executor";
 import type {
   CapturePathSceneValidationInput,
   CapturePathSceneValidationResult,

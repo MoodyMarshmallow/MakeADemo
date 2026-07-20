@@ -1,10 +1,10 @@
-import { assertDemoScriptCaptureSdkContract } from "../06-footage-capture/capture-sdk-contract";
-import { validateDemoScriptCaptureSdkTypesInTemporaryHarness } from "../06-footage-capture/capture-sdk-harness";
+import { assertCaptureReadyScriptQuality } from "./demo-script-quality";
+import { assertDemoScriptCaptureSdkContract } from "./demo-script/capture-sdk-contract";
+import { validateDemoScriptCaptureSdkTypesInTemporaryHarness } from "./demo-script/capture-sdk-harness";
 import {
   type DemoScript,
   parseDemoScript,
-} from "../06-footage-capture/demo-script.schema";
-import { assertCaptureReadyScriptQuality } from "./script-package-quality";
+} from "./demo-script/demo-script.schema";
 
 /**
  * Validates a generated Demo Script candidate at every acceptance seam.

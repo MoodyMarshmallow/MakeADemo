@@ -3,10 +3,10 @@ import { describe, expect, it } from "vitest";
 import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
 import { SubmittedCodeWorkspaceSyncError } from "../../03-repo-preparation/submitted-code-execution";
 import type { BrowserValidator } from "./browser-validator.interface";
-import { validateProject } from "./project-validator";
+import { runDemoRuntimePreflight } from "./demo-runtime-preflight";
 import type { SandboxRunner } from "./sandbox-runner.interface";
 
-describe("validateProject", () => {
+describe("runDemoRuntimePreflight", () => {
   it("returns validation artifacts when the prepared repo satisfies the Demo Run Contract", async () => {
     const browserUrls: string[] = [];
     const sandboxRunner: SandboxRunner = {
@@ -31,7 +31,7 @@ describe("validateProject", () => {
       },
     };
 
-    const result = await validateProject(
+    const result = await runDemoRuntimePreflight(
       {
         preparationManifest: manifest({
           demoCommand: "npm run demo",
@@ -78,7 +78,7 @@ describe("validateProject", () => {
       },
     };
 
-    await validateProject(
+    await runDemoRuntimePreflight(
       {
         preparationManifest: manifest({
           demoCommand: "npm run demo",
@@ -93,22 +93,22 @@ describe("validateProject", () => {
       expect.arrayContaining([
         expect.objectContaining({
           browserUrl: "https://preview.example.test",
-          event: "project-validation.browser-validation.started",
-          stage: "project-validation",
+          event: "demo-runtime-preflight.browser-validation.started",
+          stage: "demo-runtime-preflight",
           workspaceId: "workspace_123",
         }),
         expect.objectContaining({
           browserUrl: "https://preview.example.test",
-          event: "project-validation.browser-validation.succeeded",
+          event: "demo-runtime-preflight.browser-validation.succeeded",
           screenshotArtifactId: "artifact_screenshot",
-          stage: "project-validation",
+          stage: "demo-runtime-preflight",
           workspaceId: "workspace_123",
         }),
       ]),
     );
   });
 
-  it("does not block Project Validation when workspace log writes hang", async () => {
+  it("does not block Demo Runtime Preflight when workspace log writes hang", async () => {
     const browserUrls: string[] = [];
     const sandboxRunner: SandboxRunner = {
       async runValidation() {
@@ -133,7 +133,7 @@ describe("validateProject", () => {
     };
 
     const result = await Promise.race([
-      validateProject(
+      runDemoRuntimePreflight(
         {
           preparationManifest: manifest({
             demoCommand: "npm run demo",
@@ -175,7 +175,7 @@ describe("validateProject", () => {
       },
     };
 
-    const result = await validateProject(
+    const result = await runDemoRuntimePreflight(
       {
         preparationManifest: manifest({
           demoCommand: "npm run demo",
@@ -214,7 +214,7 @@ describe("validateProject", () => {
       },
     };
 
-    const result = await validateProject(
+    const result = await runDemoRuntimePreflight(
       {
         preparationManifest: manifest({
           demoCommand: "npm run demo",
@@ -261,7 +261,7 @@ describe("validateProject", () => {
       },
     };
 
-    const result = await validateProject(
+    const result = await runDemoRuntimePreflight(
       {
         preparationManifest: manifest({
           demoCommand: "npm run demo",
@@ -295,7 +295,7 @@ describe("validateProject", () => {
       },
     };
 
-    const result = await validateProject(
+    const result = await runDemoRuntimePreflight(
       {
         preparationManifest: manifest({
           demoCommand: "npm run demo",
@@ -332,7 +332,7 @@ describe("validateProject", () => {
       },
     };
 
-    const result = await validateProject(
+    const result = await runDemoRuntimePreflight(
       {
         preparationManifest: manifest({
           demoCommand: "npm run demo",
@@ -366,7 +366,7 @@ describe("validateProject", () => {
       },
     };
 
-    const result = await validateProject(
+    const result = await runDemoRuntimePreflight(
       {
         preparationManifest: manifest({
           demoCommand: "npm run demo",
@@ -415,7 +415,7 @@ describe("validateProject", () => {
     };
 
     await expect(
-      validateProject(
+      runDemoRuntimePreflight(
         {
           preparationManifest: manifest({
             demoCommand: "npm run demo",
@@ -450,7 +450,7 @@ describe("validateProject", () => {
       },
     };
 
-    const result = await validateProject(
+    const result = await runDemoRuntimePreflight(
       {
         preparationManifest: manifest({
           demoCommand: "npm run demo",
@@ -499,7 +499,7 @@ describe("validateProject", () => {
       },
     };
 
-    const result = await validateProject(
+    const result = await runDemoRuntimePreflight(
       {
         preparationManifest: manifest({
           demoCommand: "npm run demo",
@@ -535,7 +535,7 @@ describe("validateProject", () => {
               url: "https://api.realworld.io/articles",
             },
           ],
-          event: "project-validation.browser-validation.failed",
+          event: "demo-runtime-preflight.browser-validation.failed",
           failureReason:
             "Runtime network communication across the sandbox boundary is not allowed. Blocked runtime network attempts: https://api.realworld.io/articles.",
         }),
@@ -570,7 +570,7 @@ describe("validateProject", () => {
       },
     };
 
-    const result = await validateProject(
+    const result = await runDemoRuntimePreflight(
       {
         preparationManifest: manifest({
           demoCommand: "npm run demo",
@@ -623,7 +623,7 @@ describe("validateProject", () => {
       },
     };
 
-    const result = await validateProject(
+    const result = await runDemoRuntimePreflight(
       {
         preparationManifest: manifest({
           demoCommand: "npm run demo",
@@ -647,7 +647,7 @@ describe("validateProject", () => {
   });
 
   it("returns Ghost-style server and browser evidence with accessible screenshot metadata", async () => {
-    const result = await validateProject(
+    const result = await runDemoRuntimePreflight(
       {
         preparationManifest: manifest({
           demoCommand: "npm run demo",
@@ -697,7 +697,7 @@ describe("validateProject", () => {
 
   it("redacts and bounds lower-priority toolchain metadata warnings", async () => {
     const secret = "token=supersecret";
-    const result = await validateProject(
+    const result = await runDemoRuntimePreflight(
       {
         preparationManifest: manifest({
           demoCommand: "npm run demo",

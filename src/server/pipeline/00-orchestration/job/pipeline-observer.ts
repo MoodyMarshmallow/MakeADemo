@@ -3,7 +3,7 @@ import { createPipelineEventLogger } from "../../../shared/logging/pipeline-even
 export type PipelineStage =
   | "compositing"
   | "capture-path-validation"
-  | "project-validation"
+  | "demo-runtime-preflight"
   | "repo-preparation"
   | "repo-security-screen"
   | "script-generation";

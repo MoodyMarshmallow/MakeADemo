@@ -144,7 +144,7 @@ describe("DaytonaSandboxRunner", () => {
     expect(workspace.sandboxLogs).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          event: "project-validation.dependency-install.skipped",
+          event: "demo-runtime-preflight.dependency-install.skipped",
           reason: "manifest-not-required",
         }),
       ]),
@@ -267,7 +267,7 @@ describe("DaytonaSandboxRunner", () => {
     ]);
   });
 
-  it("writes Project Validation progress and demo server output to sandbox logs", async () => {
+  it("writes Demo Runtime Preflight progress and demo server output to sandbox logs", async () => {
     const workspace = new FakePreparationWorkspaceHandle();
     const runner = new DaytonaSandboxRunner();
 
@@ -282,61 +282,61 @@ describe("DaytonaSandboxRunner", () => {
     expect(workspace.sandboxLogs).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          event: "project-validation.started",
-          stage: "project-validation",
+          event: "demo-runtime-preflight.started",
+          stage: "demo-runtime-preflight",
         }),
         expect.objectContaining({
-          event: "project-validation.repo-files.started",
-          stage: "project-validation",
+          event: "demo-runtime-preflight.repo-files.started",
+          stage: "demo-runtime-preflight",
         }),
         expect.objectContaining({
-          event: "project-validation.repo-files.succeeded",
+          event: "demo-runtime-preflight.repo-files.succeeded",
           repoFileCount: 2,
-          stage: "project-validation",
+          stage: "demo-runtime-preflight",
         }),
         expect.objectContaining({
-          event: "project-validation.dependency-install.started",
-          stage: "project-validation",
+          event: "demo-runtime-preflight.dependency-install.started",
+          stage: "demo-runtime-preflight",
         }),
         expect.objectContaining({
-          event: "project-validation.dependency-install.succeeded",
-          stage: "project-validation",
+          event: "demo-runtime-preflight.dependency-install.succeeded",
+          stage: "demo-runtime-preflight",
         }),
         expect.objectContaining({
-          event: "project-validation.demo-readiness.started",
-          stage: "project-validation",
+          event: "demo-runtime-preflight.demo-readiness.started",
+          stage: "demo-runtime-preflight",
         }),
         expect.objectContaining({
-          event: "project-validation.demo-readiness.succeeded",
-          stage: "project-validation",
+          event: "demo-runtime-preflight.demo-readiness.succeeded",
+          stage: "demo-runtime-preflight",
         }),
         expect.objectContaining({
-          event: "project-validation.fresh-capture-baseline.started",
-          stage: "project-validation",
+          event: "demo-runtime-preflight.fresh-capture-baseline.started",
+          stage: "demo-runtime-preflight",
         }),
         expect.objectContaining({
-          event: "project-validation.fresh-capture-baseline.created",
-          stage: "project-validation",
+          event: "demo-runtime-preflight.fresh-capture-baseline.created",
+          stage: "demo-runtime-preflight",
         }),
         expect.objectContaining({
-          event: "project-validation.browser-preview.started",
+          event: "demo-runtime-preflight.browser-preview.started",
           port: 3000,
-          stage: "project-validation",
+          stage: "demo-runtime-preflight",
         }),
         expect.objectContaining({
-          event: "project-validation.browser-preview.created",
-          stage: "project-validation",
+          event: "demo-runtime-preflight.browser-preview.created",
+          stage: "demo-runtime-preflight",
         }),
         expect.objectContaining({
-          event: "project-validation.demo-server-log",
+          event: "demo-runtime-preflight.demo-server-log",
           log: "demo server failed",
-          stage: "project-validation",
+          stage: "demo-runtime-preflight",
         }),
       ]),
     );
   });
 
-  it("continues Project Validation when sandbox progress logging fails", async () => {
+  it("continues Demo Runtime Preflight when sandbox progress logging fails", async () => {
     const workspace = new FakePreparationWorkspaceHandle(new Map(), undefined, {
       failSandboxLogWrites: true,
     });
@@ -357,7 +357,7 @@ describe("DaytonaSandboxRunner", () => {
     );
   });
 
-  it("continues Project Validation when sandbox progress logging never settles", async () => {
+  it("continues Demo Runtime Preflight when sandbox progress logging never settles", async () => {
     const workspace = new FakePreparationWorkspaceHandle(new Map(), undefined, {
       neverSettleSandboxLogWrites: true,
     });
@@ -382,7 +382,7 @@ describe("DaytonaSandboxRunner", () => {
     );
   });
 
-  it("does not wait on a hanging fallback logger after Project Validation sandbox log writes fail", async () => {
+  it("does not wait on a hanging fallback logger after Demo Runtime Preflight sandbox log writes fail", async () => {
     const workspace = new FakePreparationWorkspaceHandle(new Map(), undefined, {
       failSandboxLogWrites: true,
     });
@@ -913,13 +913,15 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
       this.events.push("syncSubmittedCodeWorkspace");
     },
     uploadFiles: async () => {
-      throw new Error("Project Validation should use the retained workspace.");
+      throw new Error(
+        "Demo Runtime Preflight should use the retained workspace.",
+      );
     },
     writeSandboxLog: async (entry: Record<string, unknown>) => {
       if (
         this.options.neverSettleSandboxLogWrites === true &&
         typeof entry.event === "string" &&
-        entry.event.startsWith("project-validation.")
+        entry.event.startsWith("demo-runtime-preflight.")
       ) {
         return new Promise<void>(() => undefined);
       }

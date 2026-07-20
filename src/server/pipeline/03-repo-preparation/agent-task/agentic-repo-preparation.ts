@@ -8,7 +8,6 @@ import {
   type PipelineEventLogger,
   createPipelineEventLogger,
 } from "../../../shared/logging/pipeline-event-logger";
-import type { ProjectValidationResult } from "../../05-capture-path-validation/project-runtime-preflight/validation-result";
 import { runPlannedDependencyInstallWithNetworkWindow } from "../dependency-install-network-window";
 import { evaluateDependencyNetworkRequest } from "../dependency-network-gate";
 import {
@@ -24,6 +23,7 @@ import type {
   RepoPreparationAgent,
   RepoPreparationInput,
 } from "../repo-preparation-agent.interface";
+import type { RepoPreparationPreflightResult } from "../repo-preparation-preflight.interface";
 import { inspectSubmittedCodeToolchain } from "../submitted-code-toolchain-inspection";
 import { createRepoPreparationAgentWorkspace } from "./repo-preparation-agent-workspace";
 import {
@@ -74,10 +74,10 @@ export type AgenticRepoPreparationOptions = {
   timeoutMs?: number;
   /** Overall post-setup Repo Preparation agent-task loop cap. */
   hardTimeoutMs?: number;
-  validatePreparation?: (input: {
+  runRuntimePreflight?: (input: {
     manifest: ReturnType<typeof readPreparationManifest>;
     workspace: PreparationWorkspaceHandle;
-  }) => Promise<ProjectValidationResult>;
+  }) => Promise<RepoPreparationPreflightResult>;
 };
 
 export class AgenticRepoPreparation implements RepoPreparationAgent {
@@ -89,11 +89,11 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
   private readonly runner: AgentTaskRunner;
   private readonly timeoutMs: number;
   private readonly hardTimeoutMs: number;
-  private readonly validatePreparation:
+  private readonly runRuntimePreflight:
     | ((input: {
         manifest: ReturnType<typeof readPreparationManifest>;
         workspace: PreparationWorkspaceHandle;
-      }) => Promise<ProjectValidationResult>)
+      }) => Promise<RepoPreparationPreflightResult>)
     | undefined;
 
   constructor(options: AgenticRepoPreparationOptions) {
@@ -104,7 +104,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     this.runner = options.runner;
     this.timeoutMs = options.timeoutMs ?? defaultInactivityTimeoutMs;
     this.hardTimeoutMs = options.hardTimeoutMs ?? defaultHardTimeoutMs;
-    this.validatePreparation = options.validatePreparation;
+    this.runRuntimePreflight = options.runRuntimePreflight;
   }
 
   async prepare(input: RepoPreparationInput): Promise<RepoPreparationResult> {
@@ -500,15 +500,16 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
           event: "preparation-result-found",
           status: preparationResult.status,
         });
-        const validation = controlState.readValidation()?.validation;
+        const runtimePreflight =
+          controlState.readValidation()?.runtimePreflight;
         if (
           preparationResult.status === "succeeded" &&
-          validation?.status === "succeeded"
+          runtimePreflight?.status === "succeeded"
         ) {
           return {
             ...preparationResult,
             ...(agentSession === undefined ? {} : { agentSession }),
-            validation,
+            runtimePreflight,
             workspace: handle,
           };
         }
@@ -595,12 +596,12 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         status: "done",
       };
     }
-    if (this.validatePreparation === undefined) {
+    if (this.runRuntimePreflight === undefined) {
       throw new Error("Repo Preparation validation tool is not configured.");
     }
-    const validatePreparation = this.validatePreparation;
+    const runRuntimePreflight = this.runRuntimePreflight;
     let manifest: ReturnType<typeof readPreparationManifest> | undefined;
-    let validation: ProjectValidationResult;
+    let runtimePreflight: RepoPreparationPreflightResult;
     try {
       const validationRun = await raceWithTimeout(
         (async () => {
@@ -621,7 +622,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
             manifest,
             input.baselineSourceControlledPaths,
           );
-          return await validatePreparation({
+          return await runRuntimePreflight({
             manifest,
             workspace: input.handle,
           });
@@ -631,19 +632,21 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
       if (validationRun.status !== "succeeded") {
         return { reason: validationRun.reason, status: "timeout" };
       }
-      validation = validationRun.value;
+      runtimePreflight = validationRun.value;
     } catch (error) {
-      validation = createValidationHandoffFailure(readErrorMessage(error));
+      runtimePreflight = createRuntimePreflightHandoffFailure(
+        readErrorMessage(error),
+      );
     }
     await this.writeSandboxLog(input.handle.workspace, {
-      failureReason: validation.failureReason,
+      failureReason: runtimePreflight.failureReason,
       event: "preparation-preflight.finished",
-      level: validation.status === "failed" ? "warn" : "info",
-      status: validation.status,
+      level: runtimePreflight.status === "failed" ? "warn" : "info",
+      status: runtimePreflight.status,
     });
-    input.controlState.recordValidation({ manifest, validation });
+    input.controlState.recordValidation({ manifest, runtimePreflight });
     const nonRetryablePreflightFailure =
-      readNonRetryablePreflightFailure(validation);
+      readNonRetryablePreflightFailure(runtimePreflight);
     if (nonRetryablePreflightFailure !== undefined) {
       await this.writeSandboxLog(input.handle.workspace, {
         event: "preparation-preflight.non-retryable-failure",
@@ -661,10 +664,10 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         status: "done",
       };
     }
-    if (validation.status === "succeeded" && manifest !== undefined) {
+    if (runtimePreflight.status === "succeeded" && manifest !== undefined) {
       await this.writeSandboxLog(input.handle.workspace, {
         event: "preparation-auto-succeeded-after-preflight",
-        status: validation.status,
+        status: runtimePreflight.status,
       });
       return {
         result: {
@@ -673,7 +676,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
             ? {}
             : { agentSession: input.agentSession }),
           status: "succeeded" as const,
-          validation,
+          runtimePreflight,
           workspace: input.handle,
         },
         status: "done",
@@ -684,20 +687,20 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
       !input.canExecuteRetry
     ) {
       return {
-        result: validationRepairExhaustedFailure(validation),
+        result: runtimePreflightRepairExhaustedFailure(runtimePreflight),
         status: "done",
       };
     }
     await writeRepoPreparationRetryLog(this.logger, input.handle.workspace, {
       nextAttempt: input.attempt + 2,
-      reason: readRetryReason(validation.failureReason),
+      reason: readRetryReason(runtimePreflight.failureReason),
     });
     return {
       prompt: createValidationFeedbackPrompt({
         manifest,
         manifestPath: input.validationRequest.manifestPath,
         remainingBudgetMs: Math.max(0, input.deadlineAt - Date.now()),
-        validation,
+        runtimePreflight,
       }),
       status: "retry",
     };
@@ -870,32 +873,32 @@ function readRetryReason(reason: string | undefined): string {
     : reason;
 }
 
-function validationRepairExhaustedFailure(
-  validation: ProjectValidationResult,
+function runtimePreflightRepairExhaustedFailure(
+  runtimePreflight: RepoPreparationPreflightResult,
 ): RepoPreparationResult {
-  const failureReason = readRetryReason(validation.failureReason);
+  const failureReason = readRetryReason(runtimePreflight.failureReason);
   return {
     assumptions: [],
     blockers: [failureReason],
     status: "failed",
     suggestedChanges:
-      validation.warnings.length === 0
+      runtimePreflight.warnings.length === 0
         ? [
             "Repair the reported validation failure before retrying Repo Preparation.",
           ]
-        : validation.warnings,
-    validation,
+        : runtimePreflight.warnings,
+    runtimePreflight,
   };
 }
 
 function readNonRetryablePreflightFailure(
-  validation: ProjectValidationResult,
+  runtimePreflight: RepoPreparationPreflightResult,
 ): string | undefined {
-  if (validation.failureKind !== "submitted-code-workspace-sync-failed") {
+  if (runtimePreflight.failureKind !== "submitted-code-workspace-sync-failed") {
     return undefined;
   }
 
-  return `Preparation preflight failed with a non-retryable MakeADemo infrastructure failure: ${validation.failureReason ?? validation.failureKind}`;
+  return `Preparation preflight failed with a non-retryable MakeADemo infrastructure failure: ${runtimePreflight.failureReason ?? runtimePreflight.failureKind}`;
 }
 
 function backendToolDeadlineFailure(toolName: string) {
@@ -958,9 +961,9 @@ function providerInvalidApiKeyFailureResult(): RepoPreparationResult {
   };
 }
 
-function createValidationHandoffFailure(
+function createRuntimePreflightHandoffFailure(
   reason: string,
-): ProjectValidationResult {
+): RepoPreparationPreflightResult {
   return {
     blockedNetworkAttempts: [],
     failureReason: `Preparation manifest handoff is invalid: ${reason}`,

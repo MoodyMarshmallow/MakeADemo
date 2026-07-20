@@ -2,8 +2,8 @@ import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import type { DemoScript } from "../04-script-generation/demo-script/demo-script.schema";
 import type { CaptureManifest } from "../06-footage-capture/capture-scenes";
-import type { DemoScript } from "../06-footage-capture/demo-script.schema";
 import type { FinalVideoEmailNotifier } from "../final-output/final-video-email-notifier.interface";
 import {
   type CompositedVideoManifest,

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { NeonDemoRequestFinalVideoStore } from "./neon-demo-request-final-video-store";
 
 describe("NeonDemoRequestFinalVideoStore", () => {
-  it("saves the generated script package on the Demo Request", async () => {
+  it("saves the generated Demo Script on the Demo Request", async () => {
     const updates: unknown[] = [];
     const db = {
       select() {
@@ -29,19 +29,8 @@ describe("NeonDemoRequestFinalVideoStore", () => {
     await store.saveGeneratedScript({
       demoRequestId: "demo-request-123",
       script: {
-        assumptions: [],
-        demoPlan: {
-          featureOrder: ["article feed"],
-          narrative: "Show the article feed.",
-          risks: [],
-        },
         demoPlaywrightScript:
           "await scene('scene_article_feed', async () => { await page.goto(baseUrl); });",
-        exploration: {
-          assumptions: [],
-          productSurfaces: ["article feed"],
-          summary: "Prepared app.",
-        },
         format: "16:9",
         presentation: {
           music: { enabled: false },

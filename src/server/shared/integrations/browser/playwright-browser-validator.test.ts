@@ -566,7 +566,7 @@ describe("PlaywrightBrowserValidator", () => {
     });
 
     expect(result.screenshot).toMatchObject({
-      path: "/tmp/makeademo/submitted-code/project-validation/browser.png",
+      path: "/tmp/makeademo/submitted-code/demo-runtime-preflight/browser.png",
     });
     expect(downloaded).toHaveLength(1);
     expect(uploaded).toHaveLength(1);

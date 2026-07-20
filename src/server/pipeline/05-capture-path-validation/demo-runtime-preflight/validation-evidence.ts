@@ -30,7 +30,7 @@ export function boundValidationEvidence(
   };
 }
 
-export function redactValidationEvidence(value: string): string {
+function redactValidationEvidence(value: string): string {
   return value
     .replace(/https?:\/\/[^\s"']+/gi, redactEmbeddedUrl)
     .replace(

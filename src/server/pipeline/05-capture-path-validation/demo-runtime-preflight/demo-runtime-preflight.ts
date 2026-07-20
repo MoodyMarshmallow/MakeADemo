@@ -13,15 +13,15 @@ import {
   boundValidationLogs,
   validationEvidenceCaps,
 } from "./validation-evidence";
-import type { ProjectValidationResult } from "./validation-result";
+import type { DemoRuntimePreflightResult } from "./validation-result";
 
-export type ProjectValidationInput = {
+export type DemoRuntimePreflightInput = {
   preparationManifest: PreparationManifest;
   /** Retained workspace carrying the authoritative catalog runtime selection. */
   preparationWorkspace: PreparationWorkspaceHandle;
 };
 
-export type ProjectValidationDependencies = {
+export type DemoRuntimePreflightDependencies = {
   browserValidationTimeoutMs?: number;
   browserValidator: BrowserValidator;
   sandboxRunner: SandboxRunner;
@@ -29,10 +29,10 @@ export type ProjectValidationDependencies = {
 
 const defaultBrowserValidationTimeoutMs = 60_000;
 
-export async function validateProject(
-  input: ProjectValidationInput,
-  dependencies: ProjectValidationDependencies,
-): Promise<ProjectValidationResult> {
+export async function runDemoRuntimePreflight(
+  input: DemoRuntimePreflightInput,
+  dependencies: DemoRuntimePreflightDependencies,
+): Promise<DemoRuntimePreflightResult> {
   let sandboxResult: Awaited<ReturnType<SandboxRunner["runValidation"]>>;
   try {
     const inspectedToolchain = await inspectSubmittedCodeToolchain(
@@ -51,8 +51,8 @@ export async function validateProject(
     });
   } catch (error) {
     const failureReason = readErrorMessage(error);
-    await writeProjectValidationSandboxLog(input, {
-      event: "project-validation.failed",
+    await writeDemoRuntimePreflightSandboxLog(input, {
+      event: "demo-runtime-preflight.failed",
       failureReason,
     });
     return {
@@ -130,9 +130,9 @@ export async function validateProject(
 
     const browserUrl =
       sandboxResult.browserUrl ?? input.preparationManifest.url;
-    await writeProjectValidationSandboxLog(input, {
+    await writeDemoRuntimePreflightSandboxLog(input, {
       browserUrl,
-      event: "project-validation.browser-validation.started",
+      event: "demo-runtime-preflight.browser-validation.started",
     });
     const browserValidationTimeoutMs =
       dependencies.browserValidationTimeoutMs ??
@@ -149,10 +149,10 @@ export async function validateProject(
         `Browser validation timed out after ${browserValidationTimeoutMs}ms.`,
       );
     } catch (error) {
-      if (error instanceof ProjectValidationTimeoutError) {
-        await writeProjectValidationSandboxLog(input, {
+      if (error instanceof DemoRuntimePreflightTimeoutError) {
+        await writeDemoRuntimePreflightSandboxLog(input, {
           browserUrl,
-          event: "project-validation.browser-validation.failed",
+          event: "demo-runtime-preflight.browser-validation.failed",
           failureReason: error.message,
         });
         return {
@@ -173,9 +173,9 @@ export async function validateProject(
         };
       }
 
-      await writeProjectValidationSandboxLog(input, {
+      await writeDemoRuntimePreflightSandboxLog(input, {
         browserUrl,
-        event: "project-validation.browser-validation.failed",
+        event: "demo-runtime-preflight.browser-validation.failed",
         failureReason: error instanceof Error ? error.message : String(error),
       });
       throw error;
@@ -188,11 +188,11 @@ export async function validateProject(
       const failureReason = formatRuntimeNetworkFailureReason(
         browserNetworkAttempts,
       );
-      await writeProjectValidationSandboxLog(input, {
+      await writeDemoRuntimePreflightSandboxLog(input, {
         blockedNetworkAttemptCount: browserNetworkAttempts.length,
         blockedNetworkAttempts: browserNetworkAttempts,
         browserUrl,
-        event: "project-validation.browser-validation.failed",
+        event: "demo-runtime-preflight.browser-validation.failed",
         failureReason,
         screenshotArtifactId: browserResult.screenshotArtifactId,
         ...(browserResult.screenshot === undefined
@@ -233,9 +233,9 @@ export async function validateProject(
       const failureReason =
         readMakeADemoValidatorDependencyFailure(browserResult.logs) ??
         "Configured URL loaded but was not interactable.";
-      await writeProjectValidationSandboxLog(input, {
+      await writeDemoRuntimePreflightSandboxLog(input, {
         browserUrl,
-        event: "project-validation.browser-validation.failed",
+        event: "demo-runtime-preflight.browser-validation.failed",
         failureReason,
         screenshotArtifactId: browserResult.screenshotArtifactId,
         ...(browserResult.screenshot === undefined
@@ -280,9 +280,9 @@ export async function validateProject(
       };
     }
 
-    await writeProjectValidationSandboxLog(input, {
+    await writeDemoRuntimePreflightSandboxLog(input, {
       browserUrl,
-      event: "project-validation.browser-validation.succeeded",
+      event: "demo-runtime-preflight.browser-validation.succeeded",
       screenshotArtifactId: browserResult.screenshotArtifactId,
       ...(browserResult.screenshot === undefined
         ? {}
@@ -314,8 +314,8 @@ function boundToolchainWarning(value: string): string {
     .slice(0, 1_000);
 }
 
-async function writeProjectValidationSandboxLog(
-  input: ProjectValidationInput,
+async function writeDemoRuntimePreflightSandboxLog(
+  input: DemoRuntimePreflightInput,
   entry: Record<string, unknown>,
 ) {
   const write = input.preparationWorkspace.workspace.writeSandboxLog?.({
@@ -330,7 +330,7 @@ async function writeProjectValidationSandboxLog(
           ? "warn"
           : "info",
     repoUrl: input.preparationManifest.repoUrl,
-    stage: "project-validation",
+    stage: "demo-runtime-preflight",
     workspaceId: input.preparationManifest.workspaceId,
   });
   if (write === undefined) {
@@ -348,7 +348,7 @@ async function cleanupQuietly(cleanup: (() => Promise<void>) | undefined) {
   }
 }
 
-class ProjectValidationTimeoutError extends Error {}
+class DemoRuntimePreflightTimeoutError extends Error {}
 
 function readErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -414,7 +414,7 @@ function withTimeout<T>(
     }),
     new Promise<never>((_, reject) => {
       timeout = setTimeout(
-        () => reject(new ProjectValidationTimeoutError(message)),
+        () => reject(new DemoRuntimePreflightTimeoutError(message)),
         timeoutMs,
       );
     }),

@@ -1,7 +1,7 @@
 import type { PreparationManifest } from "../../03-repo-preparation/preparation-manifest";
 import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
 import type { NetworkAttempt } from "./network-isolation-policy";
-import type { ProjectValidationFailureKind } from "./validation-result";
+import type { DemoRuntimePreflightFailureKind } from "./validation-result";
 
 export type SandboxValidationInput = {
   demoCommand: string;
@@ -12,7 +12,7 @@ export type SandboxValidationInput = {
 export type SandboxValidationOutput = {
   blockedNetworkAttempts: NetworkAttempt[];
   browserUrl?: string;
-  failureKind?: ProjectValidationFailureKind;
+  failureKind?: DemoRuntimePreflightFailureKind;
   failureReason?: string;
   localUrl?: string;
   previewUrl?: string;

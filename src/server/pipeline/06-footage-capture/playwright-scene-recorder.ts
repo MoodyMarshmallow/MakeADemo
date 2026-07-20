@@ -7,8 +7,8 @@ import {
   type CaptureSdkSceneEvent,
   parseCaptureSdkSceneEvents,
   reduceCaptureSdkSceneEvents,
-} from "./capture-sdk-event.schema";
-import { executeDemoScriptInSandbox } from "./demo-script-sandbox-executor";
+} from "../04-script-generation/demo-script/capture-sdk-event.schema";
+import { executeDemoScriptInSandbox } from "../04-script-generation/demo-script/demo-script-sandbox-executor";
 import {
   type SceneClipTrimLogger,
   type SceneClipTrimmer,

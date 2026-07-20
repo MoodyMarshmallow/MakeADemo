@@ -1,9 +1,9 @@
 import type { AgentSession } from "../../agent-harness/agent-session";
 import type { DemoBrief } from "../01-context-gathering/intake/demo-brief.schema";
 import type { NormalizedSupportingDocument } from "../01-context-gathering/supporting-documents";
-import type { ProjectValidationResult } from "../05-capture-path-validation/project-runtime-preflight/validation-result";
 import type { PreparationManifest } from "./preparation-manifest";
 import type { PreparationWorkspaceHandle } from "./preparation-workspace-runner";
+import type { RepoPreparationPreflightResult } from "./repo-preparation-preflight.interface";
 
 export type RepoPreparationInput = {
   commitSha?: string;
@@ -23,7 +23,7 @@ type RepoPreparationAgentResult =
       manifest: unknown;
       agentSession?: AgentSession;
       status: "succeeded";
-      validation?: ProjectValidationResult;
+      runtimePreflight?: RepoPreparationPreflightResult;
       workspace?: PreparationWorkspaceHandle;
     }
   | {
@@ -32,7 +32,7 @@ type RepoPreparationAgentResult =
       status: "failed";
       suggestedChanges: string[];
       /** The final bounded preflight verdict, when Repo Preparation exhausted repairs. */
-      validation?: ProjectValidationResult;
+      runtimePreflight?: RepoPreparationPreflightResult;
     };
 
 /**
@@ -51,7 +51,7 @@ export type RepoPreparationResult =
       manifest: PreparationManifest;
       agentSession?: AgentSession;
       status: "succeeded";
-      validation?: ProjectValidationResult;
+      runtimePreflight?: RepoPreparationPreflightResult;
       workspace?: PreparationWorkspaceHandle;
     }
   | {

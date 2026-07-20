@@ -100,7 +100,7 @@ describe("Repo Preparation stage tools", () => {
     const state = createState(async () => currentManifest);
     state.recordValidation({
       manifest,
-      validation: {
+      runtimePreflight: {
         blockedNetworkAttempts: [],
         logs: [],
         status: "succeeded",

@@ -8,7 +8,6 @@
     "benchmark:summarize": "bun scripts/summarize-benchmark.mts",
     "build": "tsc --noEmit -p tsconfig.json && vite build",
     "demo": "vite demo --host 127.0.0.1 --port 3000",
-    "demo:validate-scripts": "bun scripts/validate-demo-playwright-scripts.mts",
     "db:migrate": "drizzle-kit push",
     "dev": "concurrently -k \"bun run dev:api\" \"bun run dev:web\"",
     "dev:api": "bun --watch src/server/api/server.mts",

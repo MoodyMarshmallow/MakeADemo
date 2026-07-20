@@ -13,11 +13,11 @@ import type {
   SandboxRunner,
   SandboxValidationInput,
   SandboxValidationOutput,
-} from "../../../pipeline/05-capture-path-validation/project-runtime-preflight/sandbox-runner.interface";
+} from "../../../pipeline/05-capture-path-validation/demo-runtime-preflight/sandbox-runner.interface";
 import {
   boundValidationEvidence,
   validationEvidenceCaps,
-} from "../../../pipeline/05-capture-path-validation/project-runtime-preflight/validation-evidence";
+} from "../../../pipeline/05-capture-path-validation/demo-runtime-preflight/validation-evidence";
 import type { PipelineEventLogger } from "../../logging/pipeline-event-logger";
 
 export class DaytonaSandboxRunner implements SandboxRunner {
@@ -67,18 +67,20 @@ export class DaytonaSandboxRunner implements SandboxRunner {
           ...sanitizeSandboxLogEntry(entry),
           level: readValidationLogLevel(entry),
           repoUrl: input.repoUrl,
-          stage: "project-validation",
+          stage: "demo-runtime-preflight",
           workspaceId: input.preparationManifest.workspaceId,
         },
         logger: this.logger,
-        stage: "project-validation",
+        stage: "demo-runtime-preflight",
         write: (logEntry) => handle.workspace.writeSandboxLog?.(logEntry),
       });
 
     try {
-      await writeSandboxLog({ event: "project-validation.started" });
+      await writeSandboxLog({ event: "demo-runtime-preflight.started" });
       await syncSubmittedCodeWorkspace(handle.workspace);
-      await writeSandboxLog({ event: "project-validation.repo-files.started" });
+      await writeSandboxLog({
+        event: "demo-runtime-preflight.repo-files.started",
+      });
       const repoFilesResult = await executeSubmittedCode(
         handle.workspace,
         "find /workspace -maxdepth 1 -mindepth 1 -printf '%f\\n' | sort",
@@ -88,7 +90,7 @@ export class DaytonaSandboxRunner implements SandboxRunner {
         .map((line) => line.trim())
         .filter((line) => line.length > 0);
       await writeSandboxLog({
-        event: "project-validation.repo-files.succeeded",
+        event: "demo-runtime-preflight.repo-files.succeeded",
         repoFileCount: repoFiles.length,
       });
       const installResult =
@@ -100,7 +102,7 @@ export class DaytonaSandboxRunner implements SandboxRunner {
             });
       if (input.preparationManifest.dependencyInstall === "not-required") {
         await writeSandboxLog({
-          event: "project-validation.dependency-install.skipped",
+          event: "demo-runtime-preflight.dependency-install.skipped",
           reason: "manifest-not-required",
         });
       } else if (installResult.exitCode !== 0) {
@@ -119,7 +121,7 @@ export class DaytonaSandboxRunner implements SandboxRunner {
       }
       await writeSandboxLog({
         command: input.demoCommand,
-        event: "project-validation.demo-command.started",
+        event: "demo-runtime-preflight.demo-command.started",
         url: input.url,
       });
       await executeSubmittedCode(
@@ -128,12 +130,12 @@ export class DaytonaSandboxRunner implements SandboxRunner {
       );
       const runtimeResult = await executeDemoStart(handle, input.demoCommand);
       await writeSandboxLog({
-        event: "project-validation.demo-command.launched",
+        event: "demo-runtime-preflight.demo-command.launched",
         exitCode: runtimeResult.exitCode,
         stdout: runtimeResult.stdout,
       });
       await writeSandboxLog({
-        event: "project-validation.demo-readiness.started",
+        event: "demo-runtime-preflight.demo-readiness.started",
         url: input.url,
       });
       const readinessResult = await waitForDemoReadiness({
@@ -144,7 +146,7 @@ export class DaytonaSandboxRunner implements SandboxRunner {
       });
       if (readinessResult.exitCode !== 0) {
         await writeSandboxLog({
-          event: "project-validation.demo-readiness.failed",
+          event: "demo-runtime-preflight.demo-readiness.failed",
           stderr: readinessResult.stderr,
           stdout: readinessResult.stdout,
           url: input.url,
@@ -179,11 +181,11 @@ export class DaytonaSandboxRunner implements SandboxRunner {
         };
       }
       await writeSandboxLog({
-        event: "project-validation.demo-readiness.succeeded",
+        event: "demo-runtime-preflight.demo-readiness.succeeded",
         url: input.url,
       });
       await writeSandboxLog({
-        event: "project-validation.fresh-capture-baseline.started",
+        event: "demo-runtime-preflight.fresh-capture-baseline.started",
       });
       const baselineResult = await executeSubmittedCode(
         handle.workspace,
@@ -191,7 +193,7 @@ export class DaytonaSandboxRunner implements SandboxRunner {
       );
       if (baselineResult.exitCode !== 0) {
         await writeSandboxLog({
-          event: "project-validation.fresh-capture-baseline.failed",
+          event: "demo-runtime-preflight.fresh-capture-baseline.failed",
           stderr: baselineResult.stderr,
           stdout: baselineResult.stdout,
         });
@@ -212,12 +214,12 @@ export class DaytonaSandboxRunner implements SandboxRunner {
         };
       }
       await writeSandboxLog({
-        event: "project-validation.fresh-capture-baseline.created",
+        event: "demo-runtime-preflight.fresh-capture-baseline.created",
       });
       const demoLogsResult = await readDemoServerLog(handle);
       await writeDemoServerLog(writeSandboxLog, demoLogsResult.stdout);
       await writeSandboxLog({
-        event: "project-validation.browser-preview.started",
+        event: "demo-runtime-preflight.browser-preview.started",
         port: readPortFromLocalUrl(input.url),
         url: input.url,
       });
@@ -227,7 +229,7 @@ export class DaytonaSandboxRunner implements SandboxRunner {
       });
       await writeSandboxLog({
         browserUrl,
-        event: "project-validation.browser-preview.created",
+        event: "demo-runtime-preflight.browser-preview.created",
       });
 
       return {
@@ -284,7 +286,7 @@ export class DaytonaSandboxRunner implements SandboxRunner {
     }
     await input.writeSandboxLog({
       argv: toolchainPlan.install.argv,
-      event: "project-validation.dependency-install.started",
+      event: "demo-runtime-preflight.dependency-install.started",
       executable: toolchainPlan.install.executable,
     });
     const installResult = await runPlannedDependencyInstallWithNetworkWindow({
@@ -294,7 +296,7 @@ export class DaytonaSandboxRunner implements SandboxRunner {
     if (installResult.exitCode !== 0) {
       await input.writeSandboxLog({
         argv: toolchainPlan.install.argv,
-        event: "project-validation.dependency-install.failed",
+        event: "demo-runtime-preflight.dependency-install.failed",
         executable: toolchainPlan.install.executable,
         exitCode: installResult.exitCode,
         stderr: installResult.stderr,
@@ -304,7 +306,7 @@ export class DaytonaSandboxRunner implements SandboxRunner {
     }
     await input.writeSandboxLog({
       argv: toolchainPlan.install.argv,
-      event: "project-validation.dependency-install.succeeded",
+      event: "demo-runtime-preflight.dependency-install.succeeded",
       executable: toolchainPlan.install.executable,
       exitCode: installResult.exitCode,
     });
@@ -434,7 +436,7 @@ async function writeDemoServerLog(
   }
 
   await writeSandboxLog({
-    event: "project-validation.demo-server-log",
+    event: "demo-runtime-preflight.demo-server-log",
     level: "debug",
     log: boundValidationEvidence(output, validationEvidenceCaps.server).text,
   });

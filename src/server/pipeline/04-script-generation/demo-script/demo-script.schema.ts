@@ -5,7 +5,6 @@ export type SceneDescription = {
 };
 
 export type DemoScript = {
-  audio?: { enabled: boolean; music?: { id: ApprovedMusicTrackId } };
   demoPlaywrightScript: string;
   format: string;
   presentation: DemoScriptPresentation;
@@ -73,17 +72,13 @@ export function parseDemoScript(value: unknown): DemoScript {
 
   const demoScript: DemoScript = {
     demoPlaywrightScript,
-    format: readNonEmptyString(scriptRecord, "format"),
+    format: readSupportedFormat(scriptRecord),
     presentation: readPresentation(scriptRecord, sceneIds),
     scenes,
     scriptId: readNonEmptyString(scriptRecord, "scriptId"),
     title: readNonEmptyString(scriptRecord, "title"),
     version: readPositiveNumber(scriptRecord, "version"),
   };
-
-  if (scriptRecord.audio !== undefined) {
-    demoScript.audio = readAudio(scriptRecord.audio);
-  }
 
   return demoScript;
 }
@@ -114,21 +109,14 @@ function readScenes(scriptRecord: Record<string, unknown>) {
         "expectedVisibleOutcome",
         path,
       ),
-      humanReadableDescription: readSceneDescription(sceneRecord, path),
+      humanReadableDescription: readNonEmptyString(
+        sceneRecord,
+        "humanReadableDescription",
+        path,
+      ),
       id,
     };
   });
-}
-
-function readSceneDescription(
-  sceneRecord: Record<string, unknown>,
-  path: string,
-) {
-  if (sceneRecord.humanReadableDescription !== undefined) {
-    return readNonEmptyString(sceneRecord, "humanReadableDescription", path);
-  }
-
-  return readNonEmptyString(sceneRecord, "description", path);
 }
 
 function readPresentation(
@@ -221,22 +209,6 @@ function readTransitions(value: unknown, sceneIds: Set<string>) {
   });
 }
 
-function readAudio(value: unknown): NonNullable<DemoScript["audio"]> {
-  const audioRecord = assertRecord(value, "audio");
-  const enabled = readBoolean(audioRecord, "enabled", "audio");
-  const music = audioRecord.music;
-
-  if (music === undefined) {
-    return { enabled };
-  }
-
-  const musicRecord = assertRecord(music, "audio.music");
-  return {
-    enabled,
-    music: { id: readApprovedMusicTrackId(musicRecord, "id", "audio.music") },
-  };
-}
-
 function assertKnownSceneId(
   sceneIds: Set<string>,
   sceneId: string,
@@ -245,6 +217,14 @@ function assertKnownSceneId(
   if (!sceneIds.has(sceneId)) {
     throw new Error(`${path} must reference a declared Scene`);
   }
+}
+
+function readSupportedFormat(record: Record<string, unknown>): "16:9" {
+  const format = readNonEmptyString(record, "format");
+  if (format !== "16:9") {
+    throw new Error("format must be 16:9");
+  }
+  return format;
 }
 
 function assertRecord(value: unknown, path: string): Record<string, unknown> {

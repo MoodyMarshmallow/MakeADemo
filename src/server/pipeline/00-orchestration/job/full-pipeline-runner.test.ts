@@ -167,8 +167,8 @@ describe("runFullPipelineJob", () => {
         fullPipelineInput(),
         {
           ...baseDependencies,
-          async generateScriptPackage(input) {
-            const script = await baseDependencies.generateScriptPackage(input);
+          async generateDemoScript(input) {
+            const script = await baseDependencies.generateDemoScript(input);
             return { ...script, scriptId: "script_initial" };
           },
           async repairCapturePathFailure(input) {
@@ -176,15 +176,15 @@ describe("runFullPipelineJob", () => {
             const scriptId = `script_repaired_${repairCount}`;
             calls.push(`repair:${scriptId}`);
             return {
-              demoScriptPackage: {
-                ...input.demoScriptPackage,
+              demoScript: {
+                ...input.demoScript,
                 scriptId,
               },
               preparationManifest: input.preparationManifest,
             };
           },
           async validateCapturePath(input) {
-            const scriptId = input.demoScriptPackage.scriptId;
+            const scriptId = input.demoScript.scriptId;
             calls.push(`capture-path-validation:${scriptId}`);
             if (scriptId === "script_repaired_1") {
               return {
@@ -208,16 +208,18 @@ describe("runFullPipelineJob", () => {
         },
         {
           async captureScenes(input: CaptureScenesFromScriptInput) {
-            const { scriptPackage } = input;
+            const { demoScript } = input;
             if (
-              typeof scriptPackage !== "object" ||
-              scriptPackage === null ||
-              !("scriptId" in scriptPackage) ||
-              typeof scriptPackage.scriptId !== "string"
+              typeof demoScript !== "object" ||
+              demoScript === null ||
+              !("scriptId" in demoScript) ||
+              typeof demoScript.scriptId !== "string"
             ) {
-              throw new Error("capture fixture requires a Demo Script package");
+              throw new Error(
+                "capture fixture requires a Demo Script artifact",
+              );
             }
-            capturedScriptIds.push(scriptPackage.scriptId);
+            capturedScriptIds.push(demoScript.scriptId);
             return captureManifest(outputRoot, input.runId ?? "capture");
           },
           async compositeVideo(input) {
@@ -231,7 +233,7 @@ describe("runFullPipelineJob", () => {
           },
           outputRoot,
           reviewDraftComposite: async (input) => {
-            reviewedScriptIds.push(input.scriptPackage.scriptId);
+            reviewedScriptIds.push(input.demoScript.scriptId);
             return input.attempt === 1
               ? {
                   decision: "repair" as const,
@@ -244,15 +246,7 @@ describe("runFullPipelineJob", () => {
         },
       );
 
-      expect(result.preparedDemo.demoScriptPackage.scriptId).toBe(
-        "script_repaired_2",
-      );
-      expect(result.preparedDemo.acceptedDemoScript.scriptId).toBe(
-        "script_repaired_2",
-      );
-      expect(result.preparedDemo.acceptedDemoScript).toBe(
-        result.preparedDemo.demoScriptPackage,
-      );
+      expect(result.preparedDemo.demoScript.scriptId).toBe("script_repaired_2");
       expect(result.draftCompositeReview).toMatchObject({
         attempts: 2,
         status: "accepted",
@@ -353,7 +347,7 @@ describe("runFullPipelineJob", () => {
         {
           async captureScenes(input) {
             expect(input.scriptPath).toBeUndefined();
-            expect(input.scriptPackage).toMatchObject({
+            expect(input.demoScript).toMatchObject({
               scriptId: "script_test",
             });
             return {
@@ -372,7 +366,7 @@ describe("runFullPipelineJob", () => {
           },
           async compositeVideo(input) {
             expect(input.scriptPath).toBeUndefined();
-            expect(input.scriptPackage).toMatchObject({
+            expect(input.demoScript).toMatchObject({
               scriptId: "script_test",
             });
             return {
@@ -506,7 +500,7 @@ describe("runFullPipelineJob", () => {
         await runFullPipelineJob(
           fullPipelineInput(),
           {
-            async generateScriptPackage() {
+            async generateDemoScript() {
               throw new Error("script generation should not run");
             },
             async prepareRepo() {
@@ -705,7 +699,7 @@ describe("runFullPipelineJob", () => {
         runFullPipelineJob(
           fullPipelineInput(),
           {
-            async generateScriptPackage() {
+            async generateDemoScript() {
               throw new Error("ScriptGen stalled before artifact output");
             },
             async prepareRepo() {
@@ -944,22 +938,11 @@ function orchestratorDependencies(
   agentSession = createAgentSession(),
 ): PipelineOrchestratorDependencies {
   return {
-    async generateScriptPackage() {
+    async generateDemoScript() {
       calls.push("script-generation");
       return {
-        assumptions: [],
-        demoPlan: {
-          featureOrder: ["article feed"],
-          narrative: "Show the article feed.",
-          risks: [],
-        },
         demoPlaywrightScript:
           "import { setup, scene } from './makeademo-capture-sdk';\nawait setup(async ({ page, baseUrl, expect }) => { await page.goto(baseUrl); await expect(page.locator('body')).toBeVisible(); });\nawait scene('scene_article_feed', async ({ page, expect }) => { await expect(page.locator('body')).toBeVisible(); });",
-        exploration: {
-          assumptions: [],
-          productSurfaces: ["article feed"],
-          summary: "Prepared app.",
-        },
         format: "16:9",
         presentation: {
           music: options.musicEnabled

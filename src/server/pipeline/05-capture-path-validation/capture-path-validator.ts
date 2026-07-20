@@ -2,21 +2,21 @@ import {
   type PipelineEventLogger,
   createPipelineEventLogger,
 } from "../../shared/logging/pipeline-event-logger";
-import { assertDemoScriptCaptureSdkContract } from "../06-footage-capture/capture-sdk-contract";
+import { assertDemoScriptCaptureSdkContract } from "../04-script-generation/demo-script/capture-sdk-contract";
 import {
   readCaptureSdkSceneEvents,
   reduceCaptureSdkSceneEvents,
-} from "../06-footage-capture/capture-sdk-event.schema";
+} from "../04-script-generation/demo-script/capture-sdk-event.schema";
 import {
   type SceneDescription,
   parseDemoScript,
-} from "../06-footage-capture/demo-script.schema";
+} from "../04-script-generation/demo-script/demo-script.schema";
 import type {
   CapturePathValidationInput,
   CapturePathValidationResult,
 } from "./capture-path-validator.interface";
-import type { ProjectValidationInput } from "./project-runtime-preflight/project-validator";
-import type { ProjectValidationResult } from "./project-runtime-preflight/validation-result";
+import type { DemoRuntimePreflightInput } from "./demo-runtime-preflight/demo-runtime-preflight";
+import type { DemoRuntimePreflightResult } from "./demo-runtime-preflight/validation-result";
 
 const capturePathDiagnosticsLogPath = "/workspace/.makeademo/sandbox-log.jsonl";
 const defaultDiagnosticsWriteTimeoutMs = 5_000;
@@ -78,9 +78,9 @@ export type CapturePathValidationDependencies = {
   diagnosticsWriteTimeoutMs?: number;
   sceneValidator: CapturePathSceneValidator;
   sceneValidationTimeoutMs?: number;
-  validateProject(
-    input: ProjectValidationInput,
-  ): Promise<ProjectValidationResult>;
+  runRuntimePreflight(
+    input: DemoRuntimePreflightInput,
+  ): Promise<DemoRuntimePreflightResult>;
 };
 
 const defaultDemoScriptProviderDeadlineMs = 125_000;
@@ -97,12 +97,12 @@ export async function validateCapturePath(
     event: "capture-path-validation.run.started",
   });
 
-  let scriptPackage: ReturnType<typeof parseDemoScript>;
+  let demoScript: ReturnType<typeof parseDemoScript>;
   let firstScene: SceneDescription;
   try {
-    scriptPackage = parseDemoScript(input.demoScriptPackage);
-    assertDemoScriptCaptureSdkContract(scriptPackage);
-    const declaredFirstScene = scriptPackage.scenes[0];
+    demoScript = parseDemoScript(input.demoScript);
+    assertDemoScriptCaptureSdkContract(demoScript);
+    const declaredFirstScene = demoScript.scenes[0];
     if (declaredFirstScene === undefined) {
       throw new Error("Demo Script must declare at least one Scene.");
     }
@@ -120,43 +120,43 @@ export async function validateCapturePath(
   await writeCapturePathDiagnostics(input, dependencies, {
     event: "capture-path-validation.runtime-preflight.started",
   });
-  const projectValidation = await dependencies.validateProject({
+  const runtimePreflight = await dependencies.runRuntimePreflight({
     preparationManifest: input.preparationManifest,
     preparationWorkspace: input.preparationWorkspace,
   });
 
-  if (projectValidation.status === "failed") {
-    const failureLogExcerpt = createLogExcerpt(projectValidation.logs);
+  if (runtimePreflight.status === "failed") {
+    const failureLogExcerpt = createLogExcerpt(runtimePreflight.logs);
     await writeCapturePathDiagnostics(input, dependencies, {
       blockedNetworkAttemptCount:
-        projectValidation.blockedNetworkAttempts.length,
+        runtimePreflight.blockedNetworkAttempts.length,
       event: "capture-path-validation.runtime-preflight.failed",
       failureLogExcerpt,
-      failureReason: projectValidation.failureReason,
-      logs: projectValidation.logs,
-      warningCount: projectValidation.warnings.length,
+      failureReason: runtimePreflight.failureReason,
+      logs: runtimePreflight.logs,
+      warningCount: runtimePreflight.warnings.length,
     });
     return {
-      ...projectValidation,
+      ...runtimePreflight,
       diagnosticsLogPath: capturePathDiagnosticsLogPath,
     };
   }
 
   await writeCapturePathDiagnostics(input, dependencies, {
-    blockedNetworkAttemptCount: projectValidation.blockedNetworkAttempts.length,
-    browserUrl: projectValidation.browserUrl,
+    blockedNetworkAttemptCount: runtimePreflight.blockedNetworkAttempts.length,
+    browserUrl: runtimePreflight.browserUrl,
     event: "capture-path-validation.runtime-preflight.succeeded",
-    logs: projectValidation.logs,
-    warningCount: projectValidation.warnings.length,
+    logs: runtimePreflight.logs,
+    warningCount: runtimePreflight.warnings.length,
   });
 
-  const logs = [...projectValidation.logs];
+  const logs = [...runtimePreflight.logs];
   const browserUrl =
-    projectValidation.browserUrl ?? input.preparationManifest.url;
+    runtimePreflight.browserUrl ?? input.preparationManifest.url;
   const sceneBaseUrl = input.preparationManifest.url;
   await writeCapturePathDiagnostics(input, dependencies, {
     event: "capture-path-validation.demo-script.started",
-    scenes: scriptPackage.scenes.map((scene) => ({
+    scenes: demoScript.scenes.map((scene) => ({
       expectedVisibleOutcome: scene.expectedVisibleOutcome,
       sceneDescription: scene.humanReadableDescription,
       sceneId: scene.id,
@@ -167,7 +167,7 @@ export async function validateCapturePath(
     sceneResult = await withTimeout(
       dependencies.sceneValidator.validateScene({
         baseUrl: sceneBaseUrl,
-        demoPlaywrightScript: scriptPackage.demoPlaywrightScript,
+        demoPlaywrightScript: demoScript.demoPlaywrightScript,
         preparationWorkspace: input.preparationWorkspace,
         scene: firstScene,
         sectionId: "demo-script",
@@ -196,7 +196,7 @@ export async function validateCapturePath(
       dependencies,
       input,
       logs,
-      projectValidation,
+      runtimePreflight,
       sceneId: readFailedSceneId(sceneResult.logs) ?? firstScene.id,
       sceneResult,
     });
@@ -204,7 +204,7 @@ export async function validateCapturePath(
 
   const markerValidation = validateSceneMarkers(
     sceneResult.logs,
-    scriptPackage.scenes.map((scene) => scene.id),
+    demoScript.scenes.map((scene) => scene.id),
   );
   if (markerValidation.status === "failed") {
     return await capturePathSceneFailure({
@@ -212,7 +212,7 @@ export async function validateCapturePath(
       dependencies,
       input,
       logs,
-      projectValidation,
+      runtimePreflight,
       sceneId: markerValidation.sceneId ?? firstScene.id,
       sceneResult: {
         ...sceneResult,
@@ -222,7 +222,7 @@ export async function validateCapturePath(
     });
   }
 
-  for (const scene of scriptPackage.scenes) {
+  for (const scene of demoScript.scenes) {
     await writeCapturePathDiagnostics(input, dependencies, {
       event: "capture-path-validation.scene.succeeded",
       logs: sceneResult.logs,
@@ -237,18 +237,18 @@ export async function validateCapturePath(
 
   await writeCapturePathDiagnostics(input, dependencies, {
     event: "capture-path-validation.run.succeeded",
-    sceneCount: scriptPackage.scenes.length,
+    sceneCount: demoScript.scenes.length,
   });
   return {
     blockedNetworkAttempts: [],
     browserUrl,
     diagnosticsLogPath: capturePathDiagnosticsLogPath,
     logs,
-    ...(projectValidation.screenshotArtifactId === undefined
+    ...(runtimePreflight.screenshotArtifactId === undefined
       ? {}
-      : { screenshotArtifactId: projectValidation.screenshotArtifactId }),
+      : { screenshotArtifactId: runtimePreflight.screenshotArtifactId }),
     status: "succeeded",
-    warnings: projectValidation.warnings,
+    warnings: runtimePreflight.warnings,
   };
 }
 
@@ -258,15 +258,15 @@ async function capturePathDemoScriptFailure(input: {
   error: unknown;
   input: CapturePathValidationInput;
   logs: string[];
-  projectValidation?: ProjectValidationResult & { warnings: string[] };
+  runtimePreflight?: DemoRuntimePreflightResult & { warnings: string[] };
 }): Promise<CapturePathValidationResult> {
   const failureReason = readErrorMessage(input.error);
   const failedSceneId = readFailedContractSceneId(failureReason);
   const logs = [...input.logs, failureReason];
   const failureLogExcerpt = createLogExcerpt(logs);
   const blockedNetworkAttempts =
-    input.projectValidation?.blockedNetworkAttempts ?? [];
-  const warnings = input.projectValidation?.warnings ?? [];
+    input.runtimePreflight?.blockedNetworkAttempts ?? [];
+  const warnings = input.runtimePreflight?.warnings ?? [];
   await writeCapturePathDiagnostics(input.input, input.dependencies, {
     blockedNetworkAttemptCount: blockedNetworkAttempts.length,
     event: "capture-path-validation.demo-script.failed",
@@ -284,9 +284,9 @@ async function capturePathDemoScriptFailure(input: {
     ...(failedSceneId === undefined ? {} : { failedSceneId }),
     failureReason,
     logs,
-    ...(input.projectValidation?.screenshotArtifactId === undefined
+    ...(input.runtimePreflight?.screenshotArtifactId === undefined
       ? {}
-      : { screenshotArtifactId: input.projectValidation.screenshotArtifactId }),
+      : { screenshotArtifactId: input.runtimePreflight.screenshotArtifactId }),
     status: "failed",
     warnings,
   };
@@ -297,7 +297,7 @@ async function capturePathSceneFailure(input: {
   dependencies: CapturePathValidationDependencies;
   input: CapturePathValidationInput;
   logs: string[];
-  projectValidation: ProjectValidationResult & { warnings: string[] };
+  runtimePreflight: DemoRuntimePreflightResult & { warnings: string[] };
   sceneId: string;
   sceneResult: Extract<CapturePathSceneValidationResult, { status: "failed" }>;
 }): Promise<CapturePathValidationResult> {
@@ -349,7 +349,7 @@ async function capturePathSceneFailure(input: {
       ? {}
       : { stdoutPath: input.sceneResult.stdoutPath }),
     status: "failed",
-    warnings: input.projectValidation.warnings,
+    warnings: input.runtimePreflight.warnings,
   };
 }
 
@@ -441,7 +441,7 @@ async function writeCapturePathDiagnostics(
     diagnosticsSource: "capture-path-validation",
     ...removeUndefinedValues(entry),
     repoUrl: input.preparationManifest.repoUrl,
-    scriptId: input.demoScriptPackage.scriptId,
+    scriptId: input.demoScript.scriptId,
     stage: "capture-path-validation",
     workspaceId: input.preparationManifest.workspaceId,
   });
@@ -490,7 +490,7 @@ async function writeFallbackDiagnosticsWarning(
             event: "capture-path-validation.diagnostics-log-write-failed",
             ...(failedEvent === undefined ? {} : { failedEvent }),
             repoUrl: input.preparationManifest.repoUrl,
-            scriptId: input.demoScriptPackage.scriptId,
+            scriptId: input.demoScript.scriptId,
             stage: "capture-path-validation",
             workspaceId: input.preparationManifest.workspaceId,
           },

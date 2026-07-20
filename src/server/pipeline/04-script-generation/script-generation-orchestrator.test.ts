@@ -1,212 +1,50 @@
 import { describe, expect, it } from "vitest";
 
-import { parseDemoScript } from "../06-footage-capture/demo-script.schema";
-import { generateDemoScriptPackage } from "./script-generation-orchestrator";
+import { parseDemoScript } from "./demo-script/demo-script.schema";
+import { generateDemoScript } from "./script-generation-orchestrator";
 
-describe("generateDemoScriptPackage", () => {
-  it("explores the project, plans the demo, composes the script, and returns the handoff package", async () => {
-    const packageResult = await generateDemoScriptPackage(
+describe("generateDemoScript", () => {
+  it("preserves feature order and creates a continuous event-marked Demo Script", async () => {
+    const demoScript = await generateDemoScript(
       {
         demoBrief: { keyProductFeatures: ["repo validation"] },
         normalizedSupportingDocuments: [],
         preparationManifest: manifest(),
         repoUrl: "https://github.com/example/app",
       },
-      {
-        projectExplorer: {
-          async exploreProject() {
-            return {
-              assumptions: ["single page app"],
-              productSurfaces: ["validation dashboard"],
-              summary: "A product for validating demo-ready repos.",
-            };
-          },
-        },
-        demoPlanner: {
-          async planDemo({ demoBrief, exploration }) {
-            return {
-              featureOrder: demoBrief.keyProductFeatures,
-              narrative: `Show ${exploration.productSurfaces[0]}`,
-              risks: [],
-            };
-          },
-        },
-        scriptComposer: {
-          async composeScript() {
-            return {
-              demoPlaywrightScript: [
-                "import { setup, scene } from './makeademo-capture-sdk';",
-                "await setup(async ({ page, baseUrl, expect }) => {",
-                "  await page.goto(baseUrl);",
-                "  await expect(page.locator('html')).toBeVisible();",
-                "});",
-                "await scene('scene_validation', async ({ page, expect }) => {",
-                "  await page.getByRole('button', { name: 'Validate repo' }).click();",
-                "  await expect(page.getByText('Validated project')).toBeVisible();",
-                "});",
-              ].join("\n"),
-              format: "16:9",
-              presentation: {
-                music: { enabled: false },
-                textOverlays: [],
-                transitions: [],
-              },
-              scenes: [
-                {
-                  expectedVisibleOutcome:
-                    "The validated project result is visible.",
-                  humanReadableDescription:
-                    "Show the validated project result.",
-                  id: "scene_validation",
-                },
-              ],
-              scriptId: "script_test",
-              title: "MakeADemo validation demo",
-              version: 1,
-            };
-          },
-        },
-      },
+      {},
     );
 
-    expect(parseDemoScript(packageResult).scriptId).toBe("script_test");
-    expect(packageResult.scenes[0]).toEqual({
-      expectedVisibleOutcome: "The validated project result is visible.",
-      humanReadableDescription: "Show the validated project result.",
-      id: "scene_validation",
-    });
-    expect(packageResult.assumptions).toEqual(["single page app"]);
+    expect(parseDemoScript(demoScript).scriptId).toBe(
+      "generated-makeademo-script",
+    );
+    expect(demoScript.demoPlaywrightScript).toContain("await setup");
+    expect(demoScript.demoPlaywrightScript).toContain("await scene");
+    expect(demoScript.scenes).toEqual([
+      expect.objectContaining({ id: "scene-repo-validation" }),
+    ]);
   });
 
-  it("rejects placeholder non-agent Demo Scripts before returning the handoff package", async () => {
-    await expect(
-      generateDemoScriptPackage(
-        {
-          demoBrief: { keyProductFeatures: ["repo validation"] },
-          normalizedSupportingDocuments: [],
-          preparationManifest: manifest(),
-          repoUrl: "https://github.com/example/app",
-        },
-        {
-          projectExplorer: {
-            async exploreProject() {
-              return {
-                assumptions: [],
-                productSurfaces: ["validation dashboard"],
-                summary: "A product for validating demo-ready repos.",
-              };
-            },
-          },
-          demoPlanner: {
-            async planDemo({ demoBrief }) {
-              return {
-                featureOrder: demoBrief.keyProductFeatures,
-                narrative: "Show validation.",
-                risks: [],
-              };
-            },
-          },
-          scriptComposer: {
-            async composeScript() {
-              return {
-                demoPlaywrightScript: [
-                  "import { setup, scene } from './makeademo-capture-sdk';",
-                  "await setup(async ({ page, baseUrl, expect }) => {",
-                  "  await page.goto(baseUrl);",
-                  "  await expect(page.locator('body')).toBeVisible();",
-                  "});",
-                  "await scene('scene_placeholder', async ({ page, expect }) => {",
-                  "  await expect(page.locator('body')).toBeVisible();",
-                  "});",
-                ].join("\n"),
-                format: "16:9",
-                presentation: {
-                  music: { enabled: false },
-                  textOverlays: [],
-                  transitions: [],
-                },
-                scenes: [
-                  {
-                    expectedVisibleOutcome: "The placeholder is visible.",
-                    humanReadableDescription: "Show placeholder content.",
-                    id: "scene_placeholder",
-                  },
-                ],
-                scriptId: "script_placeholder",
-                title: "Placeholder demo",
-                version: 1,
-              };
-            },
-          },
-        },
-      ),
-    ).rejects.toThrow("demoPlaywrightScript contains placeholder actions");
-  });
+  it("keeps duplicate feature scene IDs unique without agent-authored durations", async () => {
+    const demoScript = await generateDemoScript(
+      {
+        demoBrief: { keyProductFeatures: ["Inbox", "Inbox"] },
+        normalizedSupportingDocuments: [],
+        preparationManifest: manifest(),
+        repoUrl: "https://github.com/example/app",
+      },
+      {},
+    );
 
-  it("rejects non-agent Demo Scripts that violate the Capture SDK contract before returning the handoff package", async () => {
-    await expect(
-      generateDemoScriptPackage(
-        {
-          demoBrief: { keyProductFeatures: ["repo validation"] },
-          normalizedSupportingDocuments: [],
-          preparationManifest: manifest(),
-          repoUrl: "https://github.com/example/app",
-        },
-        {
-          projectExplorer: {
-            async exploreProject() {
-              return {
-                assumptions: [],
-                productSurfaces: ["validation dashboard"],
-                summary: "A product for validating demo-ready repos.",
-              };
-            },
-          },
-          demoPlanner: {
-            async planDemo({ demoBrief }) {
-              return {
-                featureOrder: demoBrief.keyProductFeatures,
-                narrative: "Show validation.",
-                risks: [],
-              };
-            },
-          },
-          scriptComposer: {
-            async composeScript() {
-              return {
-                demoPlaywrightScript: [
-                  "await setup(async ({ page, baseUrl }) => {",
-                  "  await page.goto(baseUrl);",
-                  "});",
-                  "await scene('scene_validation', async ({ page, expect }) => {",
-                  "  await page.getByRole('button', { name: 'Validate repo' }).click();",
-                  "  await expect(page.getByText('Validated project')).toBeVisible();",
-                  "});",
-                ].join("\n"),
-                format: "16:9",
-                presentation: {
-                  music: { enabled: false },
-                  textOverlays: [],
-                  transitions: [],
-                },
-                scenes: [
-                  {
-                    expectedVisibleOutcome:
-                      "The validated project result is visible.",
-                    humanReadableDescription:
-                      "Show the validated project result.",
-                    id: "scene_validation",
-                  },
-                ],
-                scriptId: "script_missing_sdk_import",
-                title: "MakeADemo validation demo",
-                version: 1,
-              };
-            },
-          },
-        },
+    expect(demoScript.scenes.map((scene) => scene.id)).toEqual([
+      "scene-inbox",
+      "scene-inbox-2",
+    ]);
+    expect(
+      demoScript.scenes.every(
+        (scene) => !Object.hasOwn(scene, "durationSeconds"),
       ),
-    ).rejects.toThrow("must import { setup, scene }");
+    ).toBe(true);
   });
 });
 

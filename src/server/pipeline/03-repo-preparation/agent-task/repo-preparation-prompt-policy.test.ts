@@ -8,7 +8,7 @@ describe("createValidationFeedbackPrompt", () => {
       manifest: undefined,
       manifestPath: "/workspace/.makeademo/preparation-manifest.json",
       remainingBudgetMs: 60_000,
-      validation: {
+      runtimePreflight: {
         blockedNetworkAttempts: [
           {
             direction: "outbound",
@@ -48,7 +48,7 @@ describe("createValidationFeedbackPrompt", () => {
       manifest: undefined,
       manifestPath: "/workspace/manifest.json",
       remainingBudgetMs: 30_000,
-      validation: {
+      runtimePreflight: {
         blockedNetworkAttempts: [],
         failureKind: "browser-not-interactable",
         failureReason: "Vite runtime error",
@@ -76,7 +76,7 @@ describe("createValidationFeedbackPrompt", () => {
       manifest: undefined,
       manifestPath: "/workspace/manifest.json",
       remainingBudgetMs: 30_000,
-      validation: {
+      runtimePreflight: {
         blockedNetworkAttempts: [
           {
             direction: "outbound",
@@ -109,7 +109,7 @@ describe("createValidationFeedbackPrompt", () => {
       manifest: { setupSummary: "x".repeat(80_000) } as never,
       manifestPath: "/workspace/manifest.json",
       remainingBudgetMs: 30_000,
-      validation: {
+      runtimePreflight: {
         blockedNetworkAttempts: Array.from({ length: 1_000 }, () => ({
           direction: "outbound" as const,
           host: "api.example.test",

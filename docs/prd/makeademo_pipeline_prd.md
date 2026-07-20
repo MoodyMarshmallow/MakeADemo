@@ -12,11 +12,11 @@ The MakeADemo Pipeline starts with Context Gathering. The maker submits a GitHub
 
 MakeADemo clones the repo and runs a fast static Repo Security Screen before any agent or runtime preparation work begins. Repos that pass the static screen move into Repo Preparation, where a preparation agent works in a locked-down ephemeral cloud workspace. The agent first looks for existing demo setup, then reuses, adapts, or creates the smallest deterministic demo runtime it can. Repo Preparation produces a durable Preparation Manifest with the prepared demo command, local URL, workspace changes, mocks, assumptions, risks, and script-generation context. If Repo Preparation fails, MakeADemo returns a targeted Preparation Fallback Prompt for the maker and the maker's coding agent, and Script Generation does not run.
 
-Project Validation validates the prepared ephemeral workspace using the Preparation Manifest. Dependency installation may use network access, then the sandbox network boundary is sealed. Validation is programmatic and LLM-free. Any inbound or outbound network communication across the sandbox boundary after dependency installation is a hard failure.
+Script Generation then uses the prepared workspace, Preparation Manifest, structured demo intent, and normalized Supporting Documents to produce one capture-ready Demo Script. The Demo Script declares the complete Playwright flow, on-camera Scenes, expected visible outcomes, and presentation metadata; it is not trusted for capture yet.
 
-After Project Validation succeeds, MakeADemo generates a read-only Video Script Package organized into Script Sections and Scene Descriptions. Each Scene Description includes Browser Actions and records assumptions or capture risks for downstream capture and compositing.
+Capture Path Validation is the deterministic acceptance gate for that Demo Script. It first runs Demo Runtime Preflight against the Preparation Manifest: dependency installation may use a controlled network window, then the sandbox network boundary is sealed and the prepared app must start, load, and remain basically interactable. It then dry-runs the generated Demo Script against the prepared runtime under Runtime Network Lockdown. This validation is programmatic and LLM-free; any inbound or outbound communication across the sandbox boundary after dependency installation is a hard failure.
 
-Capture Path Validation proves the exact generated browser flow against the prepared runtime under Runtime Network Lockdown. Footage Capture then starts from fresh deterministic state and records the accepted Demo Script. Compositing assembles the captured Scenes into a Draft Composite, runs bounded quality review and repair, and stores the accepted final video for delivery.
+Footage Capture starts from fresh deterministic state and records only an accepted Demo Script. Compositing assembles the captured Scenes into a Draft Composite, runs bounded quality review and repair, and stores the accepted final video for delivery.
 
 ## User Stories
 
@@ -30,32 +30,27 @@ Capture Path Validation proves the exact generated browser flow against the prep
 8. As a maker, I want the preparation agent to mock or seed data when possible, so that the prepared demo does not depend on external services.
 9. As a maker, I want MakeADemo to return a targeted fallback prompt when preparation fails, so that my own coding agent can prepare the demo with the right context.
 10. As a maker, I want the fallback prompt to include preparation blockers, assumptions, and suggested changes, so that I know what to fix.
-11. As a maker, I want validation to avoid LLM API calls, so that validation remains cheap and repeatable.
-12. As a maker, I want dependency installation to use the network when needed, so that normal JavaScript/TypeScript package installation works.
-13. As a maker, I want demo runtime to be offline after dependency installation, so that demos do not depend on hosted services.
-14. As a maker, I want validation to fail on external runtime requests, so that the generated demo is deterministic and safe to capture.
-15. As a maker, I want validation to run in an isolated sandbox, so that untrusted submitted code is contained.
-16. As a maker, I want Playwright validation to run inside the sandbox, so that browser checks do not require network access into the sandbox from the backend host.
-17. As a maker, I want MakeADemo to infer the install command from standard lockfiles, so that I do not need to configure dependency installation.
-18. As a maker, I want repos without lockfiles to be allowed with a warning, so that early projects can still be evaluated.
-19. As a maker, I want validation to fail if no JavaScript/TypeScript package manifest exists, so that the product scope is clear.
-20. As a maker, I want validation to confirm the prepared app loads in a browser, so that script generation is based on a reachable web app.
-21. As a maker, I want validation to reject blank pages and framework error screens, so that later output is not based on broken footage.
-22. As a maker, I want validation to capture screenshot proof, so that I can see what MakeADemo was able to load.
-23. As a maker, I want validation logs and failure reasons, so that I can understand why the prepared workspace failed.
-24. As a maker, I want MakeADemo to generate a Video Script only after validation succeeds, so that the script is grounded in a runnable app.
-25. As a maker, I want the Video Script to be organized into Script Sections, so that the structure of the demo is easy to understand.
-26. As a maker, I want each Script Section to contain Scene Descriptions, so that I can see the sequence of the demo.
-27. As a maker, I want each Scene Description to summarize one web-based scene, so that I understand what downstream footage capture should show.
-28. As a maker, I want each Scene Description to include Browser Actions, so that I can understand how MakeADemo intends to interact with the app.
-29. As a maker, I want each Browser Action to be readable, so that I can audit the intended clicks, typing, and waits.
-30. As a maker, I want MakeADemo to capture the accepted Demo Script from fresh deterministic state, so that validation cannot pollute the recorded take.
-31. As a maker, I want MakeADemo to composite and review the captured Scenes before delivery, so that every successful Pipeline Job produces a usable final video.
-32. As a MakeADemo operator, I want submitted repos to be JavaScript/TypeScript web apps in V1, so that sandbox images, install inference, and validation behavior stay tractable.
-33. As a MakeADemo operator, I want the Demo Run Contract to forbid secrets and external services, so that validation and capture do not depend on user-specific infrastructure.
-34. As a MakeADemo operator, I want artifacts to be copied out after sandbox execution rather than fetched over the network during runtime, so that runtime isolation is preserved.
-35. As a MakeADemo operator, I want Repo Preparation artifacts to be durable, so that MakeADemo can support analytics, debugging, reruns, fallback prompts, and future product features.
-36. As a MakeADemo operator, I want validation failures to be explicit and structured, so that they can drive helpful user-facing messages and future issue triage.
+11. As a maker, I want Script Generation to produce one Demo Script from the prepared app and my demo intent, so that the intended demo flow is explicit before capture begins.
+12. As a maker, I want the Demo Script to declare the full Playwright flow, on-camera Scenes, expected visible outcomes, and presentation metadata, so that capture and compositing share one structured handoff.
+13. As a maker, I want Capture Path Validation to run Demo Runtime Preflight before it dry-runs my Demo Script, so that footage is never recorded from an app that cannot start and load reliably.
+14. As a maker, I want validation to avoid LLM API calls, so that the acceptance gate remains cheap and repeatable.
+15. As a maker, I want dependency installation to use the network when needed, so that normal JavaScript/TypeScript package installation works.
+16. As a maker, I want demo runtime to be offline after dependency installation, so that demos do not depend on hosted services.
+17. As a maker, I want validation to fail on external runtime requests, so that the generated demo is deterministic and safe to capture.
+18. As a maker, I want validation to run in an isolated sandbox, so that untrusted submitted code is contained.
+19. As a maker, I want Playwright validation to run inside the sandbox, so that browser checks do not require network access into the sandbox from the backend host.
+20. As a maker, I want MakeADemo to infer the install command from standard lockfiles, so that I do not need to configure dependency installation.
+21. As a maker, I want repos without lockfiles to be allowed with a warning, so that early projects can still be evaluated.
+22. As a maker, I want validation to fail if no JavaScript/TypeScript package manifest exists, so that the product scope is clear.
+23. As a maker, I want Demo Runtime Preflight to confirm the prepared app loads in a browser, reject blank pages and framework error screens, and capture screenshot proof, so that capture starts from a usable app.
+24. As a maker, I want Capture Path Validation logs and failure reasons, so that I can understand why the prepared app or generated Demo Script was not accepted.
+25. As a maker, I want MakeADemo to capture the accepted Demo Script from fresh deterministic state, so that validation cannot pollute the recorded take.
+26. As a maker, I want MakeADemo to composite and review the captured Scenes before delivery, so that every successful Pipeline Job produces a usable final video.
+27. As a MakeADemo operator, I want submitted repos to be JavaScript/TypeScript web apps in V1, so that sandbox images, install inference, and validation behavior stay tractable.
+28. As a MakeADemo operator, I want the Demo Run Contract to forbid secrets and external services, so that validation and capture do not depend on user-specific infrastructure.
+29. As a MakeADemo operator, I want artifacts to be copied out after sandbox execution rather than fetched over the network during runtime, so that runtime isolation is preserved.
+30. As a MakeADemo operator, I want Repo Preparation artifacts to be durable, so that MakeADemo can support analytics, debugging, reruns, fallback prompts, and future product features.
+31. As a MakeADemo operator, I want validation failures to be explicit and structured, so that they can drive helpful user-facing messages and future issue triage.
 
 ## Implementation Decisions
 
@@ -80,37 +75,37 @@ Capture Path Validation proves the exact generated browser flow against the prep
 - The Demo Run Contract requires a deterministic browser-accessible demo inside an isolated sandbox.
 - Dependency installation may use network access.
 - After dependency installation, all inbound and outbound communication across the sandbox boundary is blocked and treated as a hard validation failure.
-- Project Validation is programmatic and does not use LLM API calls.
-- Project Validation runs in backend Daytona sandboxes, not in the web server process, the maker's browser, Docker-specific infrastructure, or a local-only CLI architecture.
+- Script Generation follows Repo Preparation and produces an unaccepted Demo Script from prepared project context, structured demo intent, normalized Supporting Documents, and Preparation Manifest context.
+- The Demo Script is the canonical handoff artifact: it contains the full Playwright flow, declared Scenes and expected visible outcomes, plus presentation metadata. It does not carry preflight evidence, preparation assumptions, or repair risk state.
+- Capture Path Validation follows Script Generation and is the only acceptance gate before Footage Capture.
+- Capture Path Validation first runs Demo Runtime Preflight, then dry-runs the exact generated Demo Script from a fresh state under Runtime Network Lockdown.
+- Demo Runtime Preflight is programmatic and does not use LLM API calls. It runs in backend Daytona sandboxes, not in the web server process, the maker's browser, Docker-specific infrastructure, or a local-only CLI architecture.
 - Playwright validation runs inside the Sandbox rather than from the backend host.
-- Artifacts such as screenshots, logs, normalized documents, preparation manifests, diffs, and Video Script Packages are stored as pipeline artifacts.
+- Artifacts such as screenshots, logs, normalized documents, preparation manifests, diffs, Demo Scripts, and capture validation evidence are stored as pipeline artifacts.
 - V1 supports JavaScript/TypeScript web apps with `package.json` and standard JS package managers.
 - Dependency installation is inferred from lockfiles: Bun, pnpm, Yarn, npm lockfile, then npm fallback.
 - Repos without lockfiles are allowed with a validation warning rather than rejected.
-- Project Validation must confirm that the prepared local URL loads in a browser, is not blank, avoids obvious runtime/framework error screens, and is interactable enough for browser capture.
-- Project Validation validates the prepared ephemeral workspace using the Preparation Manifest.
-- Script Generation runs only after Project Validation succeeds.
+- Demo Runtime Preflight must confirm that the prepared local URL loads in a browser, is not blank, avoids obvious runtime/framework error screens, and is interactable enough for browser capture.
+- Demo Runtime Preflight validates the prepared ephemeral workspace using the Preparation Manifest as the first operation of Capture Path Validation.
+- Capture Path Validation accepts a Demo Script only after both its preflight and generated capture-path dry-run succeed.
 - The Demo Script is an internal pipeline handoff rather than a terminal product result.
-- A Video Script contains Script Sections.
-- A Script Section contains Scene Descriptions.
-- Each Scene Description contains Browser Actions and is structured to map to exactly one Scene during Footage Capture.
 - Footage Capture starts from fresh deterministic app state and preserves state across Scenes in the accepted Demo Script.
 - Compositing produces a Draft Composite, runs bounded quality review, and stores the accepted final video.
-- Deep modules to build include Project Intake, Supporting Document Intake, Supporting Document Normalizer, Repo Security Screen, Repo Preparation, Preparation Manifest, Preparation Fallback Prompt Generator, Install Plan inference, Sandbox Runner, Network Isolation Policy, Capture Path Validation, Browser Validation, Artifact Store, Script Generator, Footage Capture, Compositing, and Pipeline Job Orchestrator.
+- Deep modules to build include Project Intake, Supporting Document Intake, Supporting Document Normalizer, Repo Security Screen, Repo Preparation, Preparation Manifest, Preparation Fallback Prompt Generator, Install Plan inference, Sandbox Runner, Network Isolation Policy, Script Generation, Demo Script, Capture Path Validation (including Demo Runtime Preflight), Browser Validation, Artifact Store, Footage Capture, Compositing, and Pipeline Job Orchestrator.
 - Preparation Fallback Prompt Generator should expose a simple interface that returns a targeted prompt from preparation blockers, assumptions, and recommended changes.
 - Preparation Manifest should expose a validation boundary for reading and validating the prepared demo command and URL.
 - Install Plan inference should expose a simple repo-inspection interface that returns the install command and warnings.
 - Sandbox Runner should encapsulate clone/install/runtime isolation/artifact extraction behind a small job interface.
 - Network Isolation Policy should make runtime network blocking explicit and testable.
-- Project Validation should return structured success/failure results, logs, warnings, screenshots, and blocked network attempts.
+- Demo Runtime Preflight should return structured success/failure results, logs, warnings, screenshots, and blocked network attempts to Capture Path Validation.
 - Browser Validation should encapsulate Playwright page-load, blank-page, runtime-error, screenshot, and interactability checks.
-- Script Generator should consume validated project context, structured demo intent, normalized Supporting Documents, and Preparation Manifest context and return a structured Video Script Package.
+- Script Generator should consume prepared-project context, structured demo intent, normalized Supporting Documents, and Preparation Manifest context and return a Demo Script.
 - Pipeline Job Orchestrator should coordinate the linear flow without owning the implementation details of each deep module.
 
 ## Testing Decisions
 
 - Tests should verify external behavior through public interfaces and real seams, not private implementation details.
-- Good tests should describe observable outcomes such as intake validation, Supporting Document normalization, Repo Security Screen rejects and warnings, Repo Preparation success/failure, Preparation Manifest validation, fallback prompts, validation failures, and produced script structures.
+- Good tests should describe observable outcomes such as intake validation, Supporting Document normalization, Repo Security Screen rejects and warnings, Repo Preparation success/failure, Preparation Manifest validation, fallback prompts, generated Demo Scripts, and Capture Path Validation acceptance or failure.
 - Supporting Document Intake should be tested for accepting document-like uploads while rejecting videos and pictures.
 - Supporting Document Normalizer should be tested for producing normalized text artifacts with source metadata.
 - Repo Security Screen should be tested for hard rejects on obviously unsafe repos and warnings for large repos, missing lockfiles, external-service SDKs, auth packages, native dependencies, postinstall scripts, shell scripts, and other non-fatal risks.
@@ -118,11 +113,12 @@ Capture Path Validation proves the exact generated browser flow against the prep
 - Preparation Manifest schema/loader should be tested for required command, URL, status, setup summary, diff artifact ID, assumptions, and risks.
 - Preparation Fallback Prompt Generator should be tested for including blockers, assumptions, suggested changes, and enough context for the maker's coding agent.
 - Install Plan inference should be tested across Bun, pnpm, Yarn, npm lockfile, and package-only fallback cases.
-- Project Validation should be tested with fake sandbox adapters that simulate install success, install failure, command failure, page-load failure, blocked network attempts, blank pages, runtime error pages, and successful validation.
+- Script Generation should be tested for producing one valid Demo Script from structured demo intent, normalized Supporting Documents, Preparation Manifest context, and prepared-project context.
+- Capture Path Validation should be tested end-to-end through its public interface: Demo Runtime Preflight failures prevent a Demo Script dry-run, and only a successful preflight plus capture-path dry-run accepts the script.
+- Demo Runtime Preflight should be tested with fake sandbox adapters that simulate install success, install failure, command failure, page-load failure, blocked network attempts, blank pages, runtime error pages, and successful validation.
 - Network Isolation Policy should be tested as a pure boundary decision where any post-install sandbox-boundary network attempt fails validation.
 - Browser Validation should be tested with Playwright-style fakes or integration fixtures that prove the validator distinguishes reachable pages, blank pages, and obvious framework/runtime errors.
-- Artifact Store should be tested through public artifact write/read/list behavior for normalized documents, preparation manifests, diffs, logs, screenshots, and Video Script Packages.
-- Script Generator should be tested for producing Video Script Packages organized into Script Sections and Scene Descriptions from structured demo intent, normalized Supporting Documents, Preparation Manifest context, and validated project context.
+- Artifact Store should be tested through public artifact write/read/list behavior for normalized documents, preparation manifests, diffs, logs, screenshots, and Demo Scripts.
 - Pipeline Job Orchestrator should be tested through an integration-style happy path and representative failure paths, using fakes at external seams rather than mocking internal functions.
 - Whole-pipeline tests should follow the integration-through-public-interface style and verify observable outcomes through product seams rather than private implementation details.
 
@@ -147,6 +143,6 @@ Capture Path Validation proves the exact generated browser flow against the prep
 - The initial buildout should remain stage-first while extracting deep capability modules behind small interfaces.
 - The agent-prepared ephemeral workspace flow is central: MakeADemo should automate repo preparation without modifying the maker's source repo.
 - Repo Security Screen is a fast static pre-agent filter, not a full security verifier.
-- Project Validation is the non-agent trust gate before Script Generation output is trusted.
+- Demo Runtime Preflight is the project-level preflight inside the Capture Path Validation trust gate.
 - The durable Preparation Manifest replaces MakeADemo Config as the source of truth for prepared demo command and local URL.
 - A successful Pipeline Job produces a reviewed final video rather than stopping at an intermediate script or capture artifact.

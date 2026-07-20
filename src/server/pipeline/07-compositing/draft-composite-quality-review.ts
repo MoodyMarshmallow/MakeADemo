@@ -2,8 +2,8 @@ import { spawn } from "node:child_process";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import type { DemoScript } from "../04-script-generation/demo-script/demo-script.schema";
 import type { CaptureManifest } from "../06-footage-capture/capture-scenes";
-import type { DemoScript } from "../06-footage-capture/demo-script.schema";
 import type { CompositedVideoManifest } from "./composite-video";
 
 export const DEFAULT_EVIDENCE_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
@@ -23,7 +23,7 @@ export function collectDraftCompositeQualityFindings(input: {
   captureManifest: Pick<CaptureManifest, "qualityFindings" | "scenes">;
   draftEvidence: DraftCompositeEvidence;
   finalVideo: Pick<CompositedVideoManifest, "durationInFrames" | "fps">;
-  scriptPackage: Pick<DemoScript, "presentation">;
+  demoScript: Pick<DemoScript, "presentation">;
 }) {
   const findings: string[] = [...input.captureManifest.qualityFindings];
   const maxDraftDurationSeconds = readPositiveNumberEnv(
@@ -52,13 +52,13 @@ export function collectDraftCompositeQualityFindings(input: {
   }
 
   if (
-    input.scriptPackage.presentation.music.enabled &&
+    input.demoScript.presentation.music.enabled &&
     input.draftEvidence.audioPresent === false
   ) {
     findings.push("Draft Composite is missing audio while music is enabled");
   }
   if (
-    input.scriptPackage.presentation.music.enabled &&
+    input.demoScript.presentation.music.enabled &&
     input.draftEvidence.audioPresent === undefined
   ) {
     findings.push(

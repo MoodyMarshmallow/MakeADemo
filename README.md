@@ -216,7 +216,7 @@ Each run writes a local run directory under `--output-root`:
   agent-audit-log.jsonl
   pipeline-log.jsonl
   script-generation-agent-audit-log.jsonl
-  video-script-package.json
+  demo-script.json
   capture/capture/capture-manifest.json
   composite/composite/composite-manifest.json
   composite/composite/final-video.mp4
@@ -227,7 +227,7 @@ The CLI prints the final artifact paths when it completes:
 ```text
 Full pipeline complete.
 Final video: <path-to-final-video.mp4>
-Generated script: <path-to-video-script-package.json>
+Generated script: <path-to-demo-script.json>
 Capture manifest: <path-to-capture-manifest.json>
 Composite manifest: <path-to-composite-manifest.json>
 Log: <path-to-pipeline-log.jsonl>
@@ -250,27 +250,13 @@ bun run demo
 
 Open `http://localhost:3000`.
 
-Validate the sample Video Script Package:
-
-```bash
-bun run demo:validate-scripts
-```
-
-Useful validation flags:
-
-```bash
-bun run demo:validate-scripts -- --update-durations
-bun run demo:validate-scripts -- --headed
-bun run demo:validate-scripts -- --headed --pause-after-scene 1000
-```
-
 Install Chromium if Playwright browsers are missing:
 
 ```bash
 bunx playwright install chromium
 ```
 
-Footage Capture and Compositing are driven by the same `bun run pipeline:run` command as the rest of the pipeline; standalone capture and compositing CLIs are not public package scripts.
+Demo Script validation, Footage Capture, and Compositing are driven by the same `bun run pipeline:run` command as the rest of the pipeline; standalone capture and compositing CLIs are not public package scripts.
 
 ## Quality Checks
 

@@ -15,7 +15,6 @@ describe("captureScenesFromScript", () => {
     await writeFile(
       scriptPath,
       JSON.stringify({
-        audio: { enabled: true, music: { id: "clean" } },
         demoPlaywrightScript: [
           "import { scene, setup } from './makeademo-capture-sdk';",
           "await setup(async ({ page, baseUrl }) => { await page.goto(baseUrl); });",
@@ -44,12 +43,12 @@ describe("captureScenesFromScript", () => {
         },
         scenes: [
           {
-            description: "Open the app.",
+            humanReadableDescription: "Open the app.",
             expectedVisibleOutcome: "The prepared app shell is visible.",
             id: "scene-001",
           },
           {
-            description: "Click the main action.",
+            humanReadableDescription: "Click the main action.",
             expectedVisibleOutcome: "The main action result is visible.",
             id: "scene-002",
           },
@@ -144,7 +143,7 @@ describe("captureScenesFromScript", () => {
       baseUrl: "http://localhost:3000",
       keepTemp: true,
       recorder,
-      scriptPackage: validDemoScript(),
+      demoScript: validDemoScript(),
       tempRoot,
     });
 
@@ -254,7 +253,7 @@ describe("captureScenesFromScript", () => {
       },
       preparationWorkspace,
       runId: "capture-sandbox",
-      scriptPackage: validDemoScript(),
+      demoScript: validDemoScript(),
       tempRoot,
     });
 
@@ -353,7 +352,7 @@ describe("captureScenesFromScript", () => {
         keepTemp: true,
         preparationWorkspace,
         runId: "capture-sandbox",
-        scriptPackage: validDemoScript(),
+        demoScript: validDemoScript(),
         tempRoot,
       }),
     ).rejects.toThrow(
@@ -372,7 +371,7 @@ describe("captureScenesFromScript", () => {
     await expect(
       captureScenesFromScript({
         baseUrl: "http://localhost:3000",
-        scriptPackage: validDemoScript(),
+        demoScript: validDemoScript(),
         tempRoot,
       }),
     ).rejects.toThrow(
@@ -420,7 +419,7 @@ describe("captureScenesFromScript", () => {
         baseUrl: "https://preview.example.test/",
         preparationWorkspace,
         runId: "capture-sandbox",
-        scriptPackage: validDemoScript(),
+        demoScript: validDemoScript(),
         tempRoot,
       }),
     ).rejects.toThrow("Scene continuous-take timed out.");
@@ -475,7 +474,7 @@ describe("captureScenesFromScript", () => {
         baseUrl: "https://preview.example.test/",
         preparationWorkspace,
         runId: "capture-sandbox",
-        scriptPackage: validDemoScript(),
+        demoScript: validDemoScript(),
         tempRoot,
       }),
     ).rejects.toThrow(
@@ -497,7 +496,7 @@ describe("captureScenesFromScript", () => {
             return [];
           },
         },
-        scriptPackage: {
+        demoScript: {
           demoPlaywrightScript: "await scene('scene-001', async () => {});",
           presentation: {
             music: { enabled: false },
@@ -506,7 +505,7 @@ describe("captureScenesFromScript", () => {
           },
           scenes: [
             {
-              description: "Open the app.",
+              humanReadableDescription: "Open the app.",
               durationSeconds: 4,
               expectedVisibleOutcome: "The app is visible.",
               id: "scene-001",
@@ -574,7 +573,7 @@ function validDemoScript() {
     },
     scenes: [
       {
-        description: "Open the app.",
+        humanReadableDescription: "Open the app.",
         expectedVisibleOutcome: "The prepared app shell is visible.",
         id: "scene-001",
       },

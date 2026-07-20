@@ -16,11 +16,10 @@ describe("validateCapturePath", () => {
       {
         preparationManifest: manifest(),
         preparationWorkspace: workspaceHandle(sandboxLogs),
-        demoScriptCandidate: demoScript(),
-        demoScriptPackage: demoScript(),
+        demoScript: demoScript(),
       },
       {
-        async validateProject() {
+        async runRuntimePreflight() {
           calls.push("project-checks");
           return {
             blockedNetworkAttempts: [],
@@ -142,8 +141,7 @@ describe("validateCapturePath", () => {
       {
         preparationManifest: manifest(),
         preparationWorkspace: workspace,
-        demoScriptCandidate: demoScript(),
-        demoScriptPackage: demoScript(),
+        demoScript: demoScript(),
       },
       {
         diagnosticsLogger: {
@@ -152,7 +150,7 @@ describe("validateCapturePath", () => {
           },
         },
         diagnosticsWriteTimeoutMs: 50,
-        async validateProject() {
+        async runRuntimePreflight() {
           return {
             blockedNetworkAttempts: [],
             browserUrl: "https://preview.example.test/",
@@ -200,11 +198,10 @@ describe("validateCapturePath", () => {
       {
         preparationManifest: manifest(),
         preparationWorkspace: workspaceHandle(sandboxLogs, executedCommands),
-        demoScriptCandidate: demoScript(),
-        demoScriptPackage: demoScript(),
+        demoScript: demoScript(),
       },
       {
-        async validateProject() {
+        async runRuntimePreflight() {
           return {
             blockedNetworkAttempts: [],
             browserUrl: "https://preview.example.test/",
@@ -284,11 +281,10 @@ describe("validateCapturePath", () => {
       {
         preparationManifest: manifest(),
         preparationWorkspace: workspace.handle,
-        demoScriptCandidate: demoScript(),
-        demoScriptPackage: demoScript(),
+        demoScript: demoScript(),
       },
       {
-        async validateProject() {
+        async runRuntimePreflight() {
           return {
             blockedNetworkAttempts: [],
             browserUrl: "https://preview.example.test/",
@@ -341,8 +337,7 @@ describe("validateCapturePath", () => {
       {
         preparationManifest: manifest(),
         preparationWorkspace: failingLogWorkspaceHandle(),
-        demoScriptCandidate: demoScript(),
-        demoScriptPackage: demoScript(),
+        demoScript: demoScript(),
       },
       {
         diagnosticsLogger: {
@@ -350,7 +345,7 @@ describe("validateCapturePath", () => {
             fallbackWarnings.push(entry);
           },
         },
-        async validateProject() {
+        async runRuntimePreflight() {
           return {
             blockedNetworkAttempts: [],
             browserUrl: "https://preview.example.test/",
@@ -393,8 +388,7 @@ describe("validateCapturePath", () => {
       {
         preparationManifest: manifest(),
         preparationWorkspace: failingLogWorkspaceHandle(),
-        demoScriptCandidate: demoScript(),
-        demoScriptPackage: demoScript(),
+        demoScript: demoScript(),
       },
       {
         diagnosticsLogger: {
@@ -403,7 +397,7 @@ describe("validateCapturePath", () => {
           },
         },
         diagnosticsWriteTimeoutMs: 100,
-        async validateProject() {
+        async runRuntimePreflight() {
           return {
             blockedNetworkAttempts: [],
             browserUrl: "https://preview.example.test/",
@@ -436,8 +430,7 @@ describe("validateCapturePath", () => {
       {
         preparationManifest: manifest(),
         preparationWorkspace: hangingLogWorkspaceHandle(),
-        demoScriptCandidate: demoScript(),
-        demoScriptPackage: demoScript(),
+        demoScript: demoScript(),
       },
       {
         diagnosticsLogger: {
@@ -446,7 +439,7 @@ describe("validateCapturePath", () => {
           },
         },
         diagnosticsWriteTimeoutMs: 100,
-        async validateProject() {
+        async runRuntimePreflight() {
           return {
             blockedNetworkAttempts: [],
             browserUrl: "https://preview.example.test/",
@@ -495,11 +488,10 @@ describe("validateCapturePath", () => {
       {
         preparationManifest: manifest(),
         preparationWorkspace: workspaceHandle([]),
-        demoScriptCandidate: script,
-        demoScriptPackage: script,
+        demoScript: script,
       },
       {
-        async validateProject() {
+        async runRuntimePreflight() {
           return {
             blockedNetworkAttempts: [],
             browserUrl: "https://preview.example.test/",
@@ -536,11 +528,10 @@ describe("validateCapturePath", () => {
       {
         preparationManifest: manifest(),
         preparationWorkspace: workspaceHandle(sandboxLogs),
-        demoScriptCandidate: script,
-        demoScriptPackage: script,
+        demoScript: script,
       },
       {
-        async validateProject() {
+        async runRuntimePreflight() {
           calls.push("project-checks");
           return {
             blockedNetworkAttempts: [],
@@ -587,12 +578,11 @@ describe("validateCapturePath", () => {
       {
         preparationManifest: manifest(),
         preparationWorkspace: hangingLogWorkspaceHandle(),
-        demoScriptCandidate: demoScript(),
-        demoScriptPackage: demoScript(),
+        demoScript: demoScript(),
       },
       {
         diagnosticsWriteTimeoutMs: 100,
-        async validateProject() {
+        async runRuntimePreflight() {
           calls.push("project-checks");
           return {
             blockedNetworkAttempts: [],
@@ -628,12 +618,11 @@ describe("validateCapturePath", () => {
       {
         preparationManifest: manifest(),
         preparationWorkspace: workspaceHandle([]),
-        demoScriptCandidate: demoScript(),
-        demoScriptPackage: demoScript(),
+        demoScript: demoScript(),
       },
       {
         sceneValidationTimeoutMs: 1,
-        async validateProject() {
+        async runRuntimePreflight() {
           return {
             blockedNetworkAttempts: [],
             browserUrl: "https://preview.example.test/",
@@ -669,11 +658,10 @@ describe("validateCapturePath", () => {
       {
         preparationManifest: manifest(),
         preparationWorkspace: workspaceHandle([]),
-        demoScriptCandidate: demoScript(),
-        demoScriptPackage: demoScript(),
+        demoScript: demoScript(),
       },
       {
-        async validateProject() {
+        async runRuntimePreflight() {
           return {
             blockedNetworkAttempts: [],
             browserUrl: "https://preview.example.test/",
@@ -799,11 +787,10 @@ describe("validateCapturePath", () => {
       {
         preparationManifest: manifest(),
         preparationWorkspace: workspaceHandle([]),
-        demoScriptCandidate: script,
-        demoScriptPackage: script,
+        demoScript: script,
       },
       {
-        async validateProject() {
+        async runRuntimePreflight() {
           return {
             blockedNetworkAttempts: [],
             browserUrl: "https://preview.example.test/",
@@ -857,16 +844,9 @@ function demoScript(
   } = {},
 ) {
   return {
-    assumptions: [],
-    demoPlan: {
-      featureOrder: ["validation"],
-      narrative: "Demo it",
-      risks: [],
-    },
     demoPlaywrightScript:
       overrides.demoPlaywrightScript ??
       "import { setup, scene } from './makeademo-capture-sdk';\n\nawait setup(async ({ page, baseUrl, expect }) => {\n  await page.goto(baseUrl);\n  await expect(page.locator('body')).toBeVisible();\n});\nawait scene('scene_validation', async ({ page, expect }) => {\n  await expect(page.locator('body')).toBeVisible();\n});",
-    exploration: { assumptions: [], productSurfaces: [], summary: "" },
     format: "16:9",
     presentation: {
       music: { enabled: false as const },

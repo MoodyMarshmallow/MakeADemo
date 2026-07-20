@@ -908,8 +908,8 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
 
     await expect(
       handle.workspace.writeSandboxLog?.({
-        event: "project-validation.started",
-        stage: "project-validation",
+        event: "demo-runtime-preflight.started",
+        stage: "demo-runtime-preflight",
       }),
     ).rejects.toThrow("Daytona sandbox log write did not finish within 1ms.");
   });
@@ -1159,17 +1159,17 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     const handle = await provider.create();
 
     await handle.workspace.writeSandboxLog?.({
-      event: "project-validation.dependency-install.started",
-      stage: "project-validation",
+      event: "demo-runtime-preflight.dependency-install.started",
+      stage: "demo-runtime-preflight",
       workspaceId: "workspace_123",
     });
 
     expect(relayedLogs).toHaveLength(1);
     expect(JSON.parse(relayedLogs[0] ?? "{}")).toMatchObject({
       component: "daytona-sandbox",
-      event: "project-validation.dependency-install.started",
-      message: "project-validation.dependency-install.started",
-      stage: "project-validation",
+      event: "demo-runtime-preflight.dependency-install.started",
+      message: "demo-runtime-preflight.dependency-install.started",
+      stage: "demo-runtime-preflight",
       workspaceId: "workspace_123",
     });
   });

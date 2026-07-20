@@ -4,7 +4,7 @@
 
 MakeADemo needs autonomous Repo Preparation without weakening the Pipeline's trust boundaries. Submitted repositories are untrusted and may contain suspicious dependencies, install hooks, runtime behavior, or prompt injection aimed at the preparation agent.
 
-The preparation agent needs backend-owned research tools, an isolated editable repository, and non-interactive coding tools. Submitted app execution must remain isolated from model credentials, backend infrastructure, and unrestricted network access, and the prepared output must pass deterministic Project Validation before downstream stages trust it.
+The preparation agent needs backend-owned research tools, an isolated editable repository, and non-interactive coding tools. Submitted app execution must remain isolated from model credentials, backend infrastructure, and unrestricted network access, and the prepared output must pass deterministic Demo Runtime Preflight before downstream stages trust it.
 
 ## Solution
 
@@ -22,7 +22,7 @@ The run still produces the existing Preparation Manifest and workspace diff arti
 
 1. As a maker, I want MakeADemo to prepare my repo in an ephemeral Daytona workspace so my source repo is not modified.
 2. As a maker, I want preparation to run autonomously without interactive permission prompts.
-3. As a maker, I want a deterministic Repo Security Screen and Project Validation around agent work.
+3. As a maker, I want a deterministic Repo Security Screen and Demo Runtime Preflight around agent work.
 4. As a maker, I want a Preparation Manifest, workspace diff, and fallback prompt through existing Pipeline contracts.
 5. As an operator, I want Pi embedded behind a provider-neutral Agent Harness seam so the Pipeline is not coupled to a CLI protocol.
 6. As an operator, I want provider credentials held only in backend memory so submitted code cannot read them.
@@ -46,7 +46,7 @@ The run still produces the existing Preparation Manifest and workspace diff arti
 - Repo Preparation defines its own Stage Agent Tools and passes them through the provider-neutral harness interface only for that stage.
 - Daytona remains a backend External Seam for workspace lifecycle, command execution, log streaming, network policy, submitted-code isolation, and cleanup.
 - Dependency-install network access remains mechanically allowlisted and closes immediately after installation.
-- Project Validation and Runtime Network Lockdown remain deterministic trust gates.
+- Demo Runtime Preflight and Runtime Network Lockdown remain deterministic trust gates.
 
 ## Testing Decisions
 
@@ -60,7 +60,7 @@ The run still produces the existing Preparation Manifest and workspace diff arti
 
 ## Out of Scope
 
-- Replacing the deterministic Repo Security Screen, Project Validation, or Runtime Network Lockdown.
+- Replacing the deterministic Repo Security Screen, Demo Runtime Preflight, or Runtime Network Lockdown.
 - Baking Pi, model credentials, or research credentials into Daytona images.
 - Requiring an Exa or Context7 API key for the development path.
 - Loading submitted `AGENTS.md`, `CLAUDE.md`, `.pi/`, `.mcp.json`, or `.opencode/` files as authoritative agent configuration.

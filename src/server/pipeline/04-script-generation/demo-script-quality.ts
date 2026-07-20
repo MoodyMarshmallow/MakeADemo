@@ -1,4 +1,4 @@
-import type { DemoScript } from "../06-footage-capture/demo-script.schema";
+import type { DemoScript } from "./demo-script/demo-script.schema";
 
 const meaningfulInteractionPatterns = [
   /\.click\s*\(/,

@@ -6,7 +6,7 @@ import type { BoundedValidationText } from "./validation-evidence";
  * this when the failure comes from MakeADemo infrastructure rather than app
  * behavior so callers can choose retry/fail-fast policy without parsing text.
  */
-export type ProjectValidationFailureKind =
+export type DemoRuntimePreflightFailureKind =
   | "dependency-install-failed"
   | "demo-process-exited"
   | "demo-readiness-timeout"
@@ -20,20 +20,20 @@ export type ProjectValidationFailureKind =
   | "sandbox-execution-failed"
   | "submitted-code-workspace-sync-failed";
 
-type ProjectValidationEvidence = {
+type DemoRuntimePreflightEvidence = {
   browser?: BoundedValidationText;
   serverLog?: BoundedValidationText;
 };
 
-export type ProjectValidationResult = {
+export type DemoRuntimePreflightResult = {
   blockedNetworkAttempts: NetworkAttempt[];
   browserUrl?: string;
   /** The sandbox-local URL that was actually validated. */
   localUrl?: string;
   /** The externally reachable preview URL, when one was created. */
   previewUrl?: string;
-  evidence?: ProjectValidationEvidence;
-  failureKind?: ProjectValidationFailureKind;
+  evidence?: DemoRuntimePreflightEvidence;
+  failureKind?: DemoRuntimePreflightFailureKind;
   failureReason?: string;
   logs: string[];
   screenshot?: { mimeType: "image/png"; path: string; sizeBytes?: number };

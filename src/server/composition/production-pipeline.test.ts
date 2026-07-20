@@ -3,11 +3,11 @@ import { describe, expect, it } from "vitest";
 import { runPipelineJob } from "../pipeline/00-orchestration/job/pipeline-orchestrator";
 import type { PreparationWorkspaceHandle } from "../pipeline/03-repo-preparation/preparation-workspace-runner";
 import type { RepoPreparationAgent } from "../pipeline/03-repo-preparation/repo-preparation-agent.interface";
+import { parseDemoScript } from "../pipeline/04-script-generation/demo-script/demo-script.schema";
 import type { ScriptGenerationAgent } from "../pipeline/04-script-generation/script-generation-agent.interface";
 import type { CapturePathRepairer } from "../pipeline/05-capture-path-validation/capture-path-repairer.interface";
-import type { BrowserValidator } from "../pipeline/05-capture-path-validation/project-runtime-preflight/browser-validator.interface";
-import type { SandboxRunner } from "../pipeline/05-capture-path-validation/project-runtime-preflight/sandbox-runner.interface";
-import { parseDemoScript } from "../pipeline/06-footage-capture/demo-script.schema";
+import type { BrowserValidator } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/browser-validator.interface";
+import type { SandboxRunner } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/sandbox-runner.interface";
 import {
   createDaytonaFreshCaptureStatePreparer,
   createProductionPipelineDependencies,
@@ -77,10 +77,10 @@ describe("production Pipeline assembly", () => {
 
     expect(result.status).toBe("succeeded");
     if (result.status === "succeeded") {
-      expect(parseDemoScript(result.demoScriptPackage).scriptId).toBe(
+      expect(parseDemoScript(result.demoScript).scriptId).toBe(
         "generated-makeademo-script",
       );
-      expect(result.demoScriptPackage.scenes[0]).toMatchObject({
+      expect(result.demoScript.scenes[0]).toMatchObject({
         expectedVisibleOutcome: "The validation result is visible.",
         humanReadableDescription: "Demonstrate validation.",
         id: "scene-validation",
@@ -112,15 +112,15 @@ describe("production Pipeline assembly", () => {
 
   it("makes Capture Path repair available to the Pipeline Job", async () => {
     const scriptGenerationAgent: ScriptGenerationAgent = {
-      async generateScriptPackage() {
-        return scriptPackage("script_initial");
+      async generateDemoScript() {
+        return createDemoScript("script_initial");
       },
     };
     const capturePathRepairer: CapturePathRepairer = {
       async repairCapturePathFailure(input) {
         return {
           preparationManifest: input.preparationManifest,
-          demoScriptPackage: scriptPackage("script_repaired"),
+          demoScript: createDemoScript("script_repaired"),
         };
       },
     };
@@ -153,10 +153,10 @@ describe("production Pipeline assembly", () => {
         },
         preparationManifest: preparationManifest(),
         repoUrl: "https://github.com/example/app",
-        demoScriptPackage: scriptPackage("script_initial"),
+        demoScript: createDemoScript("script_initial"),
       }),
     ).resolves.toMatchObject({
-      demoScriptPackage: { scriptId: "script_repaired" },
+      demoScript: { scriptId: "script_repaired" },
     });
   });
 });
@@ -224,10 +224,10 @@ function preparationWorkspaceHandle(): PreparationWorkspaceHandle {
 function succeededPreparedDemo(
   preparationWorkspace: PreparationWorkspaceHandle,
 ) {
-  const acceptedDemoScript = scriptPackage("script_test");
+  const demoScript = createDemoScript("script_test");
 
   return {
-    acceptedDemoScript,
+    demoScript,
     capturePathValidation: {
       blockedNetworkAttempts: [],
       browserUrl: "https://preview.example.test/",
@@ -235,24 +235,16 @@ function succeededPreparedDemo(
       status: "succeeded" as const,
       warnings: [],
     },
-    demoScriptPackage: acceptedDemoScript,
     preparationManifest: preparationManifest(),
     preparationWorkspace,
     status: "succeeded" as const,
   };
 }
 
-function scriptPackage(scriptId: string) {
+function createDemoScript(scriptId: string) {
   return {
-    assumptions: [],
-    demoPlan: {
-      featureOrder: ["validation"],
-      narrative: "Demo it",
-      risks: [],
-    },
     demoPlaywrightScript:
       "await scene('scene_validation', async () => { await page.goto(baseUrl); });",
-    exploration: { assumptions: [], productSurfaces: [], summary: "" },
     format: "16:9" as const,
     presentation: {
       music: { enabled: false as const },

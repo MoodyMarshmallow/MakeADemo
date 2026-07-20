@@ -9,13 +9,13 @@ import type {
   BrowserValidationInput,
   BrowserValidationOutput,
   BrowserValidator,
-} from "../../../pipeline/05-capture-path-validation/project-runtime-preflight/browser-validator.interface";
+} from "../../../pipeline/05-capture-path-validation/demo-runtime-preflight/browser-validator.interface";
 import {
   type NetworkAttempt,
   sanitizeNetworkAttemptUrl,
   sanitizeNetworkAttempts,
-} from "../../../pipeline/05-capture-path-validation/project-runtime-preflight/network-isolation-policy";
-import { boundValidationLogs } from "../../../pipeline/05-capture-path-validation/project-runtime-preflight/validation-evidence";
+} from "../../../pipeline/05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
+import { boundValidationLogs } from "../../../pipeline/05-capture-path-validation/demo-runtime-preflight/validation-evidence";
 
 type BrowserValidationPage = {
   close(): Promise<void>;
@@ -255,7 +255,7 @@ export class PlaywrightBrowserValidator implements BrowserValidator {
 }
 
 const repairScreenshotPath =
-  "/tmp/makeademo/submitted-code/project-validation/browser.png";
+  "/tmp/makeademo/submitted-code/demo-runtime-preflight/browser.png";
 
 async function copyScreenshotToRepairWorkspace(
   handle: NonNullable<BrowserValidationInput["preparationWorkspace"]>,

@@ -2,11 +2,11 @@ import { copyFile, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { CaptureManifest } from "../06-footage-capture/capture-scenes";
 import {
   type DemoScript,
   parseDemoScript,
-} from "../06-footage-capture/demo-script.schema";
+} from "../04-script-generation/demo-script/demo-script.schema";
+import type { CaptureManifest } from "../06-footage-capture/capture-scenes";
 import type { FinalVideoEmailNotifier } from "../final-output/final-video-email-notifier.interface";
 import type {
   DemoRequestFinalVideoStore,
@@ -75,7 +75,7 @@ export type CompositeVideoFromScriptInput = {
   renderer?: VideoRenderer;
   runId?: string;
   scriptDirectory?: string;
-  scriptPackage?: unknown;
+  demoScript?: unknown;
   scriptPath?: string;
 };
 
@@ -95,14 +95,14 @@ export async function compositeVideoFromScript(
 
   await mkdir(publicDir, { recursive: true });
 
-  const scriptPackage = await readScriptPackage(input);
+  const demoScript = await readDemoScript(input);
   const captureManifest = parseCaptureManifest(
     JSON.parse(await readFile(input.captureManifestPath, "utf8")),
   );
 
-  if (captureManifest.scriptId !== scriptPackage.scriptId) {
+  if (captureManifest.scriptId !== demoScript.scriptId) {
     throw new Error(
-      `capture manifest scriptId ${captureManifest.scriptId} does not match Demo Script scriptId ${scriptPackage.scriptId}`,
+      `capture manifest scriptId ${captureManifest.scriptId} does not match Demo Script scriptId ${demoScript.scriptId}`,
     );
   }
 
@@ -116,7 +116,7 @@ export async function compositeVideoFromScript(
     projectRoot,
     publicDir,
     scriptDirectory,
-    scriptPackage,
+    demoScript,
   });
   const [fontAssets, music] = await Promise.all([
     stageFontAssets({
@@ -127,7 +127,7 @@ export async function compositeVideoFromScript(
     stageMusicAsset({
       projectRoot,
       publicDir,
-      scriptPackage,
+      demoScript,
     }),
   ]);
   const durationInFrames = scenes.reduce(
@@ -144,8 +144,8 @@ export async function compositeVideoFromScript(
     outputPath: outputVideoPath,
     publicDir,
     scenes,
-    scriptId: scriptPackage.scriptId,
-    title: scriptPackage.title,
+    scriptId: demoScript.scriptId,
+    title: demoScript.title,
     width: WIDTH,
   };
 
@@ -160,8 +160,8 @@ export async function compositeVideoFromScript(
     publicAppBaseUrl: input.publicAppBaseUrl,
     retainLocalOutput: input.retainLocalOutput ?? false,
     runId,
-    scriptId: scriptPackage.scriptId,
-    title: scriptPackage.title,
+    scriptId: demoScript.scriptId,
+    title: demoScript.title,
     emailNotifier: input.finalVideoEmailNotifier,
   });
 
@@ -175,8 +175,8 @@ export async function compositeVideoFromScript(
     renderPlanPath,
     runDirectory,
     runId,
-    scriptId: scriptPackage.scriptId,
-    title: scriptPackage.title,
+    scriptId: demoScript.scriptId,
+    title: demoScript.title,
     viewUrl: finalVideo?.r2Url ?? pathToFileURL(resolve(outputVideoPath)).href,
   };
 
@@ -184,18 +184,16 @@ export async function compositeVideoFromScript(
   return manifest;
 }
 
-async function readScriptPackage(input: CompositeVideoFromScriptInput) {
-  if (input.scriptPackage !== undefined) {
-    return parseCompositingDemoScript(input.scriptPackage);
+async function readDemoScript(input: CompositeVideoFromScriptInput) {
+  if (input.demoScript !== undefined) {
+    return parseDemoScript(input.demoScript);
   }
 
   if (input.scriptPath === undefined) {
-    throw new Error("scriptPath or scriptPackage is required");
+    throw new Error("scriptPath or demoScript is required");
   }
 
-  return parseCompositingDemoScript(
-    JSON.parse(await readFile(input.scriptPath, "utf8")),
-  );
+  return parseDemoScript(JSON.parse(await readFile(input.scriptPath, "utf8")));
 }
 
 function assertFinalVideoDependencies(input: CompositeVideoFromScriptInput) {
@@ -293,13 +291,13 @@ async function stageScenes(input: {
   projectRoot: string;
   publicDir: string;
   scriptDirectory: string;
-  scriptPackage: DemoScript;
+  demoScript: DemoScript;
 }) {
   const capturedScenesById = new Map(
     input.captureManifest.scenes.map((scene) => [scene.sceneId, scene]),
   );
   const textOverlaysBySceneId = new Map(
-    input.scriptPackage.presentation.textOverlays.map((overlay) => [
+    input.demoScript.presentation.textOverlays.map((overlay) => [
       overlay.sceneId,
       {
         color: "#ffffff",
@@ -311,7 +309,7 @@ async function stageScenes(input: {
     ]),
   );
   const transitionsBySceneId = new Map(
-    input.scriptPackage.presentation.transitions.map((transition) => [
+    input.demoScript.presentation.transitions.map((transition) => [
       transition.toSceneId,
       {
         durationFrames: secondsToFrames(transition.durationSeconds),
@@ -321,7 +319,7 @@ async function stageScenes(input: {
     ]),
   );
   return Promise.all(
-    input.scriptPackage.scenes.map(async (scene): Promise<CompositingScene> => {
+    input.demoScript.scenes.map(async (scene): Promise<CompositingScene> => {
       const capturedScene = capturedScenesById.get(scene.id);
       if (!capturedScene) {
         throw new Error(
@@ -387,13 +385,13 @@ async function stageFontAssets(input: {
 async function stageMusicAsset(input: {
   projectRoot: string;
   publicDir: string;
-  scriptPackage: DemoScript;
+  demoScript: DemoScript;
 }) {
-  if (!input.scriptPackage.presentation.music.enabled) {
+  if (!input.demoScript.presentation.music.enabled) {
     return undefined;
   }
 
-  const musicId = input.scriptPackage.presentation.music.trackId;
+  const musicId = input.demoScript.presentation.music.trackId;
   const sourcePath = join(
     input.projectRoot,
     "assets",
@@ -409,15 +407,6 @@ async function stageMusicAsset(input: {
 async function copyAsset(sourcePath: string, destinationPath: string) {
   await mkdir(dirname(destinationPath), { recursive: true });
   await copyFile(sourcePath, destinationPath);
-}
-
-function parseCompositingDemoScript(value: unknown): DemoScript {
-  const scriptPackage = parseDemoScript(value);
-  if (scriptPackage.format !== "16:9") {
-    throw new Error("format must be 16:9 for Compositing");
-  }
-
-  return scriptPackage;
 }
 
 function parseCaptureManifest(value: unknown): CaptureManifest {
