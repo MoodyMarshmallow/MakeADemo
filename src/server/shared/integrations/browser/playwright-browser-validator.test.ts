@@ -1,5 +1,12 @@
 import { exec } from "node:child_process";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -534,8 +541,12 @@ describe("PlaywrightBrowserValidator", () => {
   });
 
   it("copies submitted validation screenshots into the primary repair workspace", async () => {
-    const downloaded: unknown[] = [];
-    const uploaded: unknown[] = [];
+    const downloaded: Array<{
+      destinationPath: string;
+      sourcePath: string;
+    }> = [];
+    const uploaded: Array<{ destinationPath: string; sourcePath: string }> = [];
+    let uploadedBytes: Buffer | undefined;
     const validator = new PlaywrightBrowserValidator();
     const base = fakeWorkspace(
       JSON.stringify({
@@ -549,27 +560,281 @@ describe("PlaywrightBrowserValidator", () => {
         screenshotArtifactId: "",
       }),
     );
+    const receiverSensitiveWorkspace = {
+      ...base.workspace,
+      submittedScreenshotBytes: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "base64",
+      ),
+      async downloadSubmittedCodeFiles(
+        files: Array<{ destinationPath: string; sourcePath: string }>,
+      ) {
+        downloaded.push(...files);
+        for (const file of files) {
+          await writeFile(file.destinationPath, this.submittedScreenshotBytes);
+        }
+      },
+      async uploadFiles(
+        files: Array<{ destinationPath: string; sourcePath: string }>,
+      ) {
+        uploaded.push(...files);
+        const file = files[0];
+        if (file === undefined) {
+          throw new Error("expected uploaded screenshot");
+        }
+        uploadedBytes = await readFile(file.sourcePath);
+      },
+    };
     const result = await validator.validate({
       preparationWorkspace: {
         ...base,
-        workspace: {
-          ...base.workspace,
-          async downloadSubmittedCodeFiles(files) {
-            downloaded.push(...files);
-          },
-          async uploadFiles(files) {
-            uploaded.push(...files);
-          },
-        },
+        workspace: receiverSensitiveWorkspace,
       },
       url: "http://localhost:3000",
     });
 
-    expect(result.screenshot).toMatchObject({
-      path: "/tmp/makeademo/submitted-code/demo-runtime-preflight/browser.png",
+    expect(result.screenshot).toEqual({
+      mimeType: "image/png",
+      path: "/workspace/.makeademo/demo-runtime-preflight/browser.png",
+      sizeBytes: receiverSensitiveWorkspace.submittedScreenshotBytes.length,
     });
-    expect(downloaded).toHaveLength(1);
-    expect(uploaded).toHaveLength(1);
+    expect(downloaded).toEqual([
+      {
+        destinationPath: expect.stringMatching(/browser\.png$/),
+        sourcePath: "/workspace/.makeademo/validation-screenshot.png",
+      },
+    ]);
+    const firstDownloaded = downloaded[0];
+    if (firstDownloaded === undefined) {
+      throw new Error("expected downloaded screenshot");
+    }
+    expect(uploaded).toEqual([
+      {
+        destinationPath:
+          "/workspace/.makeademo/demo-runtime-preflight/browser.png",
+        sourcePath: firstDownloaded.destinationPath,
+      },
+    ]);
+    expect(uploadedBytes).toEqual(
+      receiverSensitiveWorkspace.submittedScreenshotBytes,
+    );
+  });
+
+  it("rejects submitted validation screenshots that are not bounded PNG files", async () => {
+    const uploaded: Array<{ destinationPath: string; sourcePath: string }> = [];
+    const base = fakeWorkspace(
+      JSON.stringify({
+        interactable: false,
+        logs: ["Vite Error"],
+        screenshot: {
+          mimeType: "image/png",
+          path: "/workspace/.makeademo/validation-screenshot.png",
+          sizeBytes: 4,
+        },
+        screenshotArtifactId: "",
+      }),
+    );
+    const receiverSensitiveWorkspace = {
+      ...base.workspace,
+      async downloadSubmittedCodeFiles(
+        files: Array<{ destinationPath: string; sourcePath: string }>,
+      ) {
+        for (const file of files) {
+          await writeFile(file.destinationPath, Buffer.from("not a png"));
+        }
+      },
+      async uploadFiles(
+        files: Array<{ destinationPath: string; sourcePath: string }>,
+      ) {
+        uploaded.push(...files);
+      },
+    };
+
+    const result = await new PlaywrightBrowserValidator().validate({
+      preparationWorkspace: {
+        ...base,
+        workspace: receiverSensitiveWorkspace,
+      },
+      url: "http://localhost:3000",
+    });
+
+    expect(result.screenshot).toBeUndefined();
+    expect(result.logs).toContain(
+      "Validation screenshot from submitted-code sandbox is invalid.",
+    );
+    expect(uploaded).toHaveLength(0);
+  });
+
+  it("rejects submitted validation screenshots larger than the transfer bound", async () => {
+    const uploaded: Array<{ destinationPath: string; sourcePath: string }> = [];
+    const base = fakeWorkspace(
+      JSON.stringify({
+        interactable: false,
+        logs: ["Vite Error"],
+        screenshot: {
+          mimeType: "image/png",
+          path: "/workspace/.makeademo/validation-screenshot.png",
+        },
+        screenshotArtifactId: "",
+      }),
+    );
+    const oversizedPng = Buffer.alloc(10 * 1024 * 1024 + 1);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(
+      oversizedPng,
+    );
+    const receiverSensitiveWorkspace = {
+      ...base.workspace,
+      async downloadSubmittedCodeFiles(
+        files: Array<{ destinationPath: string; sourcePath: string }>,
+      ) {
+        for (const file of files) {
+          await writeFile(file.destinationPath, oversizedPng);
+        }
+      },
+      async uploadFiles(
+        files: Array<{ destinationPath: string; sourcePath: string }>,
+      ) {
+        uploaded.push(...files);
+      },
+    };
+
+    const result = await new PlaywrightBrowserValidator().validate({
+      preparationWorkspace: {
+        ...base,
+        workspace: receiverSensitiveWorkspace,
+      },
+      url: "http://localhost:3000",
+    });
+
+    expect(result.screenshot).toBeUndefined();
+    expect(result.logs).toContain(
+      "Validation screenshot from submitted-code sandbox is invalid.",
+    );
+    expect(uploaded).toHaveLength(0);
+  });
+
+  it("reports submitted-code download failures separately from repair uploads", async () => {
+    const uploaded: Array<{ destinationPath: string; sourcePath: string }> = [];
+    const base = fakeWorkspace(
+      JSON.stringify({
+        interactable: false,
+        logs: ["Vite Error"],
+        screenshot: {
+          mimeType: "image/png",
+          path: "/workspace/.makeademo/validation-screenshot.png",
+        },
+        screenshotArtifactId: "",
+      }),
+    );
+    const receiverSensitiveWorkspace = {
+      ...base.workspace,
+      async downloadSubmittedCodeFiles() {
+        throw new Error("submitted sandbox unavailable");
+      },
+      async uploadFiles(
+        files: Array<{ destinationPath: string; sourcePath: string }>,
+      ) {
+        uploaded.push(...files);
+      },
+    };
+
+    const result = await new PlaywrightBrowserValidator().validate({
+      preparationWorkspace: {
+        ...base,
+        workspace: receiverSensitiveWorkspace,
+      },
+      url: "http://localhost:3000",
+    });
+
+    expect(result.logs).toContain(
+      "Validation screenshot download from submitted-code sandbox failed.",
+    );
+    expect(result.logs).not.toContain(
+      "Validation screenshot upload to the repair workspace failed.",
+    );
+    expect(uploaded).toHaveLength(0);
+  });
+
+  it("keeps an interactable result successful when screenshot transfer fails", async () => {
+    const base = fakeWorkspace(
+      JSON.stringify({
+        interactable: true,
+        logs: ["Loaded http://localhost:3000"],
+        screenshot: {
+          mimeType: "image/png",
+          path: "/workspace/.makeademo/validation-screenshot.png",
+        },
+        screenshotArtifactId: "",
+      }),
+    );
+    const receiverSensitiveWorkspace = {
+      ...base.workspace,
+      async downloadSubmittedCodeFiles() {
+        throw new Error("submitted sandbox unavailable");
+      },
+    };
+
+    const result = await new PlaywrightBrowserValidator().validate({
+      preparationWorkspace: {
+        ...base,
+        workspace: receiverSensitiveWorkspace,
+      },
+      url: "http://localhost:3000",
+    });
+
+    expect(result.interactable).toBe(true);
+    expect(result.failureKind).toBeUndefined();
+    expect(result.logs).toContain(
+      "Validation screenshot download from submitted-code sandbox failed.",
+    );
+  });
+
+  it("reports primary repair workspace upload failures separately", async () => {
+    const base = fakeWorkspace(
+      JSON.stringify({
+        interactable: false,
+        logs: ["Vite Error"],
+        screenshot: {
+          mimeType: "image/png",
+          path: "/workspace/.makeademo/validation-screenshot.png",
+        },
+        screenshotArtifactId: "",
+      }),
+    );
+    const receiverSensitiveWorkspace = {
+      ...base.workspace,
+      async downloadSubmittedCodeFiles(
+        files: Array<{ destinationPath: string; sourcePath: string }>,
+      ) {
+        for (const file of files) {
+          await writeFile(
+            file.destinationPath,
+            Buffer.from([
+              0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x76, 0x61, 0x6c,
+              0x69, 0x64,
+            ]),
+          );
+        }
+      },
+      async uploadFiles() {
+        throw new Error("repair workspace unavailable");
+      },
+    };
+
+    const result = await new PlaywrightBrowserValidator().validate({
+      preparationWorkspace: {
+        ...base,
+        workspace: receiverSensitiveWorkspace,
+      },
+      url: "http://localhost:3000",
+    });
+
+    expect(result.logs).toContain(
+      "Validation screenshot upload to the repair workspace failed.",
+    );
+    expect(result.logs).not.toContain(
+      "Validation screenshot download from submitted-code sandbox failed.",
+    );
   });
 
   it("preserves submitted-code browser network-blocking evidence", async () => {
