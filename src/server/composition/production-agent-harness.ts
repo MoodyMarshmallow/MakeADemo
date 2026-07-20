@@ -1,19 +1,20 @@
-import type { AgentSessionRunner } from "../agent-harness/agent-session-runner.interface";
+import type {
+  AgentSessionRunner,
+  AgentTaskEvent,
+} from "../agent-harness/agent-session-runner.interface";
 import {
   type AgentTaskOutputSinkEvent,
   bindAgentTaskRunner,
 } from "../agent-harness/bind-agent-task-runner";
 import { createAgentSessionRunner } from "../agent-harness/create-agent-session-runner";
-import { createOpenCodeTaskWorkspaceConfigurator } from "../agent-harness/opencode/opencode-task-workspace-configurator";
+import { classifyProviderFailure } from "../agent-harness/provider-failure-classifier";
 import { createPreCapturePipelineDependencies } from "../pipeline/00-orchestration/pre-capture-pipeline";
 import { AgenticRepoPreparation } from "../pipeline/03-repo-preparation/agent-task/agentic-repo-preparation";
-import { repoPreparationAgentToolScope } from "../pipeline/03-repo-preparation/agent-task/tools/repo-preparation-tool-protocol";
 import { AgenticScriptGenerator } from "../pipeline/04-script-generation/agent-task/agentic-script-generator";
 import { AgenticCapturePathRepairer } from "../pipeline/05-capture-path-validation/agent-task/agentic-capture-path-repairer";
 import { validateProject } from "../pipeline/05-capture-path-validation/project-runtime-preflight/project-validator";
 import { AgenticDraftCompositeReviewer } from "../pipeline/07-compositing/agent-task/agentic-draft-composite-reviewer";
 import { PlaywrightBrowserValidator } from "../shared/integrations/browser/playwright-browser-validator";
-import { createOpenCodeProviderSandboxSecrets } from "../shared/integrations/daytona/daytona-opencode-provider-secrets";
 import { DaytonaSdkPreparationWorkspaceProvider } from "../shared/integrations/daytona/daytona-sdk-preparation-workspace-provider";
 import { DaytonaSandboxRunner } from "../shared/integrations/sandbox/daytona-sandbox-runner";
 import {
@@ -21,8 +22,6 @@ import {
   type PipelineLogSink,
   createPipelineEventLogger,
 } from "../shared/logging/pipeline-event-logger";
-import { classifyOpenCodeProviderFailure } from "./opencode/opencode-provider-failure-classifier";
-import { createRepoPreparationOpenCodeToolFiles } from "./opencode/repo-preparation-opencode-tools";
 import type { ProductionAgentModelConfig } from "./production-agent-model-config";
 import { createProductionAgentProfiles } from "./production-agent-profiles";
 
@@ -42,10 +41,12 @@ export type ProductionAgentHarnessOptions = {
   maxScriptGenerationAttempts?: number;
   agentModel: ProductionAgentModelConfig;
   onAgentDiagnostic?: (chunk: string) => void;
+  onAgentEvent?: (event: AgentTaskEvent) => void;
   onAgentStandard?: (chunk: string) => void;
   onRepoPreparationDiagnostic?: (chunk: string) => void;
+  onRepoPreparationEvent?: (event: AgentTaskEvent) => void;
   onRepoPreparationStandard?: (chunk: string) => void;
-  providerSecretName: string;
+  openaiApiKey?: string;
   repoPreparationTimeoutMs?: number;
   sandboxLogSinks?: PipelineLogSink[];
 };
@@ -68,10 +69,6 @@ export function createProductionAgentHarness(
   });
   const agentWorkspaceProvider = new DaytonaSdkPreparationWorkspaceProvider({
     apiKey: options.daytonaApiKey,
-    secrets: createOpenCodeProviderSandboxSecrets({
-      providerID: options.agentModel.providerID,
-      providerSecretName: options.providerSecretName,
-    }),
     ...(options.daytonaSnapshot === undefined
       ? {}
       : { snapshot: options.daytonaSnapshot }),
@@ -80,18 +77,12 @@ export function createProductionAgentHarness(
       : { submittedCodeSnapshot: options.daytonaSubmittedCodeSnapshot }),
     sandboxLogSinks,
   });
-  const taskWorkspaceConfigurator = createOpenCodeTaskWorkspaceConfigurator();
-  const repoPreparationConfigDirectory =
-    taskWorkspaceConfigurator.configDirectoryForScope(
-      repoPreparationAgentToolScope,
-    );
+  const openaiApiKey = options.openaiApiKey ?? process.env.OPENAI_API_KEY;
   const runner =
     options.agentSessionRunner ??
-    createAgentSessionRunner({
-      configDirectoriesByToolScope: {
-        [repoPreparationAgentToolScope]: repoPreparationConfigDirectory,
-      },
-    });
+    createAgentSessionRunner(
+      openaiApiKey === undefined ? {} : { apiKey: openaiApiKey },
+    );
   const profiles = createProductionAgentProfiles({
     modelID: options.agentModel.modelID,
     providerID: options.agentModel.providerID,
@@ -105,48 +96,37 @@ export function createProductionAgentHarness(
     options.onAgentStandard,
   );
   const repoPreparationRunner = bindAgentTaskRunner(runner, {
-    classifyProviderFailure: classifyOpenCodeProviderFailure,
-    dangerouslySkipPermissions: false,
+    classifyProviderFailure,
     ...(repoPreparationOutput === undefined
       ? {}
       : { onOutput: repoPreparationOutput }),
-    prepareWorkspace: async ({ timeoutMs, toolScope, workspace }) => {
-      const result = await workspace.execute(
-        taskWorkspaceConfigurator.createWriteCommand([
-          {
-            scope: toolScope,
-            stageToolFiles: createRepoPreparationOpenCodeToolFiles(),
-          },
-        ]),
-        {
-          env: {},
-          timeoutMs,
-        },
-      );
-      if (result.exitCode !== 0) {
-        throw new Error(
-          `Failed to configure the ${toolScope} agent workspace: ${[result.stderr, result.stdout].filter(Boolean).join("\n")}`,
-        );
-      }
-    },
+    ...(options.onRepoPreparationEvent === undefined
+      ? {}
+      : { onEvent: options.onRepoPreparationEvent }),
     profile: profiles.repoPreparation,
   });
   const scriptGenerationRunner = bindAgentTaskRunner(runner, {
-    classifyProviderFailure: classifyOpenCodeProviderFailure,
-    dangerouslySkipPermissions: true,
+    classifyProviderFailure,
     ...(sharedAgentOutput === undefined ? {} : { onOutput: sharedAgentOutput }),
+    ...(options.onAgentEvent === undefined
+      ? {}
+      : { onEvent: options.onAgentEvent }),
     profile: profiles.scriptGeneration,
   });
   const capturePathRepairRunner = bindAgentTaskRunner(runner, {
-    classifyProviderFailure: classifyOpenCodeProviderFailure,
-    dangerouslySkipPermissions: true,
+    classifyProviderFailure,
     ...(sharedAgentOutput === undefined ? {} : { onOutput: sharedAgentOutput }),
+    ...(options.onAgentEvent === undefined
+      ? {}
+      : { onEvent: options.onAgentEvent }),
     profile: profiles.capturePathRepair,
   });
   const draftCompositeReviewRunner = bindAgentTaskRunner(runner, {
-    classifyProviderFailure: classifyOpenCodeProviderFailure,
-    dangerouslySkipPermissions: true,
+    classifyProviderFailure,
     ...(sharedAgentOutput === undefined ? {} : { onOutput: sharedAgentOutput }),
+    ...(options.onAgentEvent === undefined
+      ? {}
+      : { onEvent: options.onAgentEvent }),
     profile: profiles.draftCompositeReview,
   });
   const logger = options.logger;
@@ -225,6 +205,9 @@ export function createProductionAgentHarness(
       scriptGeneration: scriptGenerationRunner,
     },
     capturePathRepairer,
+    disposeAgentSessions: async () => {
+      await runner.dispose?.();
+    },
     preCaptureDependencies,
     repoPreparationAgent,
     repoSecurityProvider,

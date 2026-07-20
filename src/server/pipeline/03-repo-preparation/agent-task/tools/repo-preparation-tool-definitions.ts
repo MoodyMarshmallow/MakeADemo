@@ -1,10 +1,4 @@
-import {
-  dependencyInstallRequestPath,
-  preparationManifestPath,
-  preparationResultPath,
-  validationRequestPath,
-  validationResultPath,
-} from "../repo-preparation-artifact-handoff";
+import { preparationManifestPath } from "../repo-preparation-artifact-handoff";
 
 /** Provider-neutral contract for a Repo Preparation stage tool. */
 export type RepoPreparationToolDefinition = {
@@ -24,25 +18,27 @@ export type RepoPreparationToolDefinition = {
 export const repoPreparationToolDefinitions = {
   dependencyRequestInstall: {
     acceptance:
-      "The backend accepts only an allowlisted package-manager install command and writes the request artifact before continuing.",
+      "The backend accepts only an allowlisted package-manager install command before continuing.",
     argumentDescription:
       "Exact allowlisted dependency install command, such as npm ci --ignore-scripts or pnpm install --frozen-lockfile.",
     argumentName: "command",
     description:
       "Request one backend-controlled dependency install with temporary outbound network access.",
     name: "makeademo_dependency_request_install",
-    precondition: `The request is written to ${dependencyInstallRequestPath}; the backend validates the command before execution.`,
+    precondition:
+      "The backend records and validates the request before opening the dependency-install network window.",
   },
   dependencyInstallAlias: {
     acceptance:
-      "The backend accepts only an allowlisted package-manager install command and writes the request artifact before continuing.",
+      "The backend accepts only an allowlisted package-manager install command before continuing.",
     argumentDescription:
       "Exact allowlisted dependency install command, such as npm ci --ignore-scripts or pnpm install --frozen-lockfile.",
     argumentName: "command",
     description:
       "Request one backend-controlled dependency install with temporary outbound network access.",
     name: "makeademo_install_dependencies",
-    precondition: `The request is written to ${dependencyInstallRequestPath}; the backend validates the command before execution.`,
+    precondition:
+      "The backend records and validates the request before opening the dependency-install network window.",
   },
   submitPreparationResult: {
     acceptance:
@@ -50,7 +46,8 @@ export const repoPreparationToolDefinitions = {
     description:
       "Submit the final Repo Preparation result exactly once after preparation succeeds or is blocked.",
     name: "makeademo_submit_preparation_result",
-    precondition: `A succeeded submission requires a passed validation artifact at ${validationResultPath}; failed submissions require blockers.`,
+    precondition:
+      "A succeeded submission requires a backend-held passed preflight for the unchanged Preparation Manifest; failed submissions require blockers.",
   },
   validatePreparation: {
     acceptance:
@@ -60,7 +57,8 @@ export const repoPreparationToolDefinitions = {
     description:
       "Ask the MakeADemo backend to run preparation preflight and return repair feedback.",
     name: "makeademo_validate_preparation",
-    precondition: `The request is written to ${validationRequestPath}; the backend owns validation and writes ${validationResultPath}.`,
+    precondition:
+      "The backend owns the validation request and its result; the agent receives repair feedback before continuing.",
   },
 } as const satisfies Record<string, RepoPreparationToolDefinition>;
 
@@ -72,15 +70,3 @@ export const repoPreparationToolNames = [
 
 export const repoPreparationSubmitToolName =
   repoPreparationToolDefinitions.submitPreparationResult.name;
-
-export const repoPreparationArtifactPaths = {
-  dependencyInstallRequestPath,
-  preparationManifestPath,
-  preparationResultPath,
-  validationRequestPath,
-  validationResultPath,
-} as const;
-
-export type RepoPreparationArtifactPaths = {
-  [Key in keyof typeof repoPreparationArtifactPaths]: string;
-};

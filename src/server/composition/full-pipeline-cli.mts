@@ -12,7 +12,6 @@ import {
   normalizeSupportingDocument,
   readSupportingDocumentUpload,
 } from "../pipeline/01-context-gathering/supporting-documents";
-import { ensureOpenCodeProviderDaytonaSecret } from "../shared/integrations/daytona/daytona-opencode-provider-secrets";
 import {
   createFilePipelineLogSink,
   createPipelineEventLogger,
@@ -73,11 +72,6 @@ const agentOutputRouter = createAgentOutputRouter({
   writeDiagnostic: (chunk) => process.stderr.write(chunk),
   writeStandard: (text) => process.stdout.write(text),
 });
-const providerSecretName = await ensureOpenCodeProviderDaytonaSecret({
-  daytonaApiKey,
-  logger: cliLogger.child({ component: "opencode-provider-secrets" }),
-  providerID: agentModel.providerID,
-});
 const productionAgentHarness = createProductionAgentHarness({
   agentModel,
   daytonaApiKey,
@@ -87,10 +81,11 @@ const productionAgentHarness = createProductionAgentHarness({
     : { daytonaSubmittedCodeSnapshot }),
   logger: cliLogger.child({ component: "agent-harness" }),
   onRepoPreparationDiagnostic: agentOutputRouter.repoPreparation.onDiagnostic,
+  onRepoPreparationEvent: agentOutputRouter.repoPreparation.onEvent,
   onRepoPreparationStandard: agentOutputRouter.repoPreparation.onStandard,
-  providerSecretName,
   sandboxLogSinks: [cliLogSink, localSandboxLogSink],
   onAgentDiagnostic: agentOutputRouter.agentTasks.onDiagnostic,
+  onAgentEvent: agentOutputRouter.agentTasks.onEvent,
   onAgentStandard: agentOutputRouter.agentTasks.onStandard,
 });
 const repoSecurity = await readRepoSecurityInput(
@@ -139,7 +134,10 @@ const result = await runFullPipelineJob(
     return undefined;
   })
   .finally(async () => {
-    await Promise.all([agentOutputRouter.close()]);
+    await Promise.all([
+      agentOutputRouter.close(),
+      productionAgentHarness.disposeAgentSessions(),
+    ]);
   });
 
 if (result !== undefined) {

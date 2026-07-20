@@ -25,21 +25,16 @@ import type {
   RepoPreparationInput,
 } from "../repo-preparation-agent.interface";
 import { inspectSubmittedCodeToolchain } from "../submitted-code-toolchain-inspection";
+import { createRepoPreparationAgentWorkspace } from "./repo-preparation-agent-workspace";
 import {
-  type DependencyInstallRequest,
   type ValidationRequest,
-  clearDependencyInstallRequest,
-  clearValidationRequest,
-  dependencyInstallRequestPath,
-  makeADemoArtifactDirectory,
   preparationManifestPath,
-  readDependencyInstallRequest,
   readPreparationManifestFile,
-  readPreparationResult,
-  readValidationRequest,
-  readValidationResult,
-  writeValidationResult,
 } from "./repo-preparation-artifact-handoff";
+import {
+  type RepoPreparationControlState,
+  createRepoPreparationControlState,
+} from "./repo-preparation-control-state";
 import {
   createContinueRepoPreparationPrompt,
   createDaytonaRepoPreparationPrompt,
@@ -50,9 +45,9 @@ import {
   type RepoPreparationCloneDiagnosticsContext,
   bootstrapRepoPreparationWorkspace,
 } from "./repo-preparation-workspace-bootstrap";
+import { createRepoPreparationStageTools } from "./tools/repo-preparation-stage-tools";
 import {
   type RepoPreparationToolHandoff,
-  repoPreparationAgentToolScope,
   repoPreparationToolProtocol,
 } from "./tools/repo-preparation-tool-protocol";
 
@@ -60,8 +55,6 @@ const minimumBackendToolBudgetMs = 100;
 const cloneFailureOutputMaxLength = 1_500;
 const cloneFailureOutputChannelMaxLength = 750;
 const cloneFailureDiagnosticValueMaxLength = 500;
-const requestArtifactReadMaxTimeoutMs = 5_000;
-const requestArtifactReadMinTimeoutMs = 50;
 const defaultInactivityTimeoutMs = 600_000;
 const defaultHardTimeoutMs = 1_800_000;
 const validationRepairAttemptLimit = 8;
@@ -118,20 +111,12 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
   }
 
   async prepare(input: RepoPreparationInput): Promise<RepoPreparationResult> {
-    const firstRun = await this.prepareOnce(input);
-    if (!isProviderSecretReferenceAuthFailure(firstRun)) {
-      return firstRun;
-    }
-
-    const retryRun = await this.prepareOnce(input);
-    return isProviderSecretReferenceAuthFailure(retryRun)
-      ? providerSecretReferenceAuthFailureResult()
-      : retryRun;
+    return this.prepareOnce(input);
   }
 
   private async prepareOnce(
     input: RepoPreparationInput,
-  ): Promise<RepoPreparationResult | ProviderSecretReferenceAuthFailure> {
+  ): Promise<RepoPreparationResult> {
     const handle = await this.provider.create();
     await this.writeSandboxLog(handle.workspace, {
       event: "workspace-created",
@@ -205,11 +190,6 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
           ],
         };
       }
-      if (isProviderSecretReferenceAuthFailure(loopResult)) {
-        await cancelActiveCommandsQuietly(handle);
-        await releaseQuietly(handle);
-        return loopResult;
-      }
       if (loopResult.status === "failed") {
         await releaseQuietly(handle);
       }
@@ -280,6 +260,13 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
       projectRoot: toolchain.plan.projectRoot,
     });
 
+    if (handle.workspace.prepareForAgent === undefined) {
+      throw new Error(
+        "Repo Preparation workspace cannot establish unprivileged agent access.",
+      );
+    }
+    await handle.workspace.prepareForAgent();
+
     return {
       baselineSourceControlledPaths:
         bootstrap.baselineSourceControlledPaths ?? [],
@@ -297,6 +284,10 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     let prompt = initialPrompt;
     let agentSession: AgentSession | undefined;
     let validationRepairAttempts = 0;
+    const controlState = createRepoPreparationControlState({
+      readManifest: () =>
+        readPreparationManifestFile(handle.workspace, preparationManifestPath),
+    });
     const hardDeadlineAt = Date.now() + this.hardTimeoutMs;
     for (let attempt = 0; attempt < maximumAgentTaskTurns; attempt += 1) {
       const initialDeadlineAt = Math.min(
@@ -330,9 +321,9 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         ...(agentSession === undefined ? {} : { session: agentSession }),
         stage: "repo-preparation",
         taskPrompt: prompt,
+        tools: createRepoPreparationStageTools(controlState),
         toolProtocol: repoPreparationToolProtocol,
-        toolScope: repoPreparationAgentToolScope,
-        workspace: handle.workspace,
+        workspace: createRepoPreparationAgentWorkspace(handle.workspace),
       });
       if (Date.now() >= hardDeadlineAt) {
         return this.timeoutPreparation(
@@ -370,116 +361,58 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         );
       }
 
-      const shouldReadValidationFirst =
-        agentTaskResult.handoff?.toolName ===
-          "makeademo_validate_preparation" ||
-        agentTaskResult.latestToolName === "makeademo_validate_preparation";
-      if (shouldReadValidationFirst) {
-        if (agentTaskResult.handoffError !== undefined) {
-          return toolPayloadProtocolFailure(agentTaskResult.handoffError);
-        }
-        const validationRequest =
-          agentTaskResult.handoff?.toolName === "makeademo_validate_preparation"
-            ? agentTaskResult.handoff.input
-            : undefined;
-        if (validationRequest !== undefined) {
-          const validationOutcome = await this.processValidationRequest({
-            attempt,
-            canExecuteRetry: attempt + 1 < maximumAgentTaskTurns,
-            agentSession,
-            deadlineAt,
-            handle,
-            input,
-            baselineSourceControlledPaths,
-            validationRepairAttempts,
-            validationRequest,
-          });
-          if (validationOutcome.status === "retry") {
-            validationRepairAttempts += 1;
-            prompt = validationOutcome.prompt;
-            continue;
-          }
-          if (validationOutcome.status === "timeout") {
-            return this.timeoutPreparation(
-              handle,
-              validationOutcome.reason,
-              this.timeoutMetadataForDeadline(hardDeadlineAt),
-            );
-          }
-
-          return validationOutcome.result;
-        }
-
-        const validationRequestResult =
-          await this.readRequestArtifactWithDeadline({
-            artifactName: "validation request",
-            deadlineAt,
-            eventPrefix: "validation-request-read",
-            read: () => readValidationRequest(handle.workspace),
-            workspace: handle.workspace,
-          });
-        if (validationRequestResult.status !== "succeeded") {
-          return requestArtifactReadTimeoutFailure(
-            "validation request",
-            validationRequestResult.timeoutMs,
-          );
-        }
-        if (validationRequestResult.value !== undefined) {
-          const validationOutcome = await this.processValidationRequest({
-            attempt,
-            canExecuteRetry: attempt + 1 < maximumAgentTaskTurns,
-            agentSession,
-            deadlineAt,
-            handle,
-            input,
-            baselineSourceControlledPaths,
-            validationRepairAttempts,
-            validationRequest: validationRequestResult.value,
-          });
-          if (validationOutcome.status === "retry") {
-            validationRepairAttempts += 1;
-            prompt = validationOutcome.prompt;
-            continue;
-          }
-          if (validationOutcome.status === "timeout") {
-            return this.timeoutPreparation(
-              handle,
-              validationOutcome.reason,
-              this.timeoutMetadataForDeadline(hardDeadlineAt),
-            );
-          }
-
-          return validationOutcome.result;
-        }
-      }
-
       if (agentTaskResult.handoffError !== undefined) {
         return toolPayloadProtocolFailure(agentTaskResult.handoffError);
       }
 
-      const dependencyInstallRequest =
+      // Pi executes stage tools directly against this backend-owned state. The
+      // handoff adapter is retained only for provider-neutral runners and test
+      // doubles that report a completed tool call instead of executing it.
+      if (
+        agentTaskResult.handoff?.toolName === "makeademo_validate_preparation"
+      ) {
+        await controlState.requestValidation(agentTaskResult.handoff.input);
+      }
+      if (
         agentTaskResult.handoff?.toolName ===
           "makeademo_dependency_request_install" ||
         agentTaskResult.handoff?.toolName === "makeademo_install_dependencies"
-          ? agentTaskResult.handoff.input
-          : await this.readDependencyInstallRequestWithDeadline(
-              handle.workspace,
-              deadlineAt,
-            );
-      if (
-        typeof dependencyInstallRequest === "object" &&
-        dependencyInstallRequest !== null &&
-        "status" in dependencyInstallRequest &&
-        dependencyInstallRequest.status === "timed-out"
       ) {
-        return requestArtifactReadTimeoutFailure(
-          "dependency install request",
-          dependencyInstallRequest.timeoutMs,
+        await controlState.requestDependencyInstall(
+          agentTaskResult.handoff.input,
         );
       }
-      const dependencyRequest = dependencyInstallRequest as
-        | DependencyInstallRequest
-        | undefined;
+
+      const validationRequest = controlState.takeValidationRequest();
+      if (validationRequest !== undefined) {
+        const validationOutcome = await this.processValidationRequest({
+          attempt,
+          canExecuteRetry: attempt + 1 < maximumAgentTaskTurns,
+          agentSession,
+          controlState,
+          deadlineAt,
+          handle,
+          input,
+          baselineSourceControlledPaths,
+          validationRepairAttempts,
+          validationRequest,
+        });
+        if (validationOutcome.status === "retry") {
+          validationRepairAttempts += 1;
+          prompt = validationOutcome.prompt;
+          continue;
+        }
+        if (validationOutcome.status === "timeout") {
+          return this.timeoutPreparation(
+            handle,
+            validationOutcome.reason,
+            this.timeoutMetadataForDeadline(hardDeadlineAt),
+          );
+        }
+        return validationOutcome.result;
+      }
+
+      const dependencyRequest = controlState.takeDependencyInstallRequest();
       if (dependencyRequest !== undefined) {
         const dependencyDecision = evaluateDependencyNetworkRequest({
           command: dependencyRequest.command,
@@ -532,16 +465,6 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
           );
         }
         const installResult = installRun.value;
-        const clearDependencyInstallRequestRun = await raceWithTimeout(
-          clearDependencyInstallRequest(handle.workspace),
-          Math.max(1, deadlineAt - Date.now()),
-        );
-        if (clearDependencyInstallRequestRun.status !== "succeeded") {
-          return this.timeoutPreparation(
-            handle,
-            clearDependencyInstallRequestRun.reason,
-          );
-        }
         await this.writeSandboxLog(handle.workspace, {
           event: "dependency-install-finished",
           exitCode: installResult.exitCode,
@@ -574,84 +497,13 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         continue;
       }
 
-      const validationRequestResult =
-        await this.readRequestArtifactWithDeadline({
-          artifactName: "validation request",
-          deadlineAt,
-          eventPrefix: "validation-request-read",
-          read: () => readValidationRequest(handle.workspace),
-          workspace: handle.workspace,
-        });
-      if (validationRequestResult.status !== "succeeded") {
-        return requestArtifactReadTimeoutFailure(
-          "validation request",
-          validationRequestResult.timeoutMs,
-        );
-      }
-      const validationRequest = validationRequestResult.value;
-      if (validationRequest !== undefined) {
-        const validationOutcome = await this.processValidationRequest({
-          attempt,
-          canExecuteRetry: attempt + 1 < maximumAgentTaskTurns,
-          agentSession,
-          deadlineAt,
-          handle,
-          input,
-          baselineSourceControlledPaths,
-          validationRepairAttempts,
-          validationRequest,
-        });
-        if (validationOutcome.status === "retry") {
-          validationRepairAttempts += 1;
-          prompt = validationOutcome.prompt;
-          continue;
-        }
-        if (validationOutcome.status === "timeout") {
-          return this.timeoutPreparation(
-            handle,
-            validationOutcome.reason,
-            this.timeoutMetadataForDeadline(hardDeadlineAt),
-          );
-        }
-
-        return validationOutcome.result;
-      }
-
-      const preparationResultRead = await this.readRequestArtifactWithDeadline({
-        artifactName: "preparation result",
-        deadlineAt,
-        eventPrefix: "preparation-result-read",
-        read: () => readPreparationResult(handle.workspace),
-        workspace: handle.workspace,
-      });
-      if (preparationResultRead.status !== "succeeded") {
-        return requestArtifactReadTimeoutFailure(
-          "preparation result",
-          preparationResultRead.timeoutMs,
-        );
-      }
-      const preparationResult = preparationResultRead.value;
+      const preparationResult = controlState.readSubmittedResult();
       if (preparationResult !== undefined) {
         await this.writeSandboxLog(handle.workspace, {
           event: "preparation-result-found",
           status: preparationResult.status,
         });
-        const validationResultRead = await this.readRequestArtifactWithDeadline(
-          {
-            artifactName: "validation result",
-            deadlineAt,
-            eventPrefix: "validation-result-read",
-            read: () => readValidationResult(handle.workspace),
-            workspace: handle.workspace,
-          },
-        );
-        if (validationResultRead.status !== "succeeded") {
-          return requestArtifactReadTimeoutFailure(
-            "validation result",
-            validationResultRead.timeoutMs,
-          );
-        }
-        const validation = validationResultRead.value;
+        const validation = controlState.readValidation()?.validation;
         if (
           preparationResult.status === "succeeded" &&
           validation?.status === "succeeded"
@@ -669,15 +521,9 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
 
       const providerAuthFailure = readProviderAuthFailure(agentTaskResult);
       if (providerAuthFailure !== undefined) {
-        return isProviderSecretReferenceAuthFailure(providerAuthFailure) &&
-          attempt > 0
-          ? providerSecretReferenceAuthFailureResult()
-          : providerAuthFailure;
+        return providerAuthFailure;
       }
 
-      if (agentTaskResult.structuredOutput !== undefined) {
-        return agentTaskResult.structuredOutput as RepoPreparationResult;
-      }
       return agentTaskFailureResult(agentTaskResult.failure?.message);
     }
 
@@ -728,6 +574,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     baselineSourceControlledPaths: string[];
     canExecuteRetry: boolean;
     agentSession: AgentSession | undefined;
+    controlState: RepoPreparationControlState;
     deadlineAt: number;
     handle: PreparationWorkspaceHandle;
     input: RepoPreparationInput;
@@ -797,23 +644,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
       level: validation.status === "failed" ? "warn" : "info",
       status: validation.status,
     });
-    const writeValidationResultRun = await raceWithTimeout(
-      writeValidationResult(input.handle.workspace, {
-        manifest,
-        validation,
-      }),
-      Math.max(1, input.deadlineAt - Date.now()),
-    );
-    if (writeValidationResultRun.status !== "succeeded") {
-      return { reason: writeValidationResultRun.reason, status: "timeout" };
-    }
-    const clearValidationRequestRun = await raceWithTimeout(
-      clearValidationRequest(input.handle.workspace),
-      Math.max(1, input.deadlineAt - Date.now()),
-    );
-    if (clearValidationRequestRun.status !== "succeeded") {
-      return { reason: clearValidationRequestRun.reason, status: "timeout" };
-    }
+    input.controlState.recordValidation({ manifest, validation });
     const nonRetryablePreflightFailure =
       readNonRetryablePreflightFailure(validation);
     if (nonRetryablePreflightFailure !== undefined) {
@@ -881,86 +712,13 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
   ): Promise<void> {
     await writePreparationSandboxLog(this.logger, workspace, event);
   }
-
-  private async readRequestArtifactWithDeadline<T>(input: {
-    artifactName: string;
-    deadlineAt: number;
-    eventPrefix: string;
-    read: () => Promise<T>;
-    workspace: PreparationWorkspace;
-  }): Promise<
-    | { status: "succeeded"; value: T }
-    | { status: "timed-out"; timeoutMs: number }
-  > {
-    const timeoutMs = deriveRequestArtifactReadTimeoutMs(input.deadlineAt);
-    await this.writeSandboxLog(input.workspace, {
-      artifactName: input.artifactName,
-      event: `${input.eventPrefix}.started`,
-      remainingMs: input.deadlineAt - Date.now(),
-      timeoutMs,
-    });
-
-    const result = await raceWithTimeout(input.read(), timeoutMs);
-    if (result.status !== "succeeded") {
-      await this.writeSandboxLog(input.workspace, {
-        artifactName: input.artifactName,
-        event: `${input.eventPrefix}.timeout`,
-        reason: result.reason,
-        remainingMs: input.deadlineAt - Date.now(),
-        timeoutMs,
-      });
-      return { status: "timed-out", timeoutMs };
-    }
-
-    await this.writeSandboxLog(input.workspace, {
-      artifactName: input.artifactName,
-      event: `${input.eventPrefix}.finished`,
-      found: result.value !== undefined,
-      remainingMs: input.deadlineAt - Date.now(),
-      timeoutMs,
-    });
-    return { status: "succeeded", value: result.value };
-  }
-
-  private async readDependencyInstallRequestWithDeadline(
-    workspace: PreparationWorkspace,
-    deadlineAt: number,
-  ): Promise<
-    | DependencyInstallRequest
-    | undefined
-    | { status: "timed-out"; timeoutMs: number }
-  > {
-    const dependencyInstallRequestResult =
-      await this.readRequestArtifactWithDeadline({
-        artifactName: "dependency install request",
-        deadlineAt,
-        eventPrefix: "dependency-install-request-read",
-        read: () => readDependencyInstallRequest(workspace),
-        workspace,
-      });
-    if (dependencyInstallRequestResult.status !== "succeeded") {
-      return {
-        status: "timed-out",
-        timeoutMs: dependencyInstallRequestResult.timeoutMs,
-      };
-    }
-
-    return dependencyInstallRequestResult.value;
-  }
 }
 
-type AgentTaskLoopResult =
-  | RepoPreparationResult
-  | ProviderSecretReferenceAuthFailure;
+type AgentTaskLoopResult = RepoPreparationResult;
 
 type RepoPreparationResult = Awaited<
   ReturnType<RepoPreparationAgent["prepare"]>
 >;
-
-type ProviderSecretReferenceAuthFailure = {
-  blocker: string;
-  status: "provider-secret-reference-auth-failed";
-};
 
 type TimedRunResult<T> =
   | { status: "succeeded"; value: T }
@@ -1174,22 +932,6 @@ function backendToolDeadlineFailure(toolName: string) {
   };
 }
 
-function requestArtifactReadTimeoutFailure(
-  artifactName: string,
-  timeoutMs: number,
-) {
-  return {
-    assumptions: [],
-    blockers: [
-      `Repo Preparation timed out reading the ${artifactName} artifact after ${timeoutMs}ms.`,
-    ],
-    status: "failed" as const,
-    suggestedChanges: [
-      "Retry Repo Preparation in a fresh Daytona workspace; report this MakeADemo infrastructure failure if it repeats.",
-    ],
-  };
-}
-
 function toolPayloadProtocolFailure(reason: string) {
   return {
     assumptions: [],
@@ -1205,14 +947,7 @@ function toolPayloadProtocolFailure(reason: string) {
 
 function readProviderAuthFailure(
   result: Pick<AgentTaskRunResult, "failure">,
-): ProviderSecretReferenceAuthFailure | RepoPreparationResult | undefined {
-  if (result.failure?.category === "provider-auth-secret-reference") {
-    return {
-      blocker:
-        "Agent provider authentication failed because Daytona supplied a secret reference instead of the provider API key.",
-      status: "provider-secret-reference-auth-failed",
-    };
-  }
+): RepoPreparationResult | undefined {
   return result.failure?.category === "provider-auth-invalid"
     ? providerInvalidApiKeyFailureResult()
     : undefined;
@@ -1239,28 +974,6 @@ function agentTaskFailureResult(
   };
 }
 
-function isProviderSecretReferenceAuthFailure(
-  result: AgentTaskLoopResult,
-): result is ProviderSecretReferenceAuthFailure {
-  return (
-    "status" in result &&
-    result.status === "provider-secret-reference-auth-failed"
-  );
-}
-
-function providerSecretReferenceAuthFailureResult(): RepoPreparationResult {
-  return {
-    assumptions: [],
-    blockers: [
-      "Agent provider authentication failed because Daytona supplied a secret reference instead of the provider API key.",
-    ],
-    status: "failed",
-    suggestedChanges: [
-      "Retry Repo Preparation after verifying the Daytona provider secret injection.",
-    ],
-  };
-}
-
 function providerInvalidApiKeyFailureResult(): RepoPreparationResult {
   return {
     assumptions: [],
@@ -1272,21 +985,6 @@ function providerInvalidApiKeyFailureResult(): RepoPreparationResult {
       "Verify the configured provider API key before retrying Repo Preparation.",
     ],
   };
-}
-
-function deriveRequestArtifactReadTimeoutMs(deadlineAt: number): number {
-  const remainingMs = deadlineAt - Date.now();
-  if (remainingMs <= minimumBackendToolBudgetMs) {
-    return Math.max(1, remainingMs);
-  }
-
-  return Math.min(
-    requestArtifactReadMaxTimeoutMs,
-    Math.max(
-      requestArtifactReadMinTimeoutMs,
-      remainingMs - minimumBackendToolBudgetMs,
-    ),
-  );
 }
 
 function createValidationHandoffFailure(

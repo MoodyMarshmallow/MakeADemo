@@ -1,8 +1,3 @@
-import { createGitCloneCommand } from "../src/server/pipeline/03-repo-preparation/git-clone-command";
-import {
-  createOpenCodeProviderSandboxSecrets,
-  ensureOpenCodeProviderDaytonaSecret,
-} from "../src/server/shared/integrations/daytona/daytona-opencode-provider-secrets";
 import { DaytonaSdkPreparationWorkspaceProvider } from "../src/server/shared/integrations/daytona/daytona-sdk-preparation-workspace-provider";
 
 const snapshot = process.env.MAKEADEMO_DAYTONA_SNAPSHOT;
@@ -31,9 +26,6 @@ if (
   );
 }
 
-const providerSecrets =
-  await readConfiguredOpenCodeProviderSecrets(daytonaApiKey);
-
 console.log(`Creating Daytona workspace from snapshot ${snapshot}...`);
 const provider = new DaytonaSdkPreparationWorkspaceProvider({
   snapshot,
@@ -55,47 +47,6 @@ try {
     },
   );
   assertCommandSucceeded("parent Git/CA trust", parentGitTrust);
-
-  console.log(
-    "Verifying pinned OpenCode installation and project-config quarantine...",
-  );
-  const opencodeVerification = await handle.workspace.execute(
-    [
-      "opencode --version",
-      'test "$(opencode --version)" = "1.18.3"',
-      "rm -rf /tmp/makeademo-opencode-quarantine",
-      "mkdir -p /tmp/makeademo-opencode-quarantine/project/.opencode/plugins /tmp/makeademo-opencode-quarantine/explicit-config /tmp/makeademo-opencode-quarantine/empty-config",
-      'printf \'{"model":"PROJECT_CONFIG_SENTINEL","plugin":["/tmp/makeademo-opencode-quarantine/project-plugin.ts"]}\' > /tmp/makeademo-opencode-quarantine/project/opencode.json',
-      'printf \'{"model":"PROJECT_JSONC_SENTINEL","plugin":["/tmp/makeademo-opencode-quarantine/project-plugin.ts"]}\' > /tmp/makeademo-opencode-quarantine/project/opencode.jsonc',
-      'printf \'import { writeFileSync } from "node:fs"; writeFileSync("/tmp/makeademo-project-config-plugin.marker", "PROJECT_CONFIG_PLUGIN_SENTINEL"); export default async () => ({});\' > /tmp/makeademo-opencode-quarantine/project-plugin.ts',
-      'printf \'import { writeFileSync } from "node:fs"; writeFileSync("/tmp/makeademo-project-auto-plugin.marker", "PROJECT_AUTO_PLUGIN_SENTINEL"); export default async () => ({});\' > /tmp/makeademo-opencode-quarantine/project/.opencode/plugins/hostile.ts',
-      'printf \'{"model":"EXPLICIT_CONFIG_SENTINEL","plugin":["/tmp/makeademo-opencode-quarantine/explicit-plugin.ts"]}\' > /tmp/makeademo-opencode-quarantine/explicit-config/opencode.json',
-      'printf \'import { writeFileSync } from "node:fs"; writeFileSync("/tmp/makeademo-explicit-plugin.marker", "EXPLICIT_PLUGIN_SENTINEL"); export default async () => ({});\' > /tmp/makeademo-opencode-quarantine/explicit-plugin.ts',
-      "rm -f /tmp/makeademo-project-config-plugin.marker /tmp/makeademo-project-auto-plugin.marker /tmp/makeademo-explicit-plugin.marker",
-      "cd /tmp/makeademo-opencode-quarantine/project",
-      "OPENCODE_CONFIG_DIR=/tmp/makeademo-opencode-quarantine/empty-config opencode debug config > /tmp/makeademo-opencode-quarantine/debug-config-unquarantined.json",
-      "test -e /tmp/makeademo-project-config-plugin.marker",
-      "grep -q PROJECT_CONFIG_PLUGIN_SENTINEL /tmp/makeademo-project-config-plugin.marker",
-      "test -e /tmp/makeademo-project-auto-plugin.marker",
-      "grep -q PROJECT_AUTO_PLUGIN_SENTINEL /tmp/makeademo-project-auto-plugin.marker",
-      "rm -f /tmp/makeademo-project-config-plugin.marker /tmp/makeademo-project-auto-plugin.marker",
-      "OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_CONFIG_DIR=/tmp/makeademo-opencode-quarantine/explicit-config opencode debug config > /tmp/makeademo-opencode-quarantine/debug-config.json",
-      "! grep -q PROJECT_CONFIG_SENTINEL /tmp/makeademo-opencode-quarantine/debug-config.json",
-      "! grep -q PROJECT_JSONC_SENTINEL /tmp/makeademo-opencode-quarantine/debug-config.json",
-      "grep -q EXPLICIT_CONFIG_SENTINEL /tmp/makeademo-opencode-quarantine/debug-config.json",
-      "! test -e /tmp/makeademo-project-config-plugin.marker",
-      "! test -e /tmp/makeademo-project-auto-plugin.marker",
-      "test -e /tmp/makeademo-explicit-plugin.marker",
-      "grep -q EXPLICIT_PLUGIN_SENTINEL /tmp/makeademo-explicit-plugin.marker",
-    ].join(" && "),
-  );
-  assertCommandSucceeded(
-    "pinned OpenCode installation and project-config quarantine",
-    opencodeVerification,
-  );
-  if (!opencodeVerification.stdout.includes("1.18.3")) {
-    throw new Error("Prepared image did not expose OpenCode 1.18.3.");
-  }
 
   console.log("Verifying parent submitted-project toolchain inspector...");
   const inspector = await handle.workspace.execute(
@@ -212,57 +163,6 @@ try {
     }
   }
 
-  if (providerSecrets === undefined) {
-    console.log(
-      "Skipping secret-mounted parent Git/CA trust: no Daytona provider secret config available.",
-    );
-  } else {
-    console.log(
-      "Creating Daytona workspace with configured provider secrets mounted...",
-    );
-    const secretMountedProvider = new DaytonaSdkPreparationWorkspaceProvider({
-      secrets: providerSecrets,
-      snapshot,
-    });
-    const secretMountedHandle = await secretMountedProvider.create();
-    try {
-      console.log(
-        `Printing secret-mounted parent Git/CA diagnostics in ${secretMountedHandle.id}...`,
-      );
-      await secretMountedHandle.workspace.execute(
-        createSecretMountedGitCaDiagnosticsCommand(),
-        {
-          onStderr: (chunk) => process.stderr.write(chunk),
-          onStdout: (chunk) => process.stdout.write(chunk),
-        },
-      );
-      console.log(
-        `Verifying secret-mounted parent Git/CA trust in ${secretMountedHandle.id}...`,
-      );
-      const secretMountedParentGitTrust =
-        await secretMountedHandle.workspace.execute(
-          createGitCloneCommand({
-            destinationPath: "/tmp/makeademo-secret-mounted-git-ca-trust",
-            repoUrl: "https://github.com/octocat/Hello-World.git",
-            resetCommand: "rm -rf /tmp/makeademo-secret-mounted-git-ca-trust",
-          }),
-          {
-            onStderr: (chunk) => process.stderr.write(chunk),
-            onStdout: (chunk) => process.stdout.write(chunk),
-          },
-        );
-      assertCommandSucceeded(
-        "secret-mounted parent Git/CA trust",
-        secretMountedParentGitTrust,
-      );
-    } finally {
-      console.log(
-        `Releasing and archiving secret-mounted Daytona workspace ${secretMountedHandle.id}...`,
-      );
-      await secretMountedHandle.release();
-    }
-  }
-
   console.log("Prepared Daytona image verification passed.");
 } finally {
   try {
@@ -276,57 +176,6 @@ try {
     console.log(`Releasing and archiving Daytona workspace ${handle.id}...`);
     await handle.release();
   }
-}
-
-async function readConfiguredOpenCodeProviderSecrets(
-  daytonaApiKey: string,
-): Promise<Record<string, string> | undefined> {
-  const configuredOpenAiSecretName =
-    process.env.MAKEADEMO_OPENAI_DAYTONA_SECRET_NAME?.trim();
-  const hasLocalOpenAiProviderConfig =
-    process.env.OPENAI_API_KEY !== undefined &&
-    process.env.OPENAI_API_KEY.trim().length > 0;
-
-  if (hasLocalOpenAiProviderConfig) {
-    const providerSecretName = await ensureOpenCodeProviderDaytonaSecret({
-      daytonaApiKey,
-      providerID: "openai",
-    });
-
-    return createOpenCodeProviderSandboxSecrets({
-      providerID: "openai",
-      providerSecretName,
-    });
-  }
-
-  if (
-    configuredOpenAiSecretName === undefined ||
-    configuredOpenAiSecretName.length === 0
-  ) {
-    return undefined;
-  }
-
-  return createOpenCodeProviderSandboxSecrets({
-    providerID: "openai",
-    providerSecretName: configuredOpenAiSecretName,
-  });
-}
-
-function createSecretMountedGitCaDiagnosticsCommand(): string {
-  return `timeout 5s sh -lc ${shellQuote(
-    [
-      "printf 'makeademo_secret_mounted_git_ca_diagnostics=1\\n'",
-      'for makeademo_ca_env_name in GIT_SSL_CAINFO SSL_CERT_FILE CURL_CA_BUNDLE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS; do eval "makeademo_ca_env_value=\\${$makeademo_ca_env_name-}"; if test -n "$makeademo_ca_env_value"; then case "$makeademo_ca_env_value" in /*) printf \'ca_env_path_%s=\' "$makeademo_ca_env_name"; printf \'%s\\n\' "$makeademo_ca_env_value" | cut -c 1-500 ;; *) printf \'ca_env_name_%s=set\\n\' "$makeademo_ca_env_name" ;; esac; fi; done',
-      "ls -ld /etc/openshell-tls 2>&1 | cut -c 1-500 || true",
-      "ls -l /etc/openshell-tls/ca-bundle.pem /etc/openshell-tls/openshell-ca.pem 2>/dev/null | cut -c 1-500 || true",
-      "readlink -f /etc/openshell-tls/ca-bundle.pem 2>&1 | cut -c 1-500 || true",
-      "git config --show-origin --get http.sslCAInfo 2>&1 | cut -c 1-500 || true",
-    ].join("\n"),
-  )}`;
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function assertCommandSucceeded(

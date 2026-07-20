@@ -457,34 +457,34 @@ function workspaceHandle(
     ...(helperOptions.commandOutputScheduleByRun ?? []),
   ];
   const workspace: PreparationWorkspace = {
-    async execute(command, commandOptions) {
-      if (command === "recording-agent-turn") {
-        agentAttempt += 1;
-        if (agentAttempt === 1 && helperOptions.firstAgentFailure) {
-          return {
-            exitCode: 1,
-            stderr: helperOptions.firstAgentFailure.stderr,
-            stdout: helperOptions.firstAgentFailure.stdout,
-          };
-        }
-        latestArtifact = artifacts.shift();
-        const schedule = commandOutputScheduleByRun.shift();
-        if (schedule !== undefined) {
-          for (const output of schedule) {
-            await new Promise((resolve) => setTimeout(resolve, output.afterMs));
-            if (output.channel === "stdout") {
-              commandOptions?.onStdout?.(output.chunk);
-            } else {
-              commandOptions?.onStderr?.(output.chunk);
-            }
-          }
-        } else {
-          commandOptions?.onStdout?.("script generation output");
-          commandOptions?.onStderr?.("script generation warning");
-        }
-        return { exitCode: 0, stderr: "", stdout: "generated" };
+    async executeAgentCommand(command, commandOptions) {
+      expect(command).toBe("recording-agent-turn");
+      agentAttempt += 1;
+      if (agentAttempt === 1 && helperOptions.firstAgentFailure) {
+        return {
+          exitCode: 1,
+          stderr: helperOptions.firstAgentFailure.stderr,
+          stdout: helperOptions.firstAgentFailure.stdout,
+        };
       }
-
+      latestArtifact = artifacts.shift();
+      const schedule = commandOutputScheduleByRun.shift();
+      if (schedule !== undefined) {
+        for (const output of schedule) {
+          await new Promise((resolve) => setTimeout(resolve, output.afterMs));
+          if (output.channel === "stdout") {
+            commandOptions?.onStdout?.(output.chunk);
+          } else {
+            commandOptions?.onStderr?.(output.chunk);
+          }
+        }
+      } else {
+        commandOptions?.onStdout?.("script generation output");
+        commandOptions?.onStderr?.("script generation warning");
+      }
+      return { exitCode: 0, stderr: "", stdout: "generated" };
+    },
+    async execute(command, commandOptions) {
       if (command.includes("preparation-manifest.json")) {
         const transientSocketClosures =
           helperOptions.transientSocketClosureArtifactReads;

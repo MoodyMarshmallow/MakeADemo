@@ -69,6 +69,16 @@ export interface PreparationWorkspace {
     options?: PreparationWorkspaceExecuteOptions,
   ): Promise<PreparationWorkspaceCommandResult>;
   /**
+   * Executes an agent-authored shell command as the image's unprivileged
+   * workspace user. Implementations must keep the trusted root filesystem and
+   * helper binaries non-writable, expose no backend environment, and make only
+   * `/workspace` persistent writable state available to the command.
+   */
+  executeAgentCommand?(
+    command: string,
+    options?: Omit<PreparationWorkspaceExecuteOptions, "env">,
+  ): Promise<PreparationWorkspaceCommandResult>;
+  /**
    * Executes submitted repo code inside the submitted-code runtime boundary.
    * Implementations must not run these commands in the agent workspace and must
    * apply submitted-code environment and network policy before execution.
@@ -94,6 +104,11 @@ export interface PreparationWorkspace {
     options?: PreparationWorkspaceExecuteOptions,
   ): Promise<PreparationWorkspaceCommandResult>;
   getPreviewUrl(port: number): Promise<string>;
+  /**
+   * Transfers the cloned repository tree to the unprivileged agent user
+   * without dereferencing submitted symlinks. Must run before agent tools.
+   */
+  prepareForAgent?(): Promise<void>;
   /**
    * Emits structured audit logs inside the sandbox. Implementations must keep a
    * durable copy available from workspace storage and may additionally relay the

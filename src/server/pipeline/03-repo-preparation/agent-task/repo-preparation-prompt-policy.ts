@@ -8,7 +8,7 @@ import type { readPreparationManifest } from "../preparation-manifest";
 import type { PreparationWorkspaceCommandResult } from "../preparation-workspace.interface";
 import type { RepoPreparationInput } from "../repo-preparation-agent.interface";
 import {
-  makeADemoArtifactDirectory,
+  preparationManifestDirectory,
   preparationManifestPath,
 } from "./repo-preparation-artifact-handoff";
 
@@ -208,7 +208,7 @@ function createPreparationManifestGuidance(
     "",
     "### File-Writing Example",
     "```bash",
-    `mkdir -p ${makeADemoArtifactDirectory}`,
+    `mkdir -p ${preparationManifestDirectory}`,
     `cat > ${preparationManifestPath} <<'JSON'`,
     JSON.stringify(
       {

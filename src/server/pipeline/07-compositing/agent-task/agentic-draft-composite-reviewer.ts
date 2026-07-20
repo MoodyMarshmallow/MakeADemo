@@ -3,6 +3,7 @@ import { basename, join } from "node:path";
 
 import type { AgentTaskRunner } from "../../../agent-harness/agent-session-runner.interface";
 import type { PipelineEventLogger } from "../../../shared/logging/pipeline-event-logger";
+import { createRepoPreparationAgentWorkspace } from "../../03-repo-preparation/agent-task/repo-preparation-agent-workspace";
 import type { PreparationWorkspaceUploadOptions } from "../../03-repo-preparation/preparation-workspace.interface";
 import type {
   DraftCompositeReviewDecision,
@@ -96,7 +97,7 @@ export class AgenticDraftCompositeReviewer {
       hardDeadlineAt,
       inactivityTimeoutMs: this.options.timeoutMs,
       hardTimeoutMs: this.options.hardTimeoutMs,
-      workspace: workspace.workspace,
+      workspace: createRepoPreparationAgentWorkspace(workspace.workspace),
     });
     if (result.exitCode !== 0) {
       throw new Error(

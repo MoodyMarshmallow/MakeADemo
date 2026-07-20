@@ -3,7 +3,7 @@ import type { AgentMeaningfulActivity } from "./agent-session-timeout";
 
 /** Provider-neutral command execution available to an agent turn. */
 export interface AgentSessionWorkspace {
-  cancelActiveCommands?: () => Promise<void> | void;
+  cancelActiveCommands?: (() => Promise<void> | void) | undefined;
   execute(
     command: string,
     options: {
@@ -13,7 +13,9 @@ export interface AgentSessionWorkspace {
       timeoutMs: number;
     },
   ): Promise<{ exitCode: number; stderr: string; stdout: string }>;
-  writeSandboxLog?: (entry: Record<string, unknown>) => Promise<void> | void;
+  writeSandboxLog?:
+    | ((entry: Record<string, unknown>) => Promise<void> | void)
+    | undefined;
 }
 
 export type AgentSessionProfile = {
@@ -21,12 +23,31 @@ export type AgentSessionProfile = {
   label: string;
   modelID: string;
   providerID: string;
+  thinkingLevel: "high" | "low" | "medium" | "minimal" | "off" | "xhigh";
 };
 
 export type AgentToolCall = {
   input: unknown;
   name: string;
   status?: string;
+};
+
+/** Provider-neutral schema and execution contract for a Pipeline Stage tool. */
+export type AgentToolDefinition = {
+  args: Readonly<
+    Record<
+      string,
+      {
+        description: string;
+        optional?: boolean;
+        type: "enum" | "string" | "string[]";
+        values?: readonly string[];
+      }
+    >
+  >;
+  description: string;
+  execute: (args: Record<string, unknown>) => Promise<string>;
+  name: string;
 };
 
 type AgentToolDecodeResult<T> =
@@ -43,26 +64,26 @@ export type AgentToolProtocol<T> = {
 
 export type AgentSessionRunInput<T = never> = {
   attempt: number;
-  dangerouslySkipPermissions?: boolean;
   hardDeadlineAt: number;
   hardTimeoutMs: number;
   inactivityLabel?: string;
   inactivityTimeoutMs: number;
   profile: AgentSessionProfile;
   taskPrompt: string;
+  /** Stage-owned tools for this turn; never inferred from provider configuration. */
+  tools?: readonly AgentToolDefinition[];
   onStderr?: (chunk: string) => void;
   onStdout?: (chunk: string) => void;
   session?: AgentSession;
   stage: string;
   toolProtocol?: AgentToolProtocol<T>;
-  toolScope?: string;
   workspace: AgentSessionWorkspace;
 };
 
 /** Provider-neutral input supplied by a Pipeline Stage to a bound task runner. */
 export type AgentTaskRunInput<T = never> = Omit<
   AgentSessionRunInput<T>,
-  "dangerouslySkipPermissions" | "onStderr" | "onStdout" | "profile"
+  "onStderr" | "onStdout" | "profile"
 >;
 
 export type AgentSessionRunResult<T = never> = {
@@ -120,6 +141,8 @@ export type AgentTaskRunResult<T = never> = {
 
 /** Runs one provider-neutral agent turn against an opaque retained session. */
 export interface AgentSessionRunner {
+  /** Releases retained provider sessions and harness-owned transports. */
+  dispose?(session?: AgentSession): Promise<void> | void;
   run<T = never>(
     input: AgentSessionRunInput<T>,
   ): Promise<AgentSessionRunResult<T>>;

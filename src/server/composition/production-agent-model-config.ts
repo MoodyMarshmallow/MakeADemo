@@ -12,10 +12,13 @@ export function resolveProductionAgentModelConfig(
     providerID?: string;
   } = {},
 ): ProductionAgentModelConfig {
-  return {
-    modelID: input.modelID ?? defaultAgentModel.modelID,
-    providerID: input.providerID ?? defaultAgentModel.providerID,
-  };
+  const providerID = input.providerID ?? defaultAgentModel.providerID;
+  if (providerID !== "openai") {
+    throw new Error(
+      `Unsupported production agent provider '${providerID}'. Only 'openai' is configured.`,
+    );
+  }
+  return { modelID: input.modelID ?? defaultAgentModel.modelID, providerID };
 }
 
 /** Resolves worker provider/model overrides without leaking env policy into stages. */

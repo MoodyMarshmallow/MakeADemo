@@ -1,4 +1,7 @@
-import { draftCompositeReviewAgentModel } from "../agent-harness/agent-model-defaults";
+import {
+  defaultAgentModel,
+  draftCompositeReviewAgentModel,
+} from "../agent-harness/agent-model-defaults";
 import type { AgentSessionProfile } from "../agent-harness/agent-session-runner.interface";
 
 export type ProductionAgentProfiles = {
@@ -21,22 +24,26 @@ export function createProductionAgentProfiles(input: {
       label: "Capture Path repair agent",
       modelID: input.modelID,
       providerID: input.providerID,
+      thinkingLevel: defaultAgentModel.reasoningEffort,
     },
     draftCompositeReview: {
       label: "Draft Composite review agent",
       modelID: draftCompositeReviewAgentModel.modelID,
       providerID: draftCompositeReviewAgentModel.providerID,
+      thinkingLevel: draftCompositeReviewAgentModel.reasoningEffort,
     },
     repoPreparation: {
       label: "Repo Preparation",
       modelID: input.modelID,
       providerID: input.providerID,
+      thinkingLevel: defaultAgentModel.reasoningEffort,
     },
     scriptGeneration: {
       countCompletedInspectionTools: true,
       label: "Script Generation agent",
       modelID: input.modelID,
       providerID: input.providerID,
+      thinkingLevel: defaultAgentModel.reasoningEffort,
     },
   };
 }

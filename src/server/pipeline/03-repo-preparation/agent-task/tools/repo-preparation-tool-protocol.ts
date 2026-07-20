@@ -9,8 +9,6 @@ export { repoPreparationToolNames } from "./repo-preparation-tool-definitions";
 type RepoPreparationToolName = (typeof repoPreparationToolNames)[number];
 
 /** Opaque configuration key selected by composition, not by a provider adapter. */
-export const repoPreparationAgentToolScope = "repo-preparation";
-
 export type RepoPreparationToolHandoff =
   | {
       input: { command: string };

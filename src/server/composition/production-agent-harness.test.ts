@@ -19,7 +19,7 @@ describe("createProductionAgentHarness", () => {
           providerID: "openai",
         }),
         daytonaApiKey: "test-daytona-api-key",
-        providerSecretName: "OPENAI_API_KEY",
+        openaiApiKey: "test-openai-api-key",
       });
 
       expect(fetch).not.toHaveBeenCalled();
@@ -36,19 +36,15 @@ describe("createProductionAgentHarness", () => {
     }
   });
 
-  it("binds Repo Preparation permissions separately from other agent tasks and routes output by task", async () => {
-    const calls: Array<{
-      dangerouslySkipPermissions?: boolean;
-      profile: { label: string };
-    }> = [];
+  it("binds agent profiles and routes output by task", async () => {
+    const calls: Array<{ profile: { label: string } }> = [];
     const repoOutput: string[] = [];
     const sharedOutput: string[] = [];
+    const dispose = vi.fn(async () => undefined);
     const agentSessionRunner: AgentSessionRunner = {
+      dispose,
       async run(input) {
         calls.push({
-          ...(input.dangerouslySkipPermissions === undefined
-            ? {}
-            : { dangerouslySkipPermissions: input.dangerouslySkipPermissions }),
           profile: { label: input.profile.label },
         });
         input.onStdout?.("provider output");
@@ -64,7 +60,6 @@ describe("createProductionAgentHarness", () => {
       daytonaApiKey: "test-daytona-api-key",
       onAgentStandard: (chunk) => sharedOutput.push(chunk),
       onRepoPreparationStandard: (chunk) => repoOutput.push(chunk),
-      providerSecretName: "OPENAI_API_KEY",
     });
 
     const taskInput = {
@@ -80,22 +75,19 @@ describe("createProductionAgentHarness", () => {
     await harness.agentTaskRunners.scriptGeneration.run(taskInput);
     await harness.agentTaskRunners.capturePathRepair.run(taskInput);
     await harness.agentTaskRunners.draftCompositeReview.run(taskInput);
+    await harness.disposeAgentSessions();
 
     expect(calls).toEqual([
       {
-        dangerouslySkipPermissions: false,
         profile: { label: "Repo Preparation" },
       },
       {
-        dangerouslySkipPermissions: true,
         profile: { label: "Script Generation agent" },
       },
       {
-        dangerouslySkipPermissions: true,
         profile: { label: "Capture Path repair agent" },
       },
       {
-        dangerouslySkipPermissions: true,
         profile: { label: "Draft Composite review agent" },
       },
     ]);
@@ -105,5 +97,78 @@ describe("createProductionAgentHarness", () => {
       "provider output",
       "provider output",
     ]);
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies provider credential failures for every production task runner", async () => {
+    const agentSessionRunner: AgentSessionRunner = {
+      async run() {
+        return {
+          exitCode: 1,
+          providerError: "401 Unauthorized",
+          stderr: "",
+          stdout: "",
+        };
+      },
+    };
+    const harness = createProductionAgentHarness({
+      agentSessionRunner,
+      agentModel: resolveProductionAgentModelConfig({
+        modelID: "gpt-5.6",
+        providerID: "openai",
+      }),
+      daytonaApiKey: "test-daytona-api-key",
+    });
+    const taskInput = {
+      attempt: 1,
+      hardDeadlineAt: Date.now() + 1_000,
+      hardTimeoutMs: 1_000,
+      inactivityTimeoutMs: 1_000,
+      stage: "test",
+      taskPrompt: "task",
+      workspace: {} as never,
+    };
+
+    for (const runner of Object.values(harness.agentTaskRunners)) {
+      await expect(runner.run(taskInput)).resolves.toMatchObject({
+        failure: { category: "provider-auth-invalid" },
+      });
+    }
+  });
+
+  it("keeps unrelated provider failures generic for every production task runner", async () => {
+    const agentSessionRunner: AgentSessionRunner = {
+      async run() {
+        return {
+          exitCode: 1,
+          providerError: "rate limit exceeded",
+          stderr: "",
+          stdout: "",
+        };
+      },
+    };
+    const harness = createProductionAgentHarness({
+      agentSessionRunner,
+      agentModel: resolveProductionAgentModelConfig({
+        modelID: "gpt-5.6",
+        providerID: "openai",
+      }),
+      daytonaApiKey: "test-daytona-api-key",
+    });
+    const taskInput = {
+      attempt: 1,
+      hardDeadlineAt: Date.now() + 1_000,
+      hardTimeoutMs: 1_000,
+      inactivityTimeoutMs: 1_000,
+      stage: "test",
+      taskPrompt: "task",
+      workspace: {} as never,
+    };
+
+    for (const runner of Object.values(harness.agentTaskRunners)) {
+      await expect(runner.run(taskInput)).resolves.toMatchObject({
+        failure: { category: "provider" },
+      });
+    }
   });
 });

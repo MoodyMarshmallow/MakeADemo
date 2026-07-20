@@ -1,9 +1,29 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentSessionRunResult } from "./agent-session-runner.interface";
+import { AgentSessionTimeoutError } from "./agent-session-timeout";
 import { bindAgentTaskRunner } from "./bind-agent-task-runner";
+import { classifyProviderFailure } from "./provider-failure-classifier";
 
 describe("bindAgentTaskRunner", () => {
+  it.each([
+    "401 Unauthorized",
+    "invalid API key",
+    "The API key is incorrect",
+    "authentication failed",
+  ])("classifies provider credential rejection: %s", (providerError) => {
+    expect(classifyProviderFailure(providerError)).toBe(
+      "provider-auth-invalid",
+    );
+  });
+
+  it.each([
+    "rate limit exceeded",
+    "temporary upstream failure",
+    "request timed out",
+  ])("keeps unrelated provider failures generic: %s", (providerError) => {
+    expect(classifyProviderFailure(providerError)).toBe("provider");
+  });
   it.each([
     ["invalid API key", "invalid_api_key", "provider-auth-invalid"],
     [
@@ -32,71 +52,52 @@ describe("bindAgentTaskRunner", () => {
               return "provider-auth-invalid" as const;
             return "provider" as const;
           },
-          dangerouslySkipPermissions: true,
-          profile: { label: "test", modelID: "model", providerID: "provider" },
+          profile: {
+            label: "test",
+            modelID: "model",
+            providerID: "provider",
+            thinkingLevel: "medium",
+          },
         },
       );
 
-      const result = await runner.run({
-        attempt: 1,
-        hardDeadlineAt: Date.now() + 1000,
-        hardTimeoutMs: 1000,
-        inactivityTimeoutMs: 1000,
-        stage: "test",
-        taskPrompt: "task",
-        workspace: {} as never,
-      });
+      const result = await runner.run(taskInput());
 
       expect(result.failure?.category).toBe(category);
     },
   );
 
-  it("keeps provider settings in the bound runner and out of task input", async () => {
-    const run = vi.fn(
-      async (input): Promise<AgentSessionRunResult> => ({
-        ...(() => {
-          input.onStdout?.("provider text");
-          return {};
-        })(),
+  it("keeps provider settings in the bound runner and emits semantic output events", async () => {
+    const run = vi.fn(async (input): Promise<AgentSessionRunResult> => {
+      input.onStdout?.("provider text");
+      return {
         exitCode: 0,
+        latestToolName: "submit-preparation",
         stderr: "",
-        stdout: JSON.stringify({
-          dangerouslySkipPermissions: input.dangerouslySkipPermissions,
-          modelID: input.profile.modelID,
-          providerID: input.profile.providerID,
-        }),
-      }),
-    );
+        stdout: "",
+      };
+    });
+    const auditEvents: unknown[] = [];
     const runner = bindAgentTaskRunner({ run } as never, {
-      dangerouslySkipPermissions: true,
+      onEvent: (event) => auditEvents.push(event),
       profile: {
         label: "Script Generation",
         modelID: "model",
         providerID: "provider",
+        thinkingLevel: "high",
       },
     });
 
-    const taskInput = {
-      attempt: 1,
-      hardDeadlineAt: Date.now() + 1_000,
-      hardTimeoutMs: 1_000,
-      inactivityTimeoutMs: 1_000,
-      stage: "script-generation",
-      taskPrompt: "bounded task",
-      workspace: {} as never,
-    };
-    const result = await runner.run(taskInput);
+    const result = await runner.run(taskInput());
 
     expect(run).toHaveBeenCalledWith(
       expect.objectContaining({
-        dangerouslySkipPermissions: true,
         profile: expect.objectContaining({
           modelID: "model",
           providerID: "provider",
         }),
       }),
     );
-    expect(result).not.toHaveProperty("stdout");
     expect(result.events).toEqual(
       expect.arrayContaining([
         { channel: "standard", kind: "output", length: 13 },
@@ -105,178 +106,56 @@ describe("bindAgentTaskRunner", () => {
           event: "agent-task.finished",
           kind: "audit",
         }),
+        expect.objectContaining({
+          event: "agent-task.tool-used",
+          kind: "audit",
+          metadata: { tool: "submit-preparation" },
+        }),
       ]),
     );
+    expect(auditEvents).toEqual(result.events);
   });
 
-  it("prepares a scoped workspace once before the first task execution", async () => {
-    const order: string[] = [];
-    const workspace = {} as never;
-    const run = vi.fn(async (): Promise<AgentSessionRunResult> => {
-      order.push("run");
-      return { exitCode: 0, stderr: "", stdout: "" };
-    });
-    const runner = bindAgentTaskRunner({ run } as never, {
-      dangerouslySkipPermissions: true,
-      prepareWorkspace: async ({
-        timeoutMs,
-        toolScope,
-        workspace: preparedWorkspace,
-      }) => {
-        expect(toolScope).toBe("repo-preparation");
-        expect(preparedWorkspace).toBe(workspace);
-        expect(timeoutMs).toBe(1_000);
-        order.push("prepare");
+  it("normalizes Agent Harness timeouts as task failures", async () => {
+    const runner = bindAgentTaskRunner(
+      {
+        run: async () => {
+          throw new AgentSessionTimeoutError(
+            {
+              activity: { read: () => undefined },
+              hardTimeoutMs: 1_000,
+              inactivityTimeoutMs: 100,
+              label: "test",
+            },
+            "inactivity",
+          );
+        },
+      } as never,
+      {
+        profile: {
+          label: "test",
+          modelID: "model",
+          providerID: "provider",
+          thinkingLevel: "medium",
+        },
       },
-      profile: { label: "test", modelID: "model", providerID: "provider" },
-    });
-    const input = {
-      attempt: 1,
-      hardDeadlineAt: Date.now() + 1_000,
-      hardTimeoutMs: 1_000,
-      inactivityTimeoutMs: 1_000,
-      stage: "repo-preparation",
-      taskPrompt: "task",
-      toolScope: "repo-preparation",
-      workspace,
-    };
-
-    await runner.run(input);
-    await runner.run({ ...input, attempt: 2 });
-
-    expect(order).toEqual(["prepare", "run", "run"]);
-    expect(run).toHaveBeenCalledTimes(2);
-  });
-
-  it("normalizes inactivity timeout while preparing a workspace and cancels active commands", async () => {
-    vi.useFakeTimers();
-    try {
-      const cancelActiveCommands = vi.fn(() =>
-        Promise.reject(new Error("cancel failed")),
-      );
-      const workspace = { cancelActiveCommands } as never;
-      const run = vi.fn(
-        async (): Promise<AgentSessionRunResult> => ({
-          exitCode: 0,
-          stderr: "",
-          stdout: "",
-        }),
-      );
-      const runner = bindAgentTaskRunner({ run } as never, {
-        dangerouslySkipPermissions: true,
-        prepareWorkspace: async () => new Promise<void>(() => undefined),
-        profile: { label: "test", modelID: "model", providerID: "provider" },
-      });
-      const task = runner.run({
-        attempt: 1,
-        hardDeadlineAt: Date.now() + 1_000,
-        hardTimeoutMs: 1_000,
-        inactivityTimeoutMs: 20,
-        stage: "repo-preparation",
-        taskPrompt: "task",
-        toolScope: "repo-preparation",
-        workspace,
-      });
-
-      await vi.advanceTimersByTimeAsync(20);
-      const result = await task;
-
-      expect(result.failure).toMatchObject({
-        category: "timeout",
-        message: expect.stringContaining("inactivity"),
-      });
-      expect(result.events).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            event: "agent-task.timeout",
-            metadata: { timeoutKind: "inactivity" },
-          }),
-        ]),
-      );
-      expect(cancelActiveCommands).toHaveBeenCalledOnce();
-      expect(run).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("uses the hard-cap category when workspace preparation reaches the hard deadline", async () => {
-    vi.useFakeTimers();
-    try {
-      const cancelActiveCommands = vi.fn();
-      const workspace = { cancelActiveCommands } as never;
-      const run = vi.fn(
-        async (): Promise<AgentSessionRunResult> => ({
-          exitCode: 0,
-          stderr: "",
-          stdout: "",
-        }),
-      );
-      const runner = bindAgentTaskRunner({ run } as never, {
-        dangerouslySkipPermissions: true,
-        prepareWorkspace: async () => new Promise<void>(() => undefined),
-        profile: { label: "test", modelID: "model", providerID: "provider" },
-      });
-      const task = runner.run({
-        attempt: 1,
-        hardDeadlineAt: Date.now() + 20,
-        hardTimeoutMs: 20,
-        inactivityTimeoutMs: 100,
-        stage: "repo-preparation",
-        taskPrompt: "task",
-        toolScope: "repo-preparation",
-        workspace,
-      });
-
-      await vi.advanceTimersByTimeAsync(20);
-      const result = await task;
-
-      expect(result.failure).toMatchObject({
-        category: "timeout",
-        message: expect.stringContaining("hard cap"),
-      });
-      expect(cancelActiveCommands).toHaveBeenCalledOnce();
-      expect(run).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("retries workspace preparation after a failed setup without marking the workspace prepared", async () => {
-    const workspace = {} as never;
-    const prepareWorkspace = vi
-      .fn<(input: { toolScope: string; timeoutMs: number }) => Promise<void>>()
-      .mockRejectedValueOnce(new Error("setup failed"))
-      .mockResolvedValue(undefined);
-    const run = vi.fn(
-      async (): Promise<AgentSessionRunResult> => ({
-        exitCode: 0,
-        stderr: "",
-        stdout: "",
-      }),
     );
-    const runner = bindAgentTaskRunner({ run } as never, {
-      dangerouslySkipPermissions: true,
-      prepareWorkspace: async (input) => prepareWorkspace(input),
-      profile: { label: "test", modelID: "model", providerID: "provider" },
-    });
-    const input = {
-      attempt: 1,
-      hardDeadlineAt: Date.now() + 1_000,
-      hardTimeoutMs: 1_000,
-      inactivityTimeoutMs: 1_000,
-      stage: "repo-preparation",
-      taskPrompt: "task",
-      toolScope: "repo-preparation",
-      workspace,
-    };
 
-    await expect(runner.run(input)).rejects.toThrow("setup failed");
-    await expect(runner.run({ ...input, attempt: 2 })).resolves.toMatchObject({
-      exitCode: 0,
+    await expect(runner.run(taskInput())).resolves.toMatchObject({
+      exitCode: -1,
+      failure: { category: "timeout", message: expect.any(String) },
     });
-
-    expect(prepareWorkspace).toHaveBeenCalledTimes(2);
-    expect(run).toHaveBeenCalledOnce();
   });
 });
+
+function taskInput() {
+  return {
+    attempt: 1,
+    hardDeadlineAt: Date.now() + 1_000,
+    hardTimeoutMs: 1_000,
+    inactivityTimeoutMs: 1_000,
+    stage: "test",
+    taskPrompt: "task",
+    workspace: {} as never,
+  };
+}

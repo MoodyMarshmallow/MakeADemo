@@ -323,6 +323,56 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     ]);
   });
 
+  it("executes agent shell commands as the unprivileged workspace user", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeClient(calls),
+    });
+    const handle = await provider.create();
+
+    await handle.workspace.executeAgentCommand?.(
+      "printf pwned > /usr/local/bin/node",
+    );
+
+    expect(calls.slice(1)).toEqual([
+      {
+        executeCommand: expect.stringMatching(
+          /runuser -u 'pwuser'.*env -i.*\/bin\/bash --noprofile --norc/,
+        ),
+      },
+    ]);
+    expect(calls).not.toContainEqual({
+      executeCommand: "printf pwned > /usr/local/bin/node",
+    });
+  });
+
+  it("hands the cloned workspace to the agent user without following symlinks", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeClient(calls),
+    });
+    const handle = await provider.create();
+
+    await handle.workspace.prepareForAgent?.();
+
+    expect(calls.slice(1)).toEqual([
+      {
+        executeCommand: expect.stringMatching(
+          /find '\/workspace' -xdev -exec chown --no-dereference 'pwuser:pwuser'/,
+        ),
+      },
+    ]);
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        {
+          executeCommand: expect.stringMatching(
+            /makeademo-inspect-submitted-code-toolchain.*chmod 0750/,
+          ),
+        },
+      ]),
+    );
+  });
+
   it("passes the configured command timeout to parent Daytona commands", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({

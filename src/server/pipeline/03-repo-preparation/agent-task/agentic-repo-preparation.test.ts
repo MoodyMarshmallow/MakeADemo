@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AgentSession } from "../../../agent-harness/agent-session";
 import type {
+  AgentSessionWorkspace,
   AgentTaskRunInput,
   AgentTaskRunResult,
   AgentTaskRunner,
@@ -19,7 +20,6 @@ import {
   type AgenticRepoPreparationOptions,
 } from "./agentic-repo-preparation";
 import type { RepoPreparationToolHandoff } from "./tools/repo-preparation-tool-protocol";
-import { repoPreparationAgentToolScope } from "./tools/repo-preparation-tool-protocol";
 
 type RepoPreparationTestOptions = Omit<
   AgenticRepoPreparationOptions,
@@ -37,7 +37,7 @@ class RecordingAgentTaskRunner implements AgentTaskRunner {
     stage: string;
     taskPrompt: string;
     toolProtocol?: unknown;
-    toolScope?: string;
+    tools?: readonly string[];
   }> = [];
 
   async run<T>(input: AgentTaskRunInput<T>): Promise<AgentTaskRunResult<T>> {
@@ -49,11 +49,16 @@ class RecordingAgentTaskRunner implements AgentTaskRunner {
       ...(input.toolProtocol === undefined
         ? {}
         : { toolProtocol: input.toolProtocol }),
-      ...(input.toolScope === undefined ? {} : { toolScope: input.toolScope }),
+      ...(input.tools === undefined
+        ? {}
+        : { tools: input.tools.map((tool) => tool.name) }),
       ...(input.session === undefined ? {} : { session: input.session }),
     });
     const planned = plannedAgentResultsByWorkspace
-      .get(input.workspace)
+      .get(
+        (input.workspace as AgentSessionWorkspace & { baseWorkspace?: object })
+          .baseWorkspace ?? input.workspace,
+      )
       ?.shift();
     if (planned instanceof Error) throw planned;
     const session = input.session ?? this.nextSession ?? createAgentSession();
@@ -77,6 +82,9 @@ function createRepoPreparationAgent(options: RepoPreparationTestOptions) {
   return new AgenticRepoPreparation({
     ...agentOptions,
     runner: agentOptions.runner ?? new RecordingAgentTaskRunner(),
+    validatePreparation:
+      agentOptions.validatePreparation ??
+      (async () => validationArtifact().validation),
   });
 }
 
@@ -116,16 +124,7 @@ describe("AgenticRepoPreparation", () => {
           ),
         },
         { network: false },
-        {
-          execute: expect.stringContaining(
-            "/tmp/makeademo/submitted-code/dependency-install-request.json",
-          ),
-        },
-        {
-          execute: expect.stringContaining(
-            "/tmp/makeademo/submitted-code/repo-preparation-result.json",
-          ),
-        },
+        { prepareForAgent: true },
       ]),
     );
 
@@ -156,7 +155,12 @@ describe("AgenticRepoPreparation", () => {
           "makeademo_validate_preparation",
         ]),
       }),
-      toolScope: repoPreparationAgentToolScope,
+      tools: expect.arrayContaining([
+        "makeademo_dependency_request_install",
+        "makeademo_install_dependencies",
+        "makeademo_validate_preparation",
+        "makeademo_submit_preparation_result",
+      ]),
     });
   });
 
@@ -361,91 +365,17 @@ describe("AgenticRepoPreparation", () => {
     });
   });
 
-  it("retries once in a fresh workspace when Agent Task receives a Daytona secret reference", async () => {
-    const events: unknown[] = [];
-    const agent = createRepoPreparationAgent({
-      provider: fakeProviderSequence(events, [
-        {
-          agentResults: [providerSecretReferenceAuthFailure()],
-        },
-        {
-          commandStdout: ["Submitted preparation result."],
-          preparationResult: successResult(),
-          validationResult: validationArtifact(),
-        },
-      ]),
-      timeoutMs: 1_000,
-    });
-
-    const result = await agent.prepare({
-      normalizedSupportingDocuments: [],
-      repoUrl: "https://github.com/example/app",
-      structuredDemoIntent: { keyProductFeatures: ["validation"] },
-      workspaceId: "workspace_123",
-    });
-
-    expect(result).toMatchObject({ status: "succeeded" });
-    expect(events.filter(isReleaseEvent)).toHaveLength(1);
-    expect(events.filter(isCancelActiveCommandsEvent)).toHaveLength(1);
-    const firstCancelIndex = events.findIndex(isCancelActiveCommandsEvent);
-    const firstReleaseIndex = events.findIndex(isReleaseEvent);
-    const retryCreateIndex = events.findIndex(
-      (event) =>
-        typeof event === "object" &&
-        event !== null &&
-        "create" in event &&
-        event.create === 2,
-    );
-    expect(firstCancelIndex).toBeLessThan(firstReleaseIndex);
-    expect(firstReleaseIndex).toBeLessThan(retryCreateIndex);
-  });
-
-  it("returns the provider-auth blocker when the fresh-workspace retry also fails", async () => {
-    const events: unknown[] = [];
-    const agent = createRepoPreparationAgent({
-      provider: fakeProviderSequence(events, [
-        { agentResults: [providerSecretReferenceAuthFailure()] },
-        { agentResults: [providerSecretReferenceAuthFailure()] },
-      ]),
-      timeoutMs: 1_000,
-    });
-
-    const result = await agent.prepare({
-      normalizedSupportingDocuments: [],
-      repoUrl: "https://github.com/example/app",
-      structuredDemoIntent: { keyProductFeatures: ["validation"] },
-      workspaceId: "workspace_123",
-    });
-
-    expect(result).toEqual({
-      assumptions: [],
-      blockers: [
-        "Agent provider authentication failed because Daytona supplied a secret reference instead of the provider API key.",
-      ],
-      status: "failed",
-      suggestedChanges: [
-        "Retry Repo Preparation after verifying the Daytona provider secret injection.",
-      ],
-    });
-    expect(JSON.stringify(result)).not.toContain("provider-secret-reference");
-    expect(JSON.stringify(result)).not.toContain("invalid JSON");
-    expect(events.filter(isReleaseEvent)).toHaveLength(2);
-    expect(events.filter(isCancelActiveCommandsEvent)).toHaveLength(2);
-  });
-
   it("does not retry a generic nonzero Agent Task result without a handoff artifact", async () => {
     const events: unknown[] = [];
     const agent = createRepoPreparationAgent({
-      provider: fakeProviderSequence(events, [
-        {
-          agentResults: [
-            {
-              exitCode: 1,
-              failure: { category: "execution", message: "agent failed" },
-            },
-          ],
-        },
-      ]),
+      provider: fakeProvider(events, {
+        agentResults: [
+          {
+            exitCode: 1,
+            failure: { category: "execution", message: "agent failed" },
+          },
+        ],
+      }),
       timeoutMs: 1_000,
     });
 
@@ -463,14 +393,12 @@ describe("AgenticRepoPreparation", () => {
     expect(events.filter(isReleaseEvent)).toHaveLength(1);
   });
 
-  it("does not retry an invalid provider key that is not a Daytona secret reference", async () => {
+  it("returns a provider-neutral invalid-credential blocker without retrying", async () => {
     const events: unknown[] = [];
     const agent = createRepoPreparationAgent({
-      provider: fakeProviderSequence(events, [
-        {
-          agentResults: [providerInvalidApiKeyFailure("sk-proj-********test")],
-        },
-      ]),
+      provider: fakeProvider(events, {
+        agentResults: [providerInvalidApiKeyFailure("sk-proj-********test")],
+      }),
       timeoutMs: 1_000,
     });
 
@@ -813,8 +741,7 @@ describe("AgenticRepoPreparation", () => {
             exitCode: 0,
             handoff: {
               input: {
-                manifestPath:
-                  "/tmp/makeademo/submitted-code/preparation-manifest.json",
+                manifestPath: "/workspace/.makeademo/preparation-manifest.json",
               },
               toolName: "makeademo_validate_preparation" as const,
             },
@@ -894,8 +821,7 @@ describe("AgenticRepoPreparation", () => {
           exitCode: 0,
           handoff: {
             input: {
-              manifestPath:
-                "/tmp/makeademo/submitted-code/preparation-manifest.json",
+              manifestPath: "/workspace/.makeademo/preparation-manifest.json",
             },
             toolName: "makeademo_validate_preparation" as const,
           },
@@ -1055,8 +981,7 @@ describe("AgenticRepoPreparation", () => {
       provider: fakeProvider(events, {
         commandStdout: ["Validation requested."],
         validationRequest: {
-          manifestPath:
-            "/tmp/makeademo/submitted-code/preparation-manifest.json",
+          manifestPath: "/workspace/.makeademo/preparation-manifest.json",
         },
       }),
       timeoutMs: 1_000,
@@ -1097,7 +1022,7 @@ describe("AgenticRepoPreparation", () => {
     );
   });
 
-  it("retries preparation preflight feedback when restore-looking text has no failure kind", async () => {
+  it("does not accept a structured final result outside backend control state", async () => {
     const events: unknown[] = [];
     const agent = createRepoPreparationAgent({
       provider: fakeProvider(events, {
@@ -1106,8 +1031,7 @@ describe("AgenticRepoPreparation", () => {
             exitCode: 0,
             handoff: {
               input: {
-                manifestPath:
-                  "/tmp/makeademo/submitted-code/preparation-manifest.json",
+                manifestPath: "/workspace/.makeademo/preparation-manifest.json",
               },
               toolName: "makeademo_validate_preparation",
             },
@@ -1123,8 +1047,7 @@ describe("AgenticRepoPreparation", () => {
           },
         ],
         validationRequest: {
-          manifestPath:
-            "/tmp/makeademo/submitted-code/preparation-manifest.json",
+          manifestPath: "/workspace/.makeademo/preparation-manifest.json",
         },
       }),
       timeoutMs: 1_000,
@@ -1148,7 +1071,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     expect(result).toMatchObject({
-      blockers: ["Agent received validation feedback."],
+      blockers: ["Agent task failed."],
       status: "failed",
     });
     expect(events).toEqual(
@@ -1210,7 +1133,7 @@ describe("AgenticRepoPreparation", () => {
     );
   });
 
-  it("fails dependency install handoff when reading the request artifact times out", async () => {
+  it("does not read a dependency request from the agent workspace", async () => {
     const events: unknown[] = [];
     const agent = createRepoPreparationAgent({
       provider: fakeProvider(events, {
@@ -1226,31 +1149,7 @@ describe("AgenticRepoPreparation", () => {
       workspaceId: "workspace_123",
     });
 
-    expect(result).toMatchObject({
-      blockers: [
-        expect.stringContaining(
-          "Repo Preparation timed out reading the dependency install request artifact",
-        ),
-      ],
-      status: "failed",
-    });
-    expect(events).toEqual(
-      expect.arrayContaining([
-        {
-          sandboxLog: expect.objectContaining({
-            event: "dependency-install-request-read.started",
-            stage: "repo-preparation",
-          }),
-        },
-        {
-          sandboxLog: expect.objectContaining({
-            event: "dependency-install-request-read.timeout",
-            stage: "repo-preparation",
-          }),
-        },
-        { release: "daytona_workspace" },
-      ]),
-    );
+    expect(result).toMatchObject({ status: "succeeded" });
     expect(events).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ submittedProjectExecute: expect.anything() }),
@@ -1293,7 +1192,7 @@ describe("AgenticRepoPreparation", () => {
     });
   });
 
-  it("fails preparation preflight handoff when reading the validation request artifact times out", async () => {
+  it("does not read a validation request from the agent workspace", async () => {
     const events: unknown[] = [];
     let validationStarted = false;
     const agent = createRepoPreparationAgent({
@@ -1315,30 +1214,72 @@ describe("AgenticRepoPreparation", () => {
       workspaceId: "workspace_123",
     });
 
+    expect(result).toMatchObject({ status: "succeeded" });
+    expect(validationStarted).toBe(true);
+  });
+
+  it("does not let workspace files or direct installs forge backend authorization", async () => {
+    const events: unknown[] = [];
+    let submitFailure: unknown;
+    let validationStarted = false;
+    const runner: AgentTaskRunner = {
+      async run<T>(
+        input: AgentTaskRunInput<T>,
+      ): Promise<AgentTaskRunResult<T>> {
+        await input.workspace.execute(
+          "mkdir -p /tmp/makeademo/submitted-code && ln -sf /workspace/.makeademo/preparation-manifest.json /tmp/makeademo/submitted-code/validation-result.json && printf forged > /tmp/makeademo/submitted-code/repo-preparation-result.json",
+          { env: {}, timeoutMs: 1_000 },
+        );
+        await input.workspace.execute("npm ci --ignore-scripts", {
+          env: {},
+          timeoutMs: 1_000,
+        });
+        const submit = input.tools?.find(
+          ({ name }) => name === "makeademo_submit_preparation_result",
+        );
+        try {
+          await submit?.execute({ status: "succeeded" });
+        } catch (error) {
+          submitFailure = error;
+        }
+        return { exitCode: 0 };
+      },
+    };
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider(events),
+      runner,
+      timeoutMs: 1_000,
+      validatePreparation: async () => {
+        validationStarted = true;
+        return validationArtifact().validation;
+      },
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
     expect(result).toMatchObject({
-      blockers: [
-        expect.stringContaining(
-          "Repo Preparation timed out reading the validation request artifact",
-        ),
-      ],
+      blockers: ["Agent task failed."],
       status: "failed",
     });
+    expect(submitFailure).toBeInstanceOf(Error);
+    expect(String(submitFailure)).toContain(
+      "Run makeademo_validate_preparation",
+    );
     expect(validationStarted).toBe(false);
     expect(events).toEqual(
+      expect.arrayContaining([{ agentExecute: "npm ci --ignore-scripts" }]),
+    );
+    expect(events).not.toEqual(
+      expect.arrayContaining([{ execute: "npm ci --ignore-scripts" }]),
+    );
+    expect(events).not.toEqual(
       expect.arrayContaining([
-        {
-          sandboxLog: expect.objectContaining({
-            event: "validation-request-read.started",
-            stage: "repo-preparation",
-          }),
-        },
-        {
-          sandboxLog: expect.objectContaining({
-            event: "validation-request-read.timeout",
-            stage: "repo-preparation",
-          }),
-        },
-        { release: "daytona_workspace" },
+        expect.objectContaining({ submittedProjectExecute: expect.anything() }),
       ]),
     );
   });
@@ -1350,8 +1291,7 @@ describe("AgenticRepoPreparation", () => {
       provider: fakeProvider(events, {
         commandStdout: ["Validation requested."],
         validationRequest: {
-          manifestPath:
-            "/tmp/makeademo/submitted-code/preparation-manifest.json",
+          manifestPath: "/workspace/.makeademo/preparation-manifest.json",
         },
       }),
       timeoutMs: 1_000,
@@ -1386,20 +1326,7 @@ describe("AgenticRepoPreparation", () => {
         workspace: expect.objectContaining({ id: "daytona_workspace" }),
       }),
     ]);
-    expect(events).toEqual(
-      expect.arrayContaining([
-        {
-          execute: expect.stringContaining(
-            "/tmp/makeademo/submitted-code/validation-request.json",
-          ),
-        },
-        {
-          execute: expect.stringContaining(
-            "/tmp/makeademo/submitted-code/validation-result.json",
-          ),
-        },
-      ]),
-    );
+    expect(events).toEqual(expect.arrayContaining([]));
   });
 
   it("preserves the retained agent session identity when validation passes", async () => {
@@ -1410,8 +1337,7 @@ describe("AgenticRepoPreparation", () => {
       provider: fakeProvider([], {
         commandStdout: ["Validation requested."],
         validationRequest: {
-          manifestPath:
-            "/tmp/makeademo/submitted-code/preparation-manifest.json",
+          manifestPath: "/workspace/.makeademo/preparation-manifest.json",
         },
       }),
       runner,
@@ -1454,8 +1380,7 @@ describe("AgenticRepoPreparation", () => {
             exitCode: 0,
             handoff: {
               input: {
-                manifestPath:
-                  "/tmp/makeademo/submitted-code/preparation-manifest.json",
+                manifestPath: "/workspace/.makeademo/preparation-manifest.json",
               },
               toolName: "makeademo_validate_preparation",
             },
@@ -1472,8 +1397,7 @@ describe("AgenticRepoPreparation", () => {
         ],
         manifestPayload: { demoCommand: "npm run demo" },
         validationRequest: {
-          manifestPath:
-            "/tmp/makeademo/submitted-code/preparation-manifest.json",
+          manifestPath: "/workspace/.makeademo/preparation-manifest.json",
         },
       }),
       timeoutMs: 1_000,
@@ -1491,7 +1415,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     expect(result).toMatchObject({
-      blockers: ["Agent received validation feedback."],
+      blockers: ["Agent task failed."],
       status: "failed",
     });
     expect(validationStarted).toBe(false);
@@ -1592,7 +1516,7 @@ describe("AgenticRepoPreparation", () => {
         },
         {
           sandboxLog: expect.objectContaining({
-            event: "preparation-result-found",
+            event: "preparation-auto-succeeded-after-preflight",
             stage: "repo-preparation",
           }),
         },
@@ -1697,7 +1621,26 @@ function fakeProvider(
     async create() {
       const workspace = fakeWorkspace(events, workspaceInput);
       plannedAgentResultsByWorkspace.set(workspace, [
-        ...(workspaceInput.agentResults ?? []),
+        ...(workspaceInput.agentResults ?? [
+          workspaceInput.dependencyInstallRequest === undefined
+            ? {
+                exitCode: 0,
+                handoff: {
+                  input: {
+                    manifestPath:
+                      "/workspace/.makeademo/preparation-manifest.json",
+                  },
+                  toolName: "makeademo_validate_preparation" as const,
+                },
+              }
+            : {
+                exitCode: 0,
+                handoff: {
+                  input: workspaceInput.dependencyInstallRequest,
+                  toolName: "makeademo_dependency_request_install" as const,
+                },
+              },
+        ]),
       ]);
       return {
         async release() {
@@ -1750,6 +1693,21 @@ function fakeWorkspace(
   let validationResult = input.validationResult;
 
   return {
+    async executeAgentCommand(command) {
+      events.push({ agentExecute: command });
+      if (/\b(?:npm|pnpm|yarn|bun)\b/.test(command)) {
+        return {
+          exitCode: 126,
+          stderr:
+            "Package runtimes are unavailable in the parent agent workspace.",
+          stdout: "",
+        };
+      }
+      return { exitCode: 0, stderr: "", stdout: "" };
+    },
+    async prepareForAgent() {
+      events.push({ prepareForAgent: true });
+    },
     async execute(command, options) {
       if (command !== "git -C /workspace ls-files -z")
         events.push({ execute: command });
@@ -2017,39 +1975,13 @@ function supportedPnpmMetadata(): unknown {
   };
 }
 
-function fakeProviderSequence(
-  events: unknown[],
-  inputs: Array<Exclude<Parameters<typeof fakeProvider>[1], string[]>>,
-): PreparationWorkspaceProvider {
-  const providers = inputs.map((input) => fakeProvider(events, input));
-  let createIndex = 0;
-  return {
-    async create() {
-      const provider = providers[createIndex];
-      createIndex += 1;
-      if (provider === undefined) {
-        throw new Error("Unexpected extra workspace creation.");
-      }
-      events.push({ create: createIndex });
-      return provider.create();
-    },
-  };
-}
-
-function providerSecretReferenceAuthFailure(): AgentTaskRunResult {
-  return providerInvalidApiKeyFailure("provider-secret-reference");
-}
-
 function providerInvalidApiKeyFailure(
   receivedCredential: string,
 ): AgentTaskRunResult {
   return {
     exitCode: 1,
     failure: {
-      category:
-        receivedCredential === "provider-secret-reference"
-          ? "provider-auth-secret-reference"
-          : "provider-auth-invalid",
+      category: "provider-auth-invalid",
       message: `Provider rejected the configured API key (${receivedCredential}).`,
     },
   };
@@ -2057,14 +1989,6 @@ function providerInvalidApiKeyFailure(
 
 function isReleaseEvent(event: unknown): boolean {
   return typeof event === "object" && event !== null && "release" in event;
-}
-
-function isCancelActiveCommandsEvent(event: unknown): boolean {
-  return (
-    typeof event === "object" &&
-    event !== null &&
-    "cancelActiveCommands" in event
-  );
 }
 
 function validationArtifact() {

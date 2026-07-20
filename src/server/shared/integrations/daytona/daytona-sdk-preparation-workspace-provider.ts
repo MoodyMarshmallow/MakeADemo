@@ -152,6 +152,23 @@ const makeADemoArtifactDirectory = "/tmp/makeademo";
 const workspaceMakeADemoDirectory = "/workspace/.makeademo";
 const sandboxAuditLogPath = `${makeADemoArtifactDirectory}/sandbox-log.jsonl`;
 const workspaceSandboxAuditLogPath = `${workspaceMakeADemoDirectory}/sandbox-log.jsonl`;
+const agentWorkspaceUser = "pwuser";
+const agentWorkspaceHome = "/workspace/.makeademo/agent-home";
+const agentWorkspaceTemp = "/workspace/.makeademo/tmp";
+const agentWorkspacePath =
+  "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+const parentSubmittedRuntimePaths = [
+  "/usr/local/bin/node",
+  "/usr/local/bin/npm",
+  "/usr/local/bin/npx",
+  "/usr/local/bin/corepack",
+  "/usr/local/bin/bun",
+  "/usr/local/bin/bunx",
+  "/usr/local/bin/pnpm",
+  "/usr/local/bin/yarn",
+  "/usr/local/bin/makeademo-preload-submitted-code-image",
+  "/usr/local/bin/makeademo-inspect-submitted-code-toolchain",
+];
 
 export async function createDaytonaSdkPreparationWorkspaceHandle(input: {
   apiKey?: string;
@@ -418,6 +435,58 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
       stderr: response.stderr ?? "",
       stdout: response.stdout ?? response.result ?? "",
     };
+  }
+
+  async executeAgentCommand(
+    command: string,
+    options: Omit<PreparationWorkspaceExecuteOptions, "env"> = {},
+  ): Promise<PreparationWorkspaceCommandResult> {
+    const agentCommand = createUnprivilegedAgentCommand(command);
+    const agentOptions: PreparationWorkspaceExecuteOptions = {
+      ...options,
+      env: {},
+    };
+    if (options.onStdout !== undefined || options.onStderr !== undefined) {
+      return this.executeStreaming(agentCommand, agentOptions);
+    }
+
+    const timeoutMs = options.timeoutMs ?? this.commandTimeoutMs;
+    const response = await withTimeout(
+      this.sandbox.process.executeCommand(
+        agentCommand,
+        "/workspace",
+        {},
+        toSdkTimeoutSeconds(timeoutMs),
+      ),
+      timeoutMs,
+      `Daytona agent command did not finish within ${timeoutMs}ms.`,
+    );
+    return {
+      exitCode: response.exitCode ?? 0,
+      stderr: response.stderr ?? "",
+      stdout: response.stdout ?? response.result ?? "",
+    };
+  }
+
+  async prepareForAgent(): Promise<void> {
+    const runtimePathWords = parentSubmittedRuntimePaths
+      .map(shellQuote)
+      .join(" ");
+    const command = [
+      `id -u ${shellQuote(agentWorkspaceUser)} >/dev/null 2>&1 || useradd --home-dir ${shellQuote(agentWorkspaceHome)} --no-create-home --shell /bin/bash ${shellQuote(agentWorkspaceUser)}`,
+      `for makeademo_runtime_path in ${runtimePathWords}; do if test -e "$makeademo_runtime_path" || test -L "$makeademo_runtime_path"; then chmod 0750 "$makeademo_runtime_path"; fi; done`,
+      `mkdir -p ${shellQuote(agentWorkspaceHome)} ${shellQuote(agentWorkspaceTemp)}`,
+      `find ${shellQuote("/workspace")} -xdev -exec chown --no-dereference ${shellQuote(`${agentWorkspaceUser}:${agentWorkspaceUser}`)} {} +`,
+      "chmod 0755 /tmp /var/tmp",
+    ].join(" && ");
+    const response = await withTimeout(
+      this.sandbox.process.executeCommand(command),
+      this.commandTimeoutMs,
+      `Daytona agent workspace handoff did not finish within ${this.commandTimeoutMs}ms.`,
+    );
+    if ((response.exitCode ?? 0) !== 0) {
+      throw new Error("Failed to hand the cloned workspace to the agent user.");
+    }
   }
 
   private async executeStreaming(
@@ -1409,6 +1478,11 @@ function readSandboxLogMessage(entry: PreparationWorkspaceLogEntry): string {
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function createUnprivilegedAgentCommand(command: string): string {
+  const encoded = Buffer.from(command, "utf8").toString("base64");
+  return `printf %s ${shellQuote(encoded)} | base64 --decode | runuser -u ${shellQuote(agentWorkspaceUser)} -- env -i HOME=${shellQuote(agentWorkspaceHome)} TMPDIR=${shellQuote(agentWorkspaceTemp)} PATH=${shellQuote(agentWorkspacePath)} /bin/bash --noprofile --norc`;
 }
 
 function createPreparedWorkspaceArchiveCommand(archivePath: string): string {

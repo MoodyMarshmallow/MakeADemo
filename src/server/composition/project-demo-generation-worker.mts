@@ -5,7 +5,6 @@ import { processNextProjectDemoGenerationJob } from "../pipeline/00-orchestratio
 import { createProjectDemoGenerationWorkerLogger } from "../pipeline/00-orchestration/project-demo-generation-worker-logging";
 import { compositeVideoFromScript } from "../pipeline/07-compositing/composite-video";
 import { finalVideoEmailsEnabled } from "../pipeline/final-output/final-video-email-feature";
-import { ensureOpenCodeProviderDaytonaSecret } from "../shared/integrations/daytona/daytona-opencode-provider-secrets";
 import { createResendFinalVideoEmailNotifierFromEnv } from "../shared/integrations/email/resend-final-video-email-notifier";
 import { createR2UploadPresignerFromEnv } from "../shared/integrations/storage/r2-client";
 import { R2FinalVideoStorage } from "../shared/integrations/storage/r2-final-video-storage";
@@ -37,68 +36,67 @@ const finalVideoEmailNotifier = shouldSendFinalVideoEmail
   ? createResendFinalVideoEmailNotifierFromEnv()
   : undefined;
 const workerLogger = createProjectDemoGenerationWorkerLogger();
-const providerSecretName = await ensureOpenCodeProviderDaytonaSecret({
-  daytonaApiKey,
-  logger: workerLogger.child({ component: "opencode-provider-secrets" }),
-  providerID: agentModel.providerID,
-});
-const productionAgentHarness = createProductionAgentHarness({
-  daytonaApiKey,
-  ...(daytonaSnapshot === undefined ? {} : { daytonaSnapshot }),
-  ...(daytonaSubmittedCodeSnapshot === undefined
-    ? {}
-    : { daytonaSubmittedCodeSnapshot }),
-  agentModel,
-  logger: workerLogger.child({ component: "agent-harness" }),
-  providerSecretName,
-});
-
 await workerLogger.workerStarted();
 
 do {
   const result = await processNextProjectDemoGenerationJob(queueStore, {
     async runFullPipeline(job) {
-      const repoSecurity = await readRepoSecurityInput(
-        productionAgentHarness.repoSecurityProvider,
-        job.repoUrl,
-        {
-          logger: workerLogger.child({ component: "repo-security-screen" }),
-        },
-      );
-
-      const pipelineResult = await runFullPipelineJob(
-        {
-          demoBrief: job.demoBrief,
-          normalizedSupportingDocuments: job.normalizedSupportingDocuments,
-          repoSecurity,
-          repoUrl: job.repoUrl,
-          workspaceId: job.workspaceId,
-        },
-        productionAgentHarness.preCaptureDependencies,
-        {
-          async compositeVideo(input) {
-            return compositeVideoFromScript({
-              ...input,
-              demoRequestId: job.demoRequestId,
-              demoRequestStore,
-              ...(finalVideoEmailNotifier === undefined
-                ? {}
-                : { finalVideoEmailNotifier }),
-              finalVideoStorage,
-              ...(publicAppBaseUrl === undefined ? {} : { publicAppBaseUrl }),
-            });
+      const productionAgentHarness = createProductionAgentHarness({
+        daytonaApiKey,
+        ...(daytonaSnapshot === undefined ? {} : { daytonaSnapshot }),
+        ...(daytonaSubmittedCodeSnapshot === undefined
+          ? {}
+          : { daytonaSubmittedCodeSnapshot }),
+        agentModel,
+        logger: workerLogger.child({ component: "agent-harness" }),
+      });
+      try {
+        const repoSecurity = await readRepoSecurityInput(
+          productionAgentHarness.repoSecurityProvider,
+          job.repoUrl,
+          {
+            logger: workerLogger.child({ component: "repo-security-screen" }),
           },
-          onProgress: (event) => workerLogger.pipelineProgress(event),
-          prepareFreshCaptureState: createDaytonaFreshCaptureStatePreparer(),
-          reviewDraftComposite: productionAgentHarness.reviewDraftComposite,
-        },
-      );
+        );
 
-      if (!pipelineResult.finalVideo.finalVideo) {
-        throw new Error("Full pipeline did not store a final video.");
+        const pipelineResult = await runFullPipelineJob(
+          {
+            demoBrief: job.demoBrief,
+            normalizedSupportingDocuments: job.normalizedSupportingDocuments,
+            repoSecurity,
+            repoUrl: job.repoUrl,
+            workspaceId: job.workspaceId,
+          },
+          productionAgentHarness.preCaptureDependencies,
+          {
+            async compositeVideo(input) {
+              return compositeVideoFromScript({
+                ...input,
+                demoRequestId: job.demoRequestId,
+                demoRequestStore,
+                ...(finalVideoEmailNotifier === undefined
+                  ? {}
+                  : { finalVideoEmailNotifier }),
+                finalVideoStorage,
+                ...(publicAppBaseUrl === undefined ? {} : { publicAppBaseUrl }),
+              });
+            },
+            onProgress: (event) => workerLogger.pipelineProgress(event),
+            prepareFreshCaptureState: createDaytonaFreshCaptureStatePreparer(),
+            reviewDraftComposite: productionAgentHarness.reviewDraftComposite,
+          },
+        );
+
+        if (!pipelineResult.finalVideo.finalVideo) {
+          throw new Error("Full pipeline did not store a final video.");
+        }
+
+        return {
+          generatedDemoUrl: pipelineResult.finalVideo.finalVideo.r2Url,
+        };
+      } finally {
+        await productionAgentHarness.disposeAgentSessions();
       }
-
-      return { generatedDemoUrl: pipelineResult.finalVideo.finalVideo.r2Url };
     },
   });
 

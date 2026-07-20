@@ -1,5 +1,6 @@
 import type { AgentTaskRunner } from "../../../agent-harness/agent-session-runner.interface";
 import type { PipelineEventLogger } from "../../../shared/logging/pipeline-event-logger";
+import { createRepoPreparationAgentWorkspace } from "../../03-repo-preparation/agent-task/repo-preparation-agent-workspace";
 import type { PreparationManifest } from "../../03-repo-preparation/preparation-manifest";
 import {
   attachPipelineMetadata,
@@ -62,7 +63,9 @@ export class AgenticCapturePathRepairer {
       hardDeadlineAt,
       inactivityTimeoutMs: this.options.timeoutMs,
       hardTimeoutMs: this.options.hardTimeoutMs,
-      workspace: preparationWorkspace.workspace,
+      workspace: createRepoPreparationAgentWorkspace(
+        preparationWorkspace.workspace,
+      ),
     });
     if (result.exitCode !== 0) {
       const reason = `Capture Path repair agent task exited with ${result.exitCode}: ${result.failure?.message ?? "agent task failed before artifact validation."}`;
