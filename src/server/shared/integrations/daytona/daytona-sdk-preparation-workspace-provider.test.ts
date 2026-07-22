@@ -10,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { Readable } from "node:stream";
 import { promisify } from "node:util";
 
 import { describe, expect, it } from "vitest";
@@ -242,6 +243,91 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         timeoutSec: 0,
       },
     });
+  });
+
+  it("streams a bounded submitted-code download with cancellation and timeout options", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeClient(calls, {
+        downloadStreamChunks: [Buffer.from("1234"), Buffer.from("5678")],
+      }),
+    });
+    const handle = await provider.create();
+    const directory = await mkdtemp(join(tmpdir(), "makeademo-stream-"));
+    const destinationPath = join(directory, "screenshot.png");
+    const controller = new AbortController();
+
+    try {
+      await handle.workspace.downloadSubmittedCodeFiles?.(
+        [{ destinationPath, sourcePath: "/workspace/screenshot.png" }],
+        { maxBytes: 8, signal: controller.signal, timeoutMs: 25 },
+      );
+
+      expect(await readFile(destinationPath, "utf8")).toBe("12345678");
+      expect(calls).toContainEqual({
+        downloadFileStream: {
+          options: expect.objectContaining({
+            onProgress: expect.any(Function),
+            signal: expect.any(AbortSignal),
+            timeout: 1,
+          }),
+          sandbox: "sandbox_123",
+          sourcePath: "/workspace/screenshot.png",
+        },
+      });
+    } finally {
+      await rm(directory, { force: true, recursive: true });
+    }
+  });
+
+  it("creates the local parent directory before streaming a bounded download", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeClient(calls, {
+        downloadStreamChunks: [Buffer.from("screenshot")],
+      }),
+    });
+    const handle = await provider.create();
+    const directory = await mkdtemp(join(tmpdir(), "makeademo-stream-parent-"));
+    const destinationPath = join(directory, "nested", "screenshot.png");
+
+    try {
+      await handle.workspace.downloadSubmittedCodeFiles?.(
+        [{ destinationPath, sourcePath: "/workspace/screenshot.png" }],
+        { maxBytes: 32, timeoutMs: 25 },
+      );
+
+      expect(await readFile(destinationPath, "utf8")).toBe("screenshot");
+    } finally {
+      await rm(directory, { force: true, recursive: true });
+    }
+  });
+
+  it("aborts a submitted-code stream before writing beyond its byte cap", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeClient(calls, {
+        downloadStreamChunks: [Buffer.from("1234"), Buffer.from("56789")],
+      }),
+    });
+    const handle = await provider.create();
+    const directory = await mkdtemp(join(tmpdir(), "makeademo-stream-cap-"));
+
+    try {
+      await expect(
+        handle.workspace.downloadSubmittedCodeFiles?.(
+          [
+            {
+              destinationPath: join(directory, "screenshot.png"),
+              sourcePath: "/workspace/screenshot.png",
+            },
+          ],
+          { maxBytes: 8, timeoutMs: 25 },
+        ),
+      ).rejects.toThrow("exceeded 8 bytes");
+    } finally {
+      await rm(directory, { force: true, recursive: true });
+    }
   });
 
   it("fails when Daytona cannot download a captured workspace artifact", async () => {
@@ -2749,6 +2835,7 @@ function fakeClient(
   options: {
     awaitWorkspaceLogWrite?: Promise<void>;
     downloadError?: string;
+    downloadStreamChunks?: Buffer[];
     executeCommandFails?: boolean;
     executeCommandNeverResolves?: boolean;
     failFirstSubmittedCodeInitialization?: boolean;
@@ -2778,6 +2865,19 @@ function fakeClient(
       calls.push({ archive: "sandbox_123" });
     },
     fs: {
+      async downloadFileStream(
+        sourcePath: string,
+        streamOptions?: { signal?: AbortSignal; timeout?: number },
+      ) {
+        calls.push({
+          downloadFileStream: {
+            options: streamOptions ?? {},
+            sandbox: "sandbox_123",
+            sourcePath,
+          },
+        });
+        return Readable.from(options.downloadStreamChunks ?? []);
+      },
       async downloadFiles(
         files: Array<{ destination: string; source: string }>,
         timeoutSec?: number,

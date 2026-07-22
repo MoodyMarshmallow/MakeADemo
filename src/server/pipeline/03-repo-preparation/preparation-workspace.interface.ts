@@ -23,6 +23,15 @@ export type PreparationWorkspaceDownloadFile = {
   sourcePath: string;
 };
 
+export type PreparationWorkspaceDownloadOptions = {
+  /** Rejects the transfer before writing more than this many bytes locally. */
+  maxBytes?: number;
+  /** Cancels an in-flight download and must be observed by implementations. */
+  signal?: AbortSignal;
+  /** Optional provider fail-safe timeout in milliseconds. */
+  timeoutMs?: number;
+};
+
 export type PreparationWorkspaceExecuteOptions = {
   env?: Record<string, string>;
   onStderr?: (chunk: string) => void;
@@ -67,7 +76,10 @@ export interface PreparationWorkspace {
    * provider command handles to settle before returning.
    */
   cancelActiveCommands?(): Promise<void>;
-  downloadFiles?(files: PreparationWorkspaceDownloadFile[]): Promise<void>;
+  downloadFiles?(
+    files: PreparationWorkspaceDownloadFile[],
+    options?: PreparationWorkspaceDownloadOptions,
+  ): Promise<void>;
   execute(
     command: string,
     options?: PreparationWorkspaceExecuteOptions,
@@ -143,5 +155,6 @@ export interface PreparationWorkspace {
   /** Downloads artifacts from the submitted-code runtime boundary. */
   downloadSubmittedCodeFiles?(
     files: PreparationWorkspaceDownloadFile[],
+    options?: PreparationWorkspaceDownloadOptions,
   ): Promise<void>;
 }

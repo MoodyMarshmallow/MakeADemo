@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createWriteStream } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { resolveCommand } from "package-manager-detector/commands";
 
 import { Daytona } from "@daytona/sdk";
@@ -14,6 +17,7 @@ import type {
   PreparationWorkspace,
   PreparationWorkspaceCommandResult,
   PreparationWorkspaceDownloadFile,
+  PreparationWorkspaceDownloadOptions,
   PreparationWorkspaceExecuteOptions,
   PreparationWorkspaceLogEntry,
   PreparationWorkspaceUploadFile,
@@ -41,6 +45,17 @@ type DaytonaSdkClient = {
 type DaytonaSdkSandbox = {
   archive(): Promise<void>;
   fs: {
+    downloadFileStream?(
+      sourcePath: string,
+      options?: {
+        onProgress?: (progress: {
+          bytesReceived: number;
+          totalBytes?: number;
+        }) => void;
+        signal?: AbortSignal;
+        timeout?: number;
+      },
+    ): Promise<NodeJS.ReadableStream>;
     downloadFiles(
       files: Array<{ destination: string; source: string }>,
       timeoutSec?: number,
@@ -936,23 +951,35 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
 
   async downloadFiles(
     files: PreparationWorkspaceDownloadFile[],
+    options: PreparationWorkspaceDownloadOptions = {},
   ): Promise<void> {
-    await this.downloadFilesFromSandbox(this.sandbox, files);
+    await this.downloadFilesFromSandbox(this.sandbox, files, options);
   }
 
   async downloadSubmittedCodeFiles(
     files: PreparationWorkspaceDownloadFile[],
+    options: PreparationWorkspaceDownloadOptions = {},
   ): Promise<void> {
     await this.downloadFilesFromSandbox(
       this.submittedCodeSandbox ?? this.sandbox,
       files,
+      options,
     );
   }
 
   private async downloadFilesFromSandbox(
     sandbox: DaytonaSdkSandbox,
     files: PreparationWorkspaceDownloadFile[],
+    options: PreparationWorkspaceDownloadOptions,
   ): Promise<void> {
+    if (
+      options.maxBytes !== undefined ||
+      options.signal !== undefined ||
+      options.timeoutMs !== undefined
+    ) {
+      await this.downloadFilesFromSandboxStreams(sandbox, files, options);
+      return;
+    }
     const results = await sandbox.fs.downloadFiles(
       files.map((file) => ({
         destination: file.destinationPath,
@@ -965,6 +992,86 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
       throw new Error(
         `Failed to download Daytona sandbox file ${failed.source}: ${failed.error}`,
       );
+    }
+  }
+
+  private async downloadFilesFromSandboxStreams(
+    sandbox: DaytonaSdkSandbox,
+    files: PreparationWorkspaceDownloadFile[],
+    options: PreparationWorkspaceDownloadOptions,
+  ): Promise<void> {
+    if (sandbox.fs.downloadFileStream === undefined) {
+      throw new Error("Daytona streaming file download is unavailable.");
+    }
+    for (const file of files) {
+      const controller = new AbortController();
+      const abortFromCaller = () => controller.abort(options.signal?.reason);
+      options.signal?.addEventListener("abort", abortFromCaller, {
+        once: true,
+      });
+      if (options.signal?.aborted === true) abortFromCaller();
+      const timeout =
+        options.timeoutMs === undefined
+          ? undefined
+          : setTimeout(
+              () => controller.abort(new Error("Daytona download timed out.")),
+              options.timeoutMs,
+            );
+      let bytesReceived = 0;
+      try {
+        await mkdir(dirname(file.destinationPath), { recursive: true });
+        const stream = await sandbox.fs.downloadFileStream(file.sourcePath, {
+          signal: controller.signal,
+          ...(options.timeoutMs === undefined
+            ? {}
+            : { timeout: Math.max(1, Math.ceil(options.timeoutMs / 1_000)) }),
+          ...(options.maxBytes === undefined
+            ? {}
+            : {
+                onProgress(progress) {
+                  if (progress.bytesReceived > (options.maxBytes ?? 0)) {
+                    controller.abort(
+                      new Error(
+                        `Daytona download exceeded ${options.maxBytes} bytes.`,
+                      ),
+                    );
+                  }
+                },
+              }),
+        });
+        const limiter = new Transform({
+          transform(chunk: Buffer, _encoding, callback) {
+            bytesReceived += chunk.length;
+            if (
+              options.maxBytes !== undefined &&
+              bytesReceived > options.maxBytes
+            ) {
+              const error = new Error(
+                `Daytona download exceeded ${options.maxBytes} bytes.`,
+              );
+              controller.abort(error);
+              callback(error);
+              return;
+            }
+            callback(null, chunk);
+          },
+        });
+        await pipeline(
+          stream,
+          limiter,
+          createWriteStream(file.destinationPath, { flags: "w" }),
+          { signal: controller.signal },
+        );
+      } catch (error) {
+        await rm(file.destinationPath, { force: true }).catch(() => undefined);
+        if (controller.signal.reason instanceof Error) {
+          throw controller.signal.reason;
+        }
+        throw error;
+      } finally {
+        if (timeout !== undefined) clearTimeout(timeout);
+        options.signal?.removeEventListener("abort", abortFromCaller);
+      }
     }
   }
 
