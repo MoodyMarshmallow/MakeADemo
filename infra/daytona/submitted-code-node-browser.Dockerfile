@@ -20,10 +20,17 @@ RUN npm install -g --force pnpm@10.12.1 yarn@1.22.22 \
   && npm cache clean --force
 
 RUN npm install -g \
+    @playwright/cli@0.1.17 \
     @playwright/test@1.49.1 \
     playwright@1.49.1 \
     typescript@5.7.3 \
   && npm cache clean --force
+
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    NO_UPDATE_NOTIFIER=1
+
+RUN playwright-cli install-browser chromium \
+  && chmod -R a+rX /ms-playwright
 
 ARG MISE_VERSION=2026.7.7
 ARG MISE_SHA256=429f71e7e989908bf975aafac9066329c16e2d8fc7cd8e74fdf21dd6300ffe7c

@@ -111,6 +111,18 @@ describe("Daytona Repo Preparation image", () => {
     expect(dockerfile).not.toMatch(/COREPACK_INTEGRITY_KEYS=(?:0|\s*$)/m);
   });
 
+  it("ships the pinned Playwright agent CLI and matching browser for offline runtime use", async () => {
+    const dockerfile = await readFile(
+      join(import.meta.dirname, "submitted-code-node-browser.Dockerfile"),
+      "utf8",
+    );
+
+    expect(dockerfile).toContain("@playwright/cli@0.1.17");
+    expect(dockerfile).toContain("playwright-cli install-browser chromium");
+    expect(dockerfile).toContain("PLAYWRIGHT_BROWSERS_PATH=/ms-playwright");
+    expect(dockerfile).toContain("NO_UPDATE_NOTIFIER=1");
+  });
+
   it("keeps Docker RUN and ENV continuations parseable", async () => {
     const dockerfile = await readFile(
       join(import.meta.dirname, "submitted-code-node-browser.Dockerfile"),

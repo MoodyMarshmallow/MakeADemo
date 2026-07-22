@@ -1,7 +1,12 @@
-import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import { describe, expect, it } from "vitest";
+
+const execFileAsync = promisify(execFile);
 
 describe("Daytona image verifier", () => {
   it("uses the submitted-code snapshot env var expected by the Daytona provider", async () => {
@@ -72,6 +77,60 @@ describe("Daytona image verifier", () => {
     expect(script.indexOf("setSubmittedCodeNetworkAccess(false)")).toBeLessThan(
       script.indexOf("mise --no-config exec node@22.23.1"),
     );
+  });
+
+  it("exercises the pinned CLI against a local page with a real session lifecycle", async () => {
+    const script = await readVerifierScript();
+
+    expect(script).toContain('test "$(playwright-cli --version)" = "0.1.17"');
+    expect(script).not.toContain("chromium.launch({ headless: true })");
+    expect(script).toContain("PLAYWRIGHT_MCP_CONFIG=");
+    expect(script).toContain('"chromiumSandbox":false');
+    expect(script).toContain('playwright-cli -s="$session" --json open');
+    expect(script).toContain(
+      'playwright-cli -s="$session" --json eval "() => location.origin"',
+    );
+    expect(script).toContain("JSON.parse(value.result)");
+    expect(script).toContain("Playwright CLI origin check returned");
+    expect(script).toContain('playwright-cli -s="$session" --json snapshot');
+    expect(script).toContain('playwright-cli -s="$session" --json screenshot');
+    expect(script).toContain('playwright-cli -s="$session" --json close');
+    expect(script).toContain("http://127.0.0.1:4173/");
+    expect(script).toContain("MakeADemo image smoke");
+    expect(script).toContain('test -s "$screenshotPath"');
+  });
+
+  it("parses the real Playwright eval envelope before checking the origin", async () => {
+    const script = await readVerifierScript();
+    const originCheck = script.match(
+      /`node -e '([^`]+)' "\$originPath" "\$localUrl"`/,
+    )?.[1];
+    expect(originCheck).toBeDefined();
+    if (originCheck === undefined) {
+      throw new Error("Daytona verifier origin check command is missing.");
+    }
+    const workspace = await mkdtemp(join(tmpdir(), "makeademo-origin-check-"));
+    const envelopePath = join(workspace, "origin.json");
+
+    try {
+      await writeFile(
+        envelopePath,
+        JSON.stringify({
+          result: JSON.stringify("http://127.0.0.1:4173"),
+        }),
+      );
+
+      await expect(
+        execFileAsync(process.execPath, [
+          "-e",
+          originCheck,
+          envelopePath,
+          "http://127.0.0.1:4173/",
+        ]),
+      ).resolves.toBeDefined();
+    } finally {
+      await rm(workspace, { force: true, recursive: true });
+    }
   });
 
   it("keeps model-provider credentials out of Daytona image verification", async () => {
