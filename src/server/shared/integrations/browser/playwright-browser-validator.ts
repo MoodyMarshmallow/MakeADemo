@@ -1,7 +1,3 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import { chromium } from "@playwright/test";
 
 import { executeSubmittedCode } from "../../../pipeline/03-repo-preparation/submitted-code-execution";
@@ -16,6 +12,10 @@ import {
   sanitizeNetworkAttempts,
 } from "../../../pipeline/05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
 import { boundValidationLogs } from "../../../pipeline/05-capture-path-validation/demo-runtime-preflight/validation-evidence";
+import {
+  BrowserScreenshotTransferError,
+  transferBrowserScreenshot,
+} from "./browser-screenshot-transfer";
 
 type BrowserValidationPage = {
   close(): Promise<void>;
@@ -256,10 +256,6 @@ export class PlaywrightBrowserValidator implements BrowserValidator {
 
 const repairScreenshotPath =
   "/workspace/.makeademo/demo-runtime-preflight/browser.png";
-const pngSignature = Buffer.from([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-]);
-const maximumScreenshotSizeBytes = 10 * 1024 * 1024;
 
 async function copyScreenshotToRepairWorkspace(
   handle: NonNullable<BrowserValidationInput["preparationWorkspace"]>,
@@ -277,90 +273,34 @@ async function copyScreenshotToRepairWorkspace(
         "Validation screenshot is unavailable to the repair workspace.",
     };
   }
-  let directory: string | undefined;
   try {
-    try {
-      directory = await mkdtemp(join(tmpdir(), "makeademo-validation-"));
-    } catch {
-      return {
-        diagnostic:
-          "Validation screenshot download from submitted-code sandbox failed.",
-      };
-    }
-    const localPath = join(directory, "browser.png");
-    try {
-      await handle.workspace.downloadSubmittedCodeFiles([
-        { destinationPath: localPath, sourcePath: screenshot.path },
-      ]);
-    } catch {
-      return {
-        diagnostic:
-          "Validation screenshot download from submitted-code sandbox failed.",
-      };
-    }
-
-    let screenshotSizeBytes: number;
-    try {
-      screenshotSizeBytes = (await stat(localPath)).size;
-    } catch {
-      return {
-        diagnostic:
-          "Validation screenshot download from submitted-code sandbox failed.",
-      };
-    }
-
-    if (
-      screenshotSizeBytes < pngSignature.length ||
-      screenshotSizeBytes > maximumScreenshotSizeBytes
-    ) {
-      return {
-        diagnostic:
-          "Validation screenshot from submitted-code sandbox is invalid.",
-      };
-    }
-
-    let screenshotBytes: Buffer;
-    try {
-      screenshotBytes = await readFile(localPath);
-    } catch {
-      return {
-        diagnostic:
-          "Validation screenshot download from submitted-code sandbox failed.",
-      };
-    }
-
-    if (
-      screenshotBytes.length < pngSignature.length ||
-      screenshotBytes.length > maximumScreenshotSizeBytes ||
-      !screenshotBytes.subarray(0, pngSignature.length).equals(pngSignature)
-    ) {
-      return {
-        diagnostic:
-          "Validation screenshot from submitted-code sandbox is invalid.",
-      };
-    }
-
-    try {
-      await handle.workspace.uploadFiles([
-        { destinationPath: repairScreenshotPath, sourcePath: localPath },
-      ]);
-    } catch {
-      return {
-        diagnostic:
-          "Validation screenshot upload to the repair workspace failed.",
-      };
-    }
+    const transferred = await transferBrowserScreenshot({
+      destinationPath: repairScreenshotPath,
+      sourcePath: screenshot.path,
+      workspace: handle.workspace,
+    });
     return {
       screenshot: {
         ...screenshot,
         path: repairScreenshotPath,
-        sizeBytes: screenshotBytes.length,
+        sizeBytes: transferred.sizeBytes,
       },
     };
-  } finally {
-    if (directory !== undefined) {
-      await rm(directory, { force: true, recursive: true }).catch(() => {});
+  } catch (error) {
+    if (!(error instanceof BrowserScreenshotTransferError)) {
+      return {
+        diagnostic:
+          "Validation screenshot download from submitted-code sandbox failed.",
+      };
     }
+    return {
+      diagnostic:
+        error.failure === "download"
+          ? "Validation screenshot download from submitted-code sandbox failed."
+          : error.failure === "invalid"
+            ? "Validation screenshot from submitted-code sandbox is invalid."
+            : "Validation screenshot upload to the repair workspace failed.",
+    };
   }
 }
 
