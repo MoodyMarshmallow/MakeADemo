@@ -1,4 +1,6 @@
 import type { AgentTaskRunner } from "../../../agent-harness/agent-session-runner.interface";
+import type { BrowserToolControllerProvider } from "../../../agent-harness/tools/browser/browser-tool-controller-registry";
+import { createBrowserStageTools } from "../../../agent-harness/tools/browser/browser-tool-definitions";
 import type { PipelineEventLogger } from "../../../shared/logging/pipeline-event-logger";
 import { throwIfPipelineDeadlineReached } from "../../00-orchestration/job/pipeline-cancellation";
 import { createRepoPreparationAgentWorkspace } from "../../03-repo-preparation/agent-task/repo-preparation-agent-workspace";
@@ -21,6 +23,8 @@ import {
 } from "./capture-path-repair-artifacts";
 
 export type AgenticCapturePathRepairerOptions = {
+  /** Supplies stable workspace-scoped browser tools for this repair turn. */
+  browserToolControllerProvider?: BrowserToolControllerProvider;
   hardTimeoutMs: number;
   logger: PipelineEventLogger;
   onStatus: (message: string) => void;
@@ -31,9 +35,13 @@ export type AgenticCapturePathRepairerOptions = {
 
 /** Repairs Capture Path failures in the prepared workspace using the shared session. */
 export class AgenticCapturePathRepairer {
+  private readonly browserToolControllerProvider:
+    | BrowserToolControllerProvider
+    | undefined;
   private readonly options: AgenticCapturePathRepairerOptions;
 
   constructor(options: AgenticCapturePathRepairerOptions) {
+    this.browserToolControllerProvider = options.browserToolControllerProvider;
     this.options = options;
   }
 
@@ -44,6 +52,7 @@ export class AgenticCapturePathRepairer {
     if (input.agentSession === undefined) {
       throw new Error("Capture Path repair requires an agent session ID.");
     }
+    const agentSession = input.agentSession;
     if (input.preparationWorkspace === undefined) {
       throw new Error("Capture Path repair requires the prepared workspace.");
     }
@@ -61,19 +70,37 @@ export class AgenticCapturePathRepairer {
     this.options.onStatus(
       `Capture Path repair attempt ${input.attempt} starting in the retained agent session.`,
     );
-    const result = await this.options.runner.run({
-      attempt: input.attempt,
-      taskPrompt: createCapturePathRepairPrompt(input),
-      session: input.agentSession,
+    const browserController = this.browserToolControllerProvider?.forWorkspace({
+      deadlineAt: hardDeadlineAt,
       ...(input.signal === undefined ? {} : { signal: input.signal }),
-      stage: "capture-path-repair",
-      hardDeadlineAt,
-      inactivityTimeoutMs: this.options.timeoutMs,
-      hardTimeoutMs: this.options.hardTimeoutMs,
-      workspace: createRepoPreparationAgentWorkspace(
-        preparationWorkspace.workspace,
-      ),
+      localUrl: input.preparationManifest.url,
+      workspace: preparationWorkspace.workspace,
     });
+    const result = await (async () => {
+      try {
+        return await this.options.runner.run({
+          attempt: input.attempt,
+          taskPrompt: createCapturePathRepairPrompt(
+            input,
+            browserController !== undefined,
+          ),
+          session: agentSession,
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+          stage: "capture-path-repair",
+          hardDeadlineAt,
+          inactivityTimeoutMs: this.options.timeoutMs,
+          hardTimeoutMs: this.options.hardTimeoutMs,
+          ...(browserController === undefined
+            ? {}
+            : { tools: createBrowserStageTools(browserController) }),
+          workspace: createRepoPreparationAgentWorkspace(
+            preparationWorkspace.workspace,
+          ),
+        });
+      } finally {
+        await resetBrowserController(browserController);
+      }
+    })();
     throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
     if (result.exitCode !== 0) {
       const reason = `Capture Path repair agent task exited with ${result.exitCode}: ${result.failure?.message ?? "agent task failed before artifact validation."}`;
@@ -161,5 +188,17 @@ export class AgenticCapturePathRepairer {
       preparationManifest,
       demoScript,
     };
+  }
+}
+
+async function resetBrowserController(
+  controller:
+    | ReturnType<BrowserToolControllerProvider["forWorkspace"]>
+    | undefined,
+): Promise<void> {
+  try {
+    await controller?.reset();
+  } catch {
+    // Browser cleanup is best effort and must not replace the repair result.
   }
 }

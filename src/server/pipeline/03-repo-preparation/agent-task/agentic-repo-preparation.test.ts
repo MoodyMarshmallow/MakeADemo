@@ -7,6 +7,7 @@ import type {
   AgentTaskRunResult,
   AgentTaskRunner,
 } from "../../../agent-harness/agent-session-runner.interface";
+import type { BrowserToolController } from "../../../agent-harness/tools/browser/browser-tool-controller.interface";
 import { createPipelineEventLogger } from "../../../shared/logging/pipeline-event-logger";
 import { createAgentSession } from "../../../test-support/create-agent-session";
 import { PipelineCancellationError } from "../../00-orchestration/job/pipeline-cancellation";
@@ -90,6 +91,81 @@ function createRepoPreparationAgent(options: RepoPreparationTestOptions) {
 }
 
 describe("AgenticRepoPreparation", () => {
+  it("keeps browser tools out of the initial turn and enables them only after a failed browser preflight", async () => {
+    const runner = new RecordingAgentTaskRunner();
+    let resets = 0;
+    let receivedUrl: string | undefined;
+    const controller: BrowserToolController = {
+      async act() {
+        return { output: "" };
+      },
+      async inspect(input) {
+        return { ...input, output: "" };
+      },
+      async navigate() {
+        return { output: "", url: "http://127.0.0.1:3000" };
+      },
+      async reset() {
+        resets += 1;
+      },
+      async screenshot() {
+        return {
+          path: "/workspace/.makeademo/browser-tools/latest.png",
+          sizeBytes: 0,
+        };
+      },
+      updateContext() {},
+    };
+    const preflights = [
+      {
+        blockedNetworkAttempts: [],
+        browserUrl: "https://preview.example.test/signed?token=secret",
+        failureReason: "Page did not become interactable.",
+        localUrl: "http://127.0.0.1:4173/",
+        logs: [],
+        status: "failed" as const,
+        warnings: [],
+      },
+      validationArtifact().runtimePreflight,
+    ];
+    const agent = createRepoPreparationAgent({
+      browserToolControllerProvider: {
+        forWorkspace(input) {
+          receivedUrl = input.localUrl;
+          return controller;
+        },
+      },
+      provider: fakeProvider([], {
+        agentResults: Array.from({ length: 2 }, () => ({
+          exitCode: 0,
+          handoff: {
+            input: {
+              manifestPath: "/workspace/.makeademo/preparation-manifest.json",
+            },
+            toolName: "makeademo_validate_preparation" as const,
+          },
+        })),
+      }),
+      runner,
+      runRuntimePreflight: async () =>
+        preflights.shift() ?? validationArtifact().runtimePreflight,
+    });
+
+    await expect(
+      agent.prepare({
+        normalizedSupportingDocuments: [],
+        repoUrl: "https://github.com/example/app",
+        structuredDemoIntent: { keyProductFeatures: ["validation"] },
+        workspaceId: "workspace_123",
+      }),
+    ).resolves.toMatchObject({ status: "succeeded" });
+
+    expect(runner.calls[0]?.tools).not.toContain("makeademo_browser_inspect");
+    expect(runner.calls[1]?.tools).toContain("makeademo_browser_inspect");
+    expect(receivedUrl).toBe("http://127.0.0.1:4173/");
+    expect(resets).toBe(1);
+  });
+
   it("releases a workspace created just after the absolute preparation deadline", async () => {
     const events: unknown[] = [];
     const baseProvider = fakeProvider(events);

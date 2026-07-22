@@ -1,3 +1,4 @@
+import { createBrowserToolControllerProvider } from "../agent-harness/tools/browser/browser-tool-controller-registry";
 import type { FullPipelineRunnerOptions } from "../pipeline/00-orchestration/job/full-pipeline-runner";
 import type { PipelineOrchestratorDependencies } from "../pipeline/00-orchestration/job/pipeline-orchestrator";
 import { screenRepoSecurity } from "../pipeline/02-repo-security-screen/repo-security-screen";
@@ -182,7 +183,9 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
     configuredRepoPreparationTimeoutMs,
   );
   const onAgentStatus = options.onAgentStandard ?? (() => {});
+  const browserToolControllerProvider = createBrowserToolControllerProvider();
   const repoPreparationAgent = new AgenticRepoPreparation({
+    browserToolControllerProvider,
     ...(daytonaSnapshot === undefined &&
     daytonaSubmittedCodeSnapshot === undefined
       ? {}
@@ -214,6 +217,7 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
       ),
   });
   const scriptGenerationAgent = new AgenticScriptGenerator({
+    browserToolControllerProvider,
     ...(logger === undefined ? {} : { logger }),
     ...(maxScriptGenerationAttempts === undefined
       ? {}
@@ -221,6 +225,7 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
     runner: agentHarness.agentTaskRunners.scriptGeneration,
   });
   const capturePathRepairer = new AgenticCapturePathRepairer({
+    browserToolControllerProvider,
     hardTimeoutMs: defaultHardTimeoutMs,
     logger: logger ?? createNoopLogger(),
     onStatus: onAgentStatus,

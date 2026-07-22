@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import type { BrowserToolController } from "../../../agent-harness/tools/browser/browser-tool-controller.interface";
 import type { PipelineEventLogger } from "../../../shared/logging/pipeline-event-logger";
 import { createPipelineEventLogger } from "../../../shared/logging/pipeline-event-logger";
 import {
@@ -14,6 +15,14 @@ import { createAgentSession } from "../../../test-support/create-agent-session";
 import { AgenticCapturePathRepairer } from "./agentic-capture-path-repairer";
 
 type CapturePathRepairAgentOptions = {
+  browserToolControllerProvider?: {
+    forWorkspace(input: {
+      deadlineAt: number | undefined;
+      localUrl: string;
+      signal?: AbortSignal;
+      workspace: unknown;
+    }): BrowserToolController;
+  };
   logger?: PipelineEventLogger;
   postRepairArtifactReadTimeoutMs?: number;
 };
@@ -34,7 +43,13 @@ class CapturePathRepairAgentFixture {
         options.postRepairArtifactReadTimeoutMs ?? 60_000,
       runner,
       timeoutMs: 600_000,
-    });
+      ...(options.browserToolControllerProvider === undefined
+        ? {}
+        : {
+            browserToolControllerProvider:
+              options.browserToolControllerProvider,
+          }),
+    } as never);
   }
 
   repairCapturePathFailure(
@@ -45,6 +60,51 @@ class CapturePathRepairAgentFixture {
 }
 
 describe("AgenticCapturePathRepairer", () => {
+  it("authorizes browser tools for Capture Path repair against the validated local URL", async () => {
+    const controller = createRecordingBrowserToolController();
+    const provider = {
+      forWorkspace(input: {
+        deadlineAt: number | undefined;
+        localUrl: string;
+        signal?: AbortSignal;
+        workspace: unknown;
+      }) {
+        controller.updateContext(input);
+        return controller;
+      },
+    };
+    const agent = new CapturePathRepairAgentFixture({
+      browserToolControllerProvider: provider,
+    });
+    const signal = new AbortController().signal;
+
+    await agent.repairCapturePathFailure({
+      ...capturePathRepairInput(),
+      agentSession: createAgentSession(),
+      failure: {
+        ...capturePathRepairInput().failure,
+        browserUrl:
+          "https://preview.example.test/signed/validated-path?token=secret",
+      },
+      signal,
+    });
+
+    expect(agent.runner.calls[0]?.tools?.map((tool) => tool.name)).toEqual([
+      "makeademo_browser_navigate",
+      "makeademo_browser_inspect",
+      "makeademo_browser_act",
+      "makeademo_browser_screenshot",
+      "makeademo_browser_reset",
+    ]);
+    expect(controller.contexts).toEqual([
+      expect.objectContaining({
+        signal,
+        localUrl: "http://localhost:3000",
+      }),
+    ]);
+    expect(controller.resets).toBe(1);
+  });
+
   it("sends Capture Path Validation failure evidence back to the same Agent Session for repair", async () => {
     const events: unknown[] = [];
     const session = createAgentSession();
@@ -350,5 +410,48 @@ function capturePathRepairInput(
     }).preparationWorkspace,
     repoUrl: "https://github.com/example/conduit",
     demoScript: canonicalDemoScript(),
+  };
+}
+
+function createRecordingBrowserToolController(): BrowserToolController & {
+  contexts: Array<{
+    deadlineAt: number | undefined;
+    localUrl: string;
+    signal?: AbortSignal;
+  }>;
+  resets: number;
+} {
+  const contexts: Array<{
+    deadlineAt: number | undefined;
+    localUrl: string;
+    signal?: AbortSignal;
+  }> = [];
+  let resets = 0;
+  return {
+    async act() {
+      return { output: "" };
+    },
+    contexts,
+    async inspect(input) {
+      return { ...input, output: "" };
+    },
+    async navigate() {
+      return { output: "", url: "http://localhost:3000" };
+    },
+    async reset() {
+      resets += 1;
+    },
+    get resets() {
+      return resets;
+    },
+    async screenshot() {
+      return {
+        path: "/workspace/.makeademo/browser-tools/latest.png",
+        sizeBytes: 0,
+      };
+    },
+    updateContext(input) {
+      contexts.push(input);
+    },
   };
 }

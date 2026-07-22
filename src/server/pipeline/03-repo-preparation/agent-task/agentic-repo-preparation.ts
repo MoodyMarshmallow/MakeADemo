@@ -4,6 +4,8 @@ import type {
   AgentTaskRunner,
 } from "../../../agent-harness/agent-session-runner.interface";
 import type { AgentMeaningfulActivity } from "../../../agent-harness/agent-session-timeout";
+import type { BrowserToolControllerProvider } from "../../../agent-harness/tools/browser/browser-tool-controller-registry";
+import { createBrowserStageTools } from "../../../agent-harness/tools/browser/browser-tool-definitions";
 import {
   type PipelineEventLogger,
   createPipelineEventLogger,
@@ -62,6 +64,8 @@ const defaultHardTimeoutMs = 1_800_000;
 const validationRepairAttemptLimit = 8;
 const maximumAgentTaskTurns = validationRepairAttemptLimit * 2;
 export type AgenticRepoPreparationOptions = {
+  /** Supplies browser tools only after a failed authoritative browser preflight. */
+  browserToolControllerProvider?: BrowserToolControllerProvider;
   /**
    * Non-secret provider configuration copied into clone-failure diagnostics.
    * Values must be stable identifiers only; implementations must not include
@@ -86,6 +90,9 @@ export type AgenticRepoPreparationOptions = {
 };
 
 export class AgenticRepoPreparation implements RepoPreparationAgent {
+  private readonly browserToolControllerProvider:
+    | BrowserToolControllerProvider
+    | undefined;
   private readonly cloneFailureDiagnosticsContext:
     | RepoPreparationCloneDiagnosticsContext
     | undefined;
@@ -102,6 +109,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     | undefined;
 
   constructor(options: AgenticRepoPreparationOptions) {
+    this.browserToolControllerProvider = options.browserToolControllerProvider;
     this.cloneFailureDiagnosticsContext =
       options.cloneFailureDiagnosticsContext;
     this.logger = options.logger ?? createRepoPreparationLogger();
@@ -334,6 +342,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     hardDeadlineAt: number,
   ): Promise<AgentTaskLoopResult> {
     let prompt = initialPrompt;
+    let repairLocalUrl: string | undefined;
     let agentSession: AgentSession | undefined;
     let validationRepairAttempts = 0;
     const controlState = createRepoPreparationControlState({
@@ -367,20 +376,43 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         remainingMs: deadlineAt - Date.now(),
       });
       let agentTaskResult: AgentTaskRunResult<RepoPreparationToolHandoff>;
-      agentTaskResult = await this.runner.run({
-        attempt: attempt + 1,
-        hardDeadlineAt,
-        hardTimeoutMs: this.hardTimeoutMs,
-        inactivityLabel: "Repo Preparation agent",
-        inactivityTimeoutMs: this.timeoutMs,
-        ...(agentSession === undefined ? {} : { session: agentSession }),
-        ...(input.signal === undefined ? {} : { signal: input.signal }),
-        stage: "repo-preparation",
-        taskPrompt: prompt,
-        tools: createRepoPreparationStageTools(controlState),
-        toolProtocol: repoPreparationToolProtocol,
-        workspace: createRepoPreparationAgentWorkspace(handle.workspace),
-      });
+      const browserController =
+        repairLocalUrl === undefined
+          ? undefined
+          : this.browserToolControllerProvider?.forWorkspace({
+              deadlineAt: hardDeadlineAt,
+              ...(input.signal === undefined ? {} : { signal: input.signal }),
+              localUrl: repairLocalUrl,
+              workspace: handle.workspace,
+            });
+      agentTaskResult = await (async () => {
+        try {
+          return await this.runner.run({
+            attempt: attempt + 1,
+            hardDeadlineAt,
+            hardTimeoutMs: this.hardTimeoutMs,
+            inactivityLabel: "Repo Preparation agent",
+            inactivityTimeoutMs: this.timeoutMs,
+            ...(agentSession === undefined ? {} : { session: agentSession }),
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+            stage: "repo-preparation",
+            taskPrompt:
+              browserController === undefined
+                ? prompt
+                : `${prompt}\n\nBrowser tools are available for the failed local preflight URL. Inspect after navigating or making major page changes before using accessibility references.`,
+            tools: [
+              ...createRepoPreparationStageTools(controlState),
+              ...(browserController === undefined
+                ? []
+                : createBrowserStageTools(browserController)),
+            ],
+            toolProtocol: repoPreparationToolProtocol,
+            workspace: createRepoPreparationAgentWorkspace(handle.workspace),
+          });
+        } finally {
+          await resetBrowserController(browserController);
+        }
+      })();
       if (Date.now() >= hardDeadlineAt) {
         if (input.deadlineAt === undefined) {
           return this.timeoutPreparation(
@@ -459,6 +491,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         });
         if (validationOutcome.status === "retry") {
           validationRepairAttempts += 1;
+          repairLocalUrl = validationOutcome.localUrl;
           prompt = validationOutcome.prompt;
           continue;
         }
@@ -645,7 +678,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     validationRepairAttempts: number;
     validationRequest: ValidationRequest;
   }): Promise<
-    | { prompt: string; status: "retry" }
+    | { localUrl?: string; prompt: string; status: "retry" }
     | { reason: string; status: "timeout" }
     | {
         result: Awaited<ReturnType<RepoPreparationAgent["prepare"]>>;
@@ -774,7 +807,9 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
       nextAttempt: input.attempt + 2,
       reason: readRetryReason(runtimePreflight.failureReason),
     });
+    const localUrl = runtimePreflight.localUrl ?? manifest?.url;
     return {
+      ...(localUrl === undefined ? {} : { localUrl }),
       prompt: createValidationFeedbackPrompt({
         manifest,
         manifestPath: input.validationRequest.manifestPath,
@@ -797,6 +832,18 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     if (Date.now() >= deadlineAt) {
       throw new PipelineCancellationError("deadline-exceeded");
     }
+  }
+}
+
+async function resetBrowserController(
+  controller:
+    | ReturnType<BrowserToolControllerProvider["forWorkspace"]>
+    | undefined,
+): Promise<void> {
+  try {
+    await controller?.reset();
+  } catch {
+    // Browser cleanup is best effort and must not replace Repo Preparation.
   }
 }
 

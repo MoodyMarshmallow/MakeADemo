@@ -222,12 +222,18 @@ export async function readPreparationManifestArtifact(
 
 export function createCapturePathRepairPrompt(
   input: CapturePathRepairInput,
+  browserToolsEnabled = false,
 ): string {
   return [
     "# MakeADemo Capture Path Repair",
     "",
     "Capture Path Validation failed for the Demo Script you generated.",
     "Repair the prepared workspace, the Demo Script, or both. The backend will rerun full Capture Path Validation after this attempt.",
+    ...(browserToolsEnabled
+      ? [
+          "Browser tools are available for the validated local app. Inspect after navigating or making major page changes before using accessibility references.",
+        ]
+      : []),
     "",
     "## Hard Requirements",
     `- Overwrite ${demoScriptPath} with the repaired Demo Script JSON before finishing.`,

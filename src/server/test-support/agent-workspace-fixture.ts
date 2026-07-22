@@ -44,7 +44,7 @@ export class RecordingAgentTaskRunner implements AgentTaskRunner {
   readonly calls: Array<
     Pick<
       AgentTaskRunInput,
-      "hardDeadlineAt" | "session" | "signal" | "stage" | "taskPrompt"
+      "hardDeadlineAt" | "session" | "signal" | "stage" | "taskPrompt" | "tools"
     >
   > = [];
 
@@ -55,6 +55,7 @@ export class RecordingAgentTaskRunner implements AgentTaskRunner {
       taskPrompt: input.taskPrompt,
       ...(input.session === undefined ? {} : { session: input.session }),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
+      ...(input.tools === undefined ? {} : { tools: input.tools }),
     });
     const result = await input.workspace.execute("recording-agent-turn", {
       env: {},

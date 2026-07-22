@@ -1,5 +1,7 @@
 import { basename } from "node:path";
 import type { AgentTaskRunner } from "../../../agent-harness/agent-session-runner.interface";
+import type { BrowserToolControllerProvider } from "../../../agent-harness/tools/browser/browser-tool-controller-registry";
+import { createBrowserStageTools } from "../../../agent-harness/tools/browser/browser-tool-definitions";
 import {
   type PipelineEventLogger,
   createPipelineEventLogger,
@@ -28,6 +30,8 @@ const defaultInactivityTimeoutMs = 600_000;
 const defaultHardTimeoutMs = 1_800_000;
 
 export type AgenticScriptGeneratorOptions = {
+  /** Supplies stable workspace-scoped browser tools for authorized agent turns. */
+  browserToolControllerProvider?: BrowserToolControllerProvider;
   /**
    * Receives non-fatal Script Generation infrastructure
    * events. Implementations must not turn best-effort sandbox audit-log mirror
@@ -48,8 +52,12 @@ export class AgenticScriptGenerator implements ScriptGenerationAgent {
   private readonly runner: AgentTaskRunner;
   private readonly timeoutMs: number;
   private readonly hardTimeoutMs: number;
+  private readonly browserToolControllerProvider:
+    | BrowserToolControllerProvider
+    | undefined;
 
   constructor(options: AgenticScriptGeneratorOptions) {
+    this.browserToolControllerProvider = options.browserToolControllerProvider;
     this.logger = options.logger ?? createScriptGenerationLogger();
     this.maxAttempts = options.maxAttempts ?? 3;
     this.runner = options.runner;
@@ -64,7 +72,10 @@ export class AgenticScriptGenerator implements ScriptGenerationAgent {
       Date.now() + this.hardTimeoutMs,
       input.deadlineAt ?? Number.POSITIVE_INFINITY,
     );
-    let prompt = createScriptGenerationPrompt(input);
+    let prompt = createScriptGenerationPrompt(
+      input,
+      this.browserToolControllerProvider !== undefined,
+    );
     let lastFailure = "Script Generation did not produce a valid Demo Script.";
     for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
       throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
@@ -79,19 +90,35 @@ export class AgenticScriptGenerator implements ScriptGenerationAgent {
         agentSession: input.agentSession,
       });
       await removePreviousDemoScript(input);
-      const result = await this.runner.run({
-        attempt,
-        taskPrompt: prompt,
-        session: input.agentSession,
-        ...(input.signal === undefined ? {} : { signal: input.signal }),
-        stage: "script-generation",
-        hardDeadlineAt,
-        inactivityTimeoutMs: this.timeoutMs,
-        hardTimeoutMs: this.hardTimeoutMs,
-        workspace: createRepoPreparationAgentWorkspace(
-          input.preparationWorkspace.workspace,
-        ),
-      });
+      const browserController =
+        this.browserToolControllerProvider?.forWorkspace({
+          deadlineAt: hardDeadlineAt,
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+          localUrl: input.preparationManifest.url,
+          workspace: input.preparationWorkspace.workspace,
+        });
+      const result = await (async () => {
+        try {
+          return await this.runner.run({
+            attempt,
+            taskPrompt: prompt,
+            session: input.agentSession,
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+            stage: "script-generation",
+            hardDeadlineAt,
+            inactivityTimeoutMs: this.timeoutMs,
+            hardTimeoutMs: this.hardTimeoutMs,
+            ...(browserController === undefined
+              ? {}
+              : { tools: createBrowserStageTools(browserController) }),
+            workspace: createRepoPreparationAgentWorkspace(
+              input.preparationWorkspace.workspace,
+            ),
+          });
+        } finally {
+          await resetBrowserController(browserController);
+        }
+      })();
       throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
 
       if (result.exitCode !== 0) {
@@ -104,7 +131,10 @@ export class AgenticScriptGenerator implements ScriptGenerationAgent {
           level: scriptGenerationAttemptFailureLevel(attempt, this.maxAttempts),
           reason: lastFailure,
         });
-        prompt = createScriptGenerationRepairPrompt(lastFailure);
+        prompt = createScriptGenerationRepairPrompt(
+          lastFailure,
+          browserController !== undefined,
+        );
         await writeScriptGenerationRetryLog(this.logger, input, {
           attempt,
           maxAttempts: this.maxAttempts,
@@ -131,7 +161,10 @@ export class AgenticScriptGenerator implements ScriptGenerationAgent {
           level: scriptGenerationAttemptFailureLevel(attempt, this.maxAttempts),
           reason: lastFailure,
         });
-        prompt = createScriptGenerationRepairPrompt(lastFailure);
+        prompt = createScriptGenerationRepairPrompt(
+          lastFailure,
+          browserController !== undefined,
+        );
         await writeScriptGenerationRetryLog(this.logger, input, {
           attempt,
           maxAttempts: this.maxAttempts,
@@ -156,7 +189,10 @@ export class AgenticScriptGenerator implements ScriptGenerationAgent {
           level: scriptGenerationAttemptFailureLevel(attempt, this.maxAttempts),
           reason: lastFailure,
         });
-        prompt = createScriptGenerationRepairPrompt(lastFailure);
+        prompt = createScriptGenerationRepairPrompt(
+          lastFailure,
+          browserController !== undefined,
+        );
         await writeScriptGenerationRetryLog(this.logger, input, {
           attempt,
           maxAttempts: this.maxAttempts,
@@ -399,6 +435,7 @@ async function readInitialDemoScriptArtifact(input: {
 
 function createScriptGenerationPrompt(
   input: AgenticScriptGenerationInput,
+  browserToolsEnabled: boolean,
 ): string {
   return [
     "# MakeADemo Script Generation",
@@ -410,6 +447,11 @@ function createScriptGenerationPrompt(
     "## Goal",
     "Explore the prepared repo enough to create a Demo Script with one continuous Playwright flow for the requested features.",
     "Use your existing session context from preparation, but inspect relevant routes, components, fixtures, and docs when needed.",
+    ...(browserToolsEnabled
+      ? [
+          "Browser tools are available for the prepared app. Inspect after navigating or making major page changes before using accessibility references.",
+        ]
+      : []),
     "",
     "## Hard Requirements",
     "- Output JSON matching the capture-ready Demo Script schema.",
@@ -454,16 +496,36 @@ function createScriptGenerationContext(input: AgenticScriptGenerationInput) {
   };
 }
 
-function createScriptGenerationRepairPrompt(reason: string): string {
+function createScriptGenerationRepairPrompt(
+  reason: string,
+  browserToolsEnabled: boolean,
+): string {
   return [
     "# MakeADemo Script Generation Repair",
     "",
     `The previous Script Generation output was rejected: ${reason}`,
     `Repair the Demo Script and overwrite ${demoScriptPath}.`,
     "Do not modify app source. Include real user interactions and feature-specific assertions.",
+    ...(browserToolsEnabled
+      ? [
+          "Use a fresh browser inspection after navigating or making major page changes before using accessibility references.",
+        ]
+      : []),
     "",
     createDemoScriptSchemaPrompt(),
   ].join("\n");
+}
+
+async function resetBrowserController(
+  controller:
+    | ReturnType<BrowserToolControllerProvider["forWorkspace"]>
+    | undefined,
+): Promise<void> {
+  try {
+    await controller?.reset();
+  } catch {
+    // Browser cleanup is best effort and must not replace the stage outcome.
+  }
 }
 
 function shellQuote(value: string): string {
