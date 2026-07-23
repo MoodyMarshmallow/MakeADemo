@@ -32,6 +32,15 @@ export type AgentToolCall = {
   status?: string;
 };
 
+/** Provider-emitted tool lifecycle data retained for development diagnostics. */
+export type AgentToolExecution = {
+  args: unknown;
+  isError: boolean;
+  name: string;
+  result?: unknown;
+  status: "completed" | "started";
+};
+
 /** Provider-neutral schema and execution contract for a Pipeline Stage tool. */
 export type AgentToolDefinition = {
   args: Readonly<
@@ -74,8 +83,12 @@ export type AgentSessionRunInput<T = never> = {
   taskPrompt: string;
   /** Stage-owned tools for this turn; never inferred from provider configuration. */
   tools?: readonly AgentToolDefinition[];
+  /** Receives reasoning text or summaries explicitly exposed by the provider. */
+  onReasoning?: (content: string) => void;
   onStderr?: (chunk: string) => void;
   onStdout?: (chunk: string) => void;
+  /** Receives complete provider-emitted tool lifecycle data. */
+  onToolExecution?: (event: AgentToolExecution) => void;
   session?: AgentSession;
   stage: string;
   toolProtocol?: AgentToolProtocol<T>;
@@ -85,7 +98,7 @@ export type AgentSessionRunInput<T = never> = {
 /** Provider-neutral input supplied by a Pipeline Stage to a bound task runner. */
 export type AgentTaskRunInput<T = never> = Omit<
   AgentSessionRunInput<T>,
-  "onStderr" | "onStdout" | "profile"
+  "onReasoning" | "onStderr" | "onStdout" | "onToolExecution" | "profile"
 >;
 
 export type AgentSessionRunResult<T = never> = {
@@ -123,7 +136,9 @@ export type AgentTaskEvent =
   | {
       kind: "output";
       channel: "diagnostic" | "standard";
+      content: string;
       length: number;
+      outputType: "assistant" | "diagnostic" | "reasoning" | "tool";
     };
 
 export type AgentTaskRunResult<T = never> = {

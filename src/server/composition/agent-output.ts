@@ -21,9 +21,10 @@ type AgentOutputRoute = {
 };
 
 /**
- * Routes provider-neutral semantic agent output to the CLI and bounded audit
+ * Routes provider-neutral semantic agent output to the CLI and durable audit
  * events to task logs. The harness owns provider event decoding; Composition
- * never persists assistant text, reasoning, tool arguments, or diagnostics.
+ * records the exact output content exposed by that contract without adding a
+ * sanitization or redaction layer.
  */
 export function createAgentOutputRouter(options: {
   runDirectory: string;
@@ -54,10 +55,15 @@ export function createAgentOutputRouter(options: {
 
   return {
     close: async () => {
-      await Promise.all([
+      const results = await Promise.allSettled([
         primaryAuditLog.close(),
         scriptGenerationAuditLog.close(),
       ]);
+      const failure = results.find(
+        (result): result is PromiseRejectedResult =>
+          result.status === "rejected",
+      );
+      if (failure !== undefined) throw failure.reason;
     },
     primaryAuditLogPath: primaryAuditLog.logPath,
     repoPreparation: route(false),
@@ -71,8 +77,18 @@ function createAgentOutputLog(logPath: string) {
     base: { component: "agent-output" },
     sinks: [createFilePipelineLogSink(logPath)],
   });
+  let firstWriteError: unknown;
+  let hasWriteError = false;
+  let pendingWrites = Promise.resolve();
+  const rememberWriteError = (error: unknown) => {
+    if (hasWriteError) return;
+    hasWriteError = true;
+    firstWriteError = error;
+  };
   const appendEntry = (entry: Record<string, unknown>) => {
-    void logger.info(entry, "Agent harness output.").catch(() => undefined);
+    pendingWrites = pendingWrites
+      .then(() => logger.info(entry, "Agent harness output."))
+      .catch(rememberWriteError);
   };
 
   appendEntry({
@@ -82,7 +98,13 @@ function createAgentOutputLog(logPath: string) {
 
   return {
     close: async () => {
-      await logger.flush().catch(() => undefined);
+      await pendingWrites;
+      try {
+        await logger.flush();
+      } catch (error) {
+        rememberWriteError(error);
+      }
+      if (hasWriteError) throw firstWriteError;
     },
     logPath,
     writeEvent(event: AgentTaskEvent) {
@@ -103,9 +125,11 @@ function createAuditEntry(event: AgentTaskEvent) {
   if (event.kind === "output") {
     return {
       channel: event.channel,
+      content: event.content,
       eventType: "agent-output.chunk",
       kind: event.kind,
       length: event.length,
+      outputType: event.outputType,
       source: "agent-harness",
     };
   }

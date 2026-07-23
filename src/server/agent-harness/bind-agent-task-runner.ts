@@ -5,12 +5,14 @@ import type {
   AgentTaskRunInput,
   AgentTaskRunResult,
   AgentTaskRunner,
+  AgentToolExecution,
 } from "./agent-session-runner.interface";
 import { AgentSessionTimeoutError } from "./agent-session-timeout";
 
 export type AgentTaskOutputSinkEvent = {
   channel: "diagnostic" | "standard";
   message: string;
+  outputType: "assistant" | "diagnostic" | "reasoning" | "tool";
 };
 
 type AgentProviderFailureCategory =
@@ -55,15 +57,36 @@ export function bindAgentTaskRunner(
       const emitOutput = (
         channel: AgentTaskOutputSinkEvent["channel"],
         chunk: string,
+        outputType: AgentTaskOutputSinkEvent["outputType"],
       ) => {
-        recordEvent({ kind: "output", channel, length: chunk.length });
-        options.onOutput?.({ channel, message: chunk });
+        recordEvent({
+          channel,
+          content: chunk,
+          kind: "output",
+          length: chunk.length,
+          outputType,
+        });
+        options.onOutput?.({ channel, message: chunk, outputType });
       };
       try {
         const result = await runner.run({
           ...input,
-          onStderr: (chunk) => emitOutput("diagnostic", chunk),
-          onStdout: (chunk) => emitOutput("standard", chunk),
+          onReasoning: (content) =>
+            emitOutput("standard", formatReasoning(content), "reasoning"),
+          onStderr: (chunk) => emitOutput("diagnostic", chunk, "diagnostic"),
+          onStdout: (chunk) => emitOutput("standard", chunk, "assistant"),
+          onToolExecution: (event) => {
+            recordEvent({
+              event: `agent-task.tool-${event.status}`,
+              kind: "audit",
+              metadata: {
+                isError: event.isError,
+                status: event.status,
+                tool: event.name,
+              },
+            });
+            emitOutput("standard", formatToolExecution(event), "tool");
+          },
           profile: options.profile,
         });
         if (result.lastMeaningfulActivity !== undefined) {
@@ -128,6 +151,14 @@ export function bindAgentTaskRunner(
       }
     },
   };
+}
+
+function formatReasoning(content: string): string {
+  return `\n[agent reasoning]\n${content}\n`;
+}
+
+function formatToolExecution(event: AgentToolExecution): string {
+  return `\n[agent tool] ${event.name} ${event.status}${event.isError ? " (error)" : ""}\n`;
 }
 
 function readFailure(

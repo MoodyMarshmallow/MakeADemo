@@ -70,6 +70,20 @@ describe("bindAgentTaskRunner", () => {
   it("keeps provider settings in the bound runner and emits semantic output events", async () => {
     const run = vi.fn(async (input): Promise<AgentSessionRunResult> => {
       input.onStdout?.("provider text");
+      input.onReasoning?.("inspect the package before editing");
+      input.onToolExecution?.({
+        args: { path: "package.json" },
+        isError: false,
+        name: "read",
+        status: "started",
+      });
+      input.onToolExecution?.({
+        args: { path: "package.json" },
+        isError: false,
+        name: "read",
+        result: { content: "package contents" },
+        status: "completed",
+      });
       return {
         exitCode: 0,
         latestToolName: "submit-preparation",
@@ -78,8 +92,10 @@ describe("bindAgentTaskRunner", () => {
       };
     });
     const auditEvents: unknown[] = [];
+    const outputEvents: unknown[] = [];
     const runner = bindAgentTaskRunner({ run } as never, {
       onEvent: (event) => auditEvents.push(event),
+      onOutput: (event) => outputEvents.push(event),
       profile: {
         label: "Script Generation",
         modelID: "model",
@@ -100,20 +116,70 @@ describe("bindAgentTaskRunner", () => {
     );
     expect(result.events).toEqual(
       expect.arrayContaining([
-        { channel: "standard", kind: "output", length: 13 },
+        expect.objectContaining({
+          channel: "standard",
+          content: "provider text",
+          kind: "output",
+          outputType: "assistant",
+        }),
+        expect.objectContaining({
+          content: expect.stringContaining(
+            "inspect the package before editing",
+          ),
+          kind: "output",
+          outputType: "reasoning",
+        }),
+        expect.objectContaining({
+          content: expect.stringContaining("[agent tool] read started"),
+          kind: "output",
+          outputType: "tool",
+        }),
+        expect.objectContaining({
+          content: expect.stringContaining("[agent tool] read completed"),
+          kind: "output",
+          outputType: "tool",
+        }),
         expect.objectContaining({ event: "agent-task.started", kind: "audit" }),
         expect.objectContaining({
           event: "agent-task.finished",
           kind: "audit",
         }),
         expect.objectContaining({
-          event: "agent-task.tool-used",
+          event: "agent-task.tool-started",
           kind: "audit",
-          metadata: { tool: "submit-preparation" },
+          metadata: expect.objectContaining({ tool: "read" }),
+        }),
+        expect.objectContaining({
+          event: "agent-task.tool-completed",
+          kind: "audit",
+          metadata: expect.objectContaining({ tool: "read" }),
         }),
       ]),
     );
     expect(auditEvents).toEqual(result.events);
+    expect(result.events?.map(eventLabel)).toEqual([
+      "agent-task.started",
+      "output:assistant:standard",
+      "output:reasoning:standard",
+      "agent-task.tool-started",
+      "output:tool:standard",
+      "agent-task.tool-completed",
+      "output:tool:standard",
+      "agent-task.tool-used",
+      "agent-task.finished",
+    ]);
+    expect(outputEvents).toHaveLength(4);
+    expect(outputEvents).toEqual([
+      expect.objectContaining({
+        message: "provider text",
+        outputType: "assistant",
+      }),
+      expect.objectContaining({ outputType: "reasoning" }),
+      expect.objectContaining({ outputType: "tool" }),
+      expect.objectContaining({ outputType: "tool" }),
+    ]);
+    expect(JSON.stringify(outputEvents)).not.toContain("package.json");
+    expect(JSON.stringify(outputEvents)).not.toContain("package contents");
   });
 
   it("normalizes Agent Harness timeouts as task failures", async () => {
@@ -146,6 +212,60 @@ describe("bindAgentTaskRunner", () => {
       failure: { category: "timeout", message: expect.any(String) },
     });
   });
+
+  it("logs tool identity without inspecting arguments or results", async () => {
+    const cyclicArgs: Record<string, unknown> = {};
+    cyclicArgs.self = cyclicArgs;
+    cyclicArgs.privateArgument = "private argument";
+    const customInspector = vi.fn(() => {
+      throw new Error("formatter exploded");
+    });
+    const uninspectableResult = {
+      privateResult: "private result",
+      [Symbol.for("nodejs.util.inspect.custom")]: customInspector,
+    };
+    const output: string[] = [];
+    const runner = bindAgentTaskRunner(
+      {
+        run: async (input) => {
+          input.onToolExecution?.({
+            args: cyclicArgs,
+            isError: false,
+            name: "read",
+            status: "started",
+          });
+          input.onToolExecution?.({
+            args: cyclicArgs,
+            isError: false,
+            name: "read",
+            result: uninspectableResult,
+            status: "completed",
+          });
+          return { exitCode: 0, stderr: "", stdout: "" };
+        },
+      },
+      {
+        onOutput: (event) => output.push(event.message),
+        profile: {
+          label: "test",
+          modelID: "model",
+          providerID: "provider",
+          thinkingLevel: "medium",
+        },
+      },
+    );
+
+    await expect(runner.run(taskInput())).resolves.toMatchObject({
+      exitCode: 0,
+    });
+    expect(output).toEqual([
+      "\n[agent tool] read started\n",
+      "\n[agent tool] read completed\n",
+    ]);
+    expect(output.join("\n")).not.toContain("private argument");
+    expect(output.join("\n")).not.toContain("private result");
+    expect(customInspector).not.toHaveBeenCalled();
+  });
 });
 
 function taskInput() {
@@ -158,4 +278,18 @@ function taskInput() {
     taskPrompt: "task",
     workspace: {} as never,
   };
+}
+
+function eventLabel(event: unknown): string {
+  if (typeof event !== "object" || event === null) return "unknown";
+  if ("event" in event && typeof event.event === "string") return event.event;
+  if (
+    "kind" in event &&
+    event.kind === "output" &&
+    "outputType" in event &&
+    "channel" in event
+  ) {
+    return `output:${String(event.outputType)}:${String(event.channel)}`;
+  }
+  return String("kind" in event ? event.kind : "unknown");
 }

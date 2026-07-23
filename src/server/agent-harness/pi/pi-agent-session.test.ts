@@ -226,6 +226,8 @@ describe("PiAgentSession", () => {
     });
     const cancelActiveCommands = vi.fn();
     const onStdout = vi.fn();
+    const onReasoning = vi.fn();
+    const onToolExecution = vi.fn();
     const resultPromise = runner.run({
       attempt: 1,
       hardDeadlineAt: Date.now() + 1_000,
@@ -235,6 +237,8 @@ describe("PiAgentSession", () => {
       stage: "test",
       taskPrompt: "handoff",
       onStdout,
+      onReasoning,
+      onToolExecution,
       toolProtocol: {
         decode: (call) =>
           call.name === "stage_submit"
@@ -259,17 +263,22 @@ describe("PiAgentSession", () => {
     sessions[0]?.emit({
       type: "message_update",
       assistantMessageEvent: {
-        type: "thinking_delta",
-        delta: "secret reasoning",
+        type: "thinking_end",
+        content: "inspect the package before editing",
       },
       message: { role: "assistant", content: [] },
     });
     sessions[0]?.emit({
-      type: "tool_execution_end",
+      type: "tool_execution_start",
       toolName: "stage_submit",
       args: { ok: true },
+      toolCallId: "call-1",
+    });
+    sessions[0]?.emit({
+      type: "tool_execution_end",
+      toolName: "stage_submit",
       isError: false,
-      result: { content: [] },
+      result: { content: [{ text: "submitted", type: "text" }] },
       toolCallId: "call-1",
     });
     sessions[0]?.emit({
@@ -287,10 +296,220 @@ describe("PiAgentSession", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("hello");
+    expect(onReasoning).toHaveBeenCalledWith(
+      "inspect the package before editing",
+    );
+    expect(onToolExecution).toHaveBeenNthCalledWith(1, {
+      args: { ok: true },
+      isError: false,
+      name: "stage_submit",
+      status: "started",
+    });
+    expect(onToolExecution).toHaveBeenNthCalledWith(2, {
+      args: { ok: true },
+      isError: false,
+      name: "stage_submit",
+      result: { content: [{ text: "submitted", type: "text" }] },
+      status: "completed",
+    });
     expect(result.handoff).toEqual({ ok: true });
     expect(result.providerError).toBeUndefined();
     expect(sessions[0]?.abort).toHaveBeenCalledTimes(1);
     expect(cancelActiveCommands).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains streamed reasoning without duplicating its final summary", async () => {
+    const { factory, sessions } = createSessionFactory();
+    const runner = new PiAgentSession({
+      createSession: factory,
+      resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
+    });
+    const onReasoning = vi.fn();
+    const resultPromise = runner.run({
+      attempt: 1,
+      hardDeadlineAt: Date.now() + 1_000,
+      hardTimeoutMs: 1_000,
+      inactivityTimeoutMs: 1_000,
+      profile,
+      stage: "test",
+      taskPrompt: "reasoning",
+      onReasoning,
+      workspace: workspaceStub(),
+    });
+    await vi.waitFor(() => expect(sessions[0]?.subscribe).toHaveBeenCalled());
+    sessions[0]?.emit({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "thinking_delta",
+        contentIndex: 0,
+        delta: "raw reasoning",
+      },
+      message: { role: "assistant", content: [] },
+    });
+    sessions[0]?.emit({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "thinking_end",
+        contentIndex: 0,
+        content: "summary reasoning",
+      },
+      message: { role: "assistant", content: [] },
+    });
+    sessions[0]?.emit({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "thinking_delta",
+        contentIndex: 1,
+        delta: "normal summary",
+      },
+      message: { role: "assistant", content: [] },
+    });
+    sessions[0]?.emit({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "thinking_end",
+        contentIndex: 1,
+        content: "normal summary",
+      },
+      message: { role: "assistant", content: [] },
+    });
+    sessions[0]?.emit({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "thinking_delta",
+        contentIndex: 2,
+        delta: "raw stream ",
+      },
+      message: { role: "assistant", content: [] },
+    });
+    sessions[0]?.emit({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "thinking_delta",
+        contentIndex: 2,
+        delta: "summary stream",
+      },
+      message: { role: "assistant", content: [] },
+    });
+    sessions[0]?.emit({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "thinking_end",
+        contentIndex: 2,
+        content: "summary stream",
+      },
+      message: { role: "assistant", content: [] },
+    });
+    sessions[0]?.emit({
+      type: "agent_end",
+      messages: [{ role: "assistant", content: [] }],
+    });
+
+    await resultPromise;
+
+    expect(onReasoning).toHaveBeenCalledTimes(3);
+    expect(onReasoning).toHaveBeenNthCalledWith(
+      1,
+      "raw reasoning\nsummary reasoning",
+    );
+    expect(onReasoning).toHaveBeenNthCalledWith(2, "normal summary");
+    expect(onReasoning).toHaveBeenNthCalledWith(3, "raw stream summary stream");
+  });
+
+  it("emits a terminal reasoning summary once when only whitespace differs", async () => {
+    const { factory, sessions } = createSessionFactory();
+    const runner = new PiAgentSession({
+      createSession: factory,
+      resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
+    });
+    const onReasoning = vi.fn();
+    const resultPromise = runner.run({
+      attempt: 1,
+      hardDeadlineAt: Date.now() + 1_000,
+      hardTimeoutMs: 1_000,
+      inactivityTimeoutMs: 1_000,
+      profile,
+      stage: "test",
+      taskPrompt: "reasoning summary",
+      onReasoning,
+      workspace: workspaceStub(),
+    });
+    await vi.waitFor(() => expect(sessions[0]?.subscribe).toHaveBeenCalled());
+    sessions[0]?.emit({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "thinking_delta",
+        contentIndex: 0,
+        delta: "**Summary**\n\nInspect the package.\n\n\n",
+      },
+      message: { role: "assistant", content: [] },
+    });
+    sessions[0]?.emit({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "thinking_end",
+        contentIndex: 0,
+        content: "**Summary**\n\nInspect the package.",
+      },
+      message: { role: "assistant", content: [] },
+    });
+    sessions[0]?.emit({
+      type: "agent_end",
+      messages: [{ role: "assistant", content: [] }],
+    });
+
+    await resultPromise;
+
+    expect(onReasoning).toHaveBeenCalledTimes(1);
+    expect(onReasoning).toHaveBeenCalledWith(
+      "**Summary**\n\nInspect the package.",
+    );
+  });
+
+  it("flushes an interrupted reasoning block when Pi ends without thinking_end", async () => {
+    const { factory, sessions } = createSessionFactory();
+    const runner = new PiAgentSession({
+      createSession: factory,
+      resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
+    });
+    const onReasoning = vi.fn();
+    const resultPromise = runner.run({
+      attempt: 1,
+      hardDeadlineAt: Date.now() + 1_000,
+      hardTimeoutMs: 1_000,
+      inactivityTimeoutMs: 1_000,
+      profile,
+      stage: "test",
+      taskPrompt: "interrupted reasoning",
+      onReasoning,
+      workspace: workspaceStub(),
+    });
+    await vi.waitFor(() => expect(sessions[0]?.subscribe).toHaveBeenCalled());
+    sessions[0]?.emit({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "thinking_delta",
+        contentIndex: 0,
+        delta: "partial reasoning",
+      },
+      message: { role: "assistant", content: [] },
+    });
+    sessions[0]?.emit({
+      type: "agent_end",
+      messages: [
+        {
+          role: "assistant",
+          content: [],
+          stopReason: "aborted",
+          errorMessage: "Request was aborted",
+        },
+      ],
+    });
+
+    await resultPromise;
+
+    expect(onReasoning).toHaveBeenCalledTimes(1);
+    expect(onReasoning).toHaveBeenCalledWith("partial reasoning");
   });
 
   it("settles an already-cancelled task without creating a provider session", async () => {

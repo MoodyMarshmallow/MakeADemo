@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,6 +8,26 @@ import type { AgentTaskEvent } from "../agent-harness/agent-session-runner.inter
 import { createAgentOutputRouter } from "./agent-output";
 
 describe("createAgentOutputRouter", () => {
+  it("surfaces audit persistence failures when closing", async () => {
+    const tempDirectory = await mkdtemp(join(tmpdir(), "makeademo-output-"));
+    const runDirectory = join(tempDirectory, "run-directory-file");
+    await writeFile(runDirectory, "not a directory");
+    const router = createAgentOutputRouter({
+      runDirectory,
+      writeDiagnostic: () => undefined,
+      writeStandard: () => undefined,
+    });
+
+    router.agentTasks.onEvent({
+      event: "agent-task.started",
+      kind: "audit",
+    });
+
+    await expect(router.close()).rejects.toMatchObject({
+      code: expect.stringMatching(/EEXIST|ENOTDIR/),
+    });
+  });
+
   it("routes semantic output while preserving task-scoped audit logs", async () => {
     const runDirectory = await mkdtemp(join(tmpdir(), "makeademo-output-"));
     const standard: string[] = [];
@@ -21,8 +41,8 @@ describe("createAgentOutputRouter", () => {
     router.repoPreparation.onStandard("repo\n");
     router.agentTasks.onDiagnostic("warning\n");
     router.agentTasks.onStandard("script\n");
-    const privateReasoning = "private reasoning must not be persisted";
-    router.agentTasks.onStandard(privateReasoning);
+    const providerReasoning = "inspect the package before editing";
+    router.agentTasks.onStandard(providerReasoning);
     const taskEvent: AgentTaskEvent = {
       event: "agent-task.tool-used",
       kind: "audit",
@@ -35,12 +55,35 @@ describe("createAgentOutputRouter", () => {
     router.agentTasks.onEvent(taskEvent);
     router.agentTasks.onEvent({
       channel: "standard",
+      content: "script\n",
       kind: "output",
-      length: privateReasoning.length,
+      length: "script\n".length,
+      outputType: "assistant",
+    });
+    router.agentTasks.onEvent({
+      channel: "diagnostic",
+      content: "warning\n",
+      kind: "output",
+      length: "warning\n".length,
+      outputType: "diagnostic",
+    });
+    router.agentTasks.onEvent({
+      channel: "standard",
+      content: providerReasoning,
+      kind: "output",
+      length: providerReasoning.length,
+      outputType: "reasoning",
+    });
+    router.agentTasks.onEvent({
+      channel: "standard",
+      content: toolOutput,
+      kind: "output",
+      length: toolOutput.length,
+      outputType: "tool",
     });
     await router.close();
 
-    expect(standard).toEqual(["repo\n", "script\n", privateReasoning]);
+    expect(standard).toEqual(["repo\n", "script\n", providerReasoning]);
     expect(diagnostic).toEqual(["warning\n"]);
     const primaryLog = await readFile(router.primaryAuditLogPath, "utf8");
     const scriptLog = await readFile(
@@ -48,14 +91,42 @@ describe("createAgentOutputRouter", () => {
       "utf8",
     );
     expect(primaryLog).toContain('"eventType":"agent-output.chunk"');
-    expect(primaryLog).toContain(`"length":${privateReasoning.length}`);
-    expect(primaryLog).not.toContain('"length":7');
-    expect(primaryLog).not.toContain('"length":8');
-    expect(scriptLog).not.toContain('"length":6');
-    expect(scriptLog).not.toContain('"raw"');
-    expect(scriptLog).not.toContain(privateReasoning);
+    expect(primaryLog).toContain(`"length":${providerReasoning.length}`);
+    expect(readOutputTypes(primaryLog)).toEqual([
+      "assistant",
+      "diagnostic",
+      "reasoning",
+      "tool",
+    ]);
+    expect(readOutputTypes(scriptLog)).toEqual([
+      "assistant",
+      "diagnostic",
+      "reasoning",
+      "tool",
+    ]);
+    expect(scriptLog).toContain(providerReasoning);
+    expect(scriptLog).toContain('"content":"script\\n"');
+    expect(scriptLog).toContain('"outputType":"assistant"');
+    expect(scriptLog).toContain('"content":"warning\\n"');
+    expect(scriptLog).toContain('"outputType":"diagnostic"');
+    expect(scriptLog).toContain('"outputType":"reasoning"');
+    expect(scriptLog).toContain("[agent tool] read completed");
+    expect(scriptLog).not.toContain("package.json");
+    expect(scriptLog).not.toContain("package contents");
+    expect(scriptLog).toContain('"outputType":"tool"');
     expect(scriptLog).toContain('"eventType":"agent-task.tool-used"');
     expect(scriptLog).toContain('"tool":"read"');
     expect(primaryLog).toContain('"source":"agent-harness"');
   });
 });
+
+const toolOutput = "\n[agent tool] read completed\n";
+
+function readOutputTypes(log: string): unknown[] {
+  return log
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((entry) => entry.eventType === "agent-output.chunk")
+    .map((entry) => entry.outputType);
+}

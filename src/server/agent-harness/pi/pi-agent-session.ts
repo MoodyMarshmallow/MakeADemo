@@ -22,6 +22,7 @@ import {
   parsePiStructuredOutput,
   readPiAssistantText,
   readPiProviderError,
+  readPiReasoningEvent,
   readPiTextDelta,
   readPiToolExecution,
 } from "./pi-event-adapter";
@@ -193,6 +194,48 @@ export class PiAgentSession implements AgentSessionRunner {
       let providerError: string | undefined;
       let timeoutError: AgentSessionTimeoutError | undefined;
       const toolArguments = new Map<string, unknown>();
+      const reasoningBuffers = new Map<number, string>();
+
+      const flushReasoning = (
+        contentIndex: number,
+        finalContent?: string,
+      ): void => {
+        const buffered = reasoningBuffers.get(contentIndex) ?? "";
+        reasoningBuffers.delete(contentIndex);
+        if (buffered.length === 0 && (finalContent?.length ?? 0) === 0) {
+          return;
+        }
+        if (
+          finalContent !== undefined &&
+          buffered.trim() === finalContent.trim()
+        ) {
+          const content = finalContent.trim();
+          if (content.length > 0) input.onReasoning?.(content);
+          return;
+        }
+        if (
+          finalContent !== undefined &&
+          finalContent.length > 0 &&
+          finalContent !== buffered &&
+          !buffered.endsWith(finalContent)
+        ) {
+          input.onReasoning?.(
+            buffered.length === 0
+              ? finalContent
+              : `${buffered}\n${finalContent}`,
+          );
+          return;
+        }
+        const content = buffered.length > 0 ? buffered : finalContent;
+        if (content !== undefined && content.length > 0) {
+          input.onReasoning?.(content);
+        }
+      };
+      const flushPendingReasoning = (): void => {
+        for (const contentIndex of reasoningBuffers.keys()) {
+          flushReasoning(contentIndex);
+        }
+      };
 
       const emit = (channel: "stderr" | "stdout", chunk: string) => {
         if (chunk.length === 0) return;
@@ -211,6 +254,22 @@ export class PiAgentSession implements AgentSessionRunner {
         activity.observe(event.type);
         const text = readPiTextDelta(event);
         if (text !== undefined) emit("stdout", text);
+        const reasoning = readPiReasoningEvent(event);
+        if (reasoning?.status === "delta") {
+          reasoningBuffers.set(
+            reasoning.contentIndex,
+            (reasoningBuffers.get(reasoning.contentIndex) ?? "") +
+              reasoning.content,
+          );
+        } else if (reasoning !== undefined) {
+          flushReasoning(reasoning.contentIndex, reasoning.content);
+        }
+        if (
+          event.type === "message_update" &&
+          event.assistantMessageEvent.type === "error"
+        ) {
+          flushPendingReasoning();
+        }
         const tool = readPiToolExecution(event);
         if (tool !== undefined) {
           const toolCallId =
@@ -229,6 +288,7 @@ export class PiAgentSession implements AgentSessionRunner {
           }
           latestToolName = tool.name;
           activity.observe(`tool-${tool.status}`, tool.name);
+          input.onToolExecution?.(tool);
           if (
             tool.status === "completed" &&
             !tool.isError &&
@@ -258,9 +318,11 @@ export class PiAgentSession implements AgentSessionRunner {
           ignoreAborted: interruption.interrupted,
         });
         if (eventError !== undefined) {
+          flushPendingReasoning();
           providerError = eventError;
           emit("stderr", eventError);
         }
+        if (event.type === "agent_end") flushPendingReasoning();
       };
 
       const unsubscribe = retained.providerSession.subscribe(processEvent);
@@ -292,6 +354,7 @@ export class PiAgentSession implements AgentSessionRunner {
           }
         } else timeoutError = error;
       } finally {
+        flushPendingReasoning();
         unsubscribe();
       }
 

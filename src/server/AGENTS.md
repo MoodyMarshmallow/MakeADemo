@@ -18,7 +18,8 @@
 ## Agent Harness Output
 
 - CLI stdout should stay readable. `src/server/composition/full-pipeline-cli.mts` uses the pretty Pino sink for pipeline progress and the composition output router for filtered agent text/tool progress.
-- Provider reasoning must not be written to terminal or audit output. Persist only bounded provider-neutral Agent Harness lifecycle metadata (for example stage, provider/model identifiers, output lengths, activity kinds, tool names, and timestamps). Never persist assistant text, user prompts, tool arguments or results, secrets, or raw diagnostic contents.
+- During early development, the Agent Harness output includes assistant text, exposed provider reasoning (raw or summary), tool names and lifecycle states, and diagnostics in stdout/stderr and the backend-owned JSONL audit artifacts. Tool arguments and results are intentionally omitted from both routes. The `onEvent` route is the durable record; `onStandard` and `onDiagnostic` remain the stdout/stderr routes and must not be duplicated by direct stream writes from the audit path.
+- This early-development policy does not add sanitization or redaction at the composition seam. Provider-hidden reasoning that is never exposed in a provider event is unavailable to MakeADemo and cannot be recovered by the output router.
 
 ## Legacy Paths
 

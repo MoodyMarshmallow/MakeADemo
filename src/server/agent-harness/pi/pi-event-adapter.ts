@@ -4,7 +4,15 @@ export type PiToolExecution = {
   args: unknown;
   isError: boolean;
   name: string;
+  result?: unknown;
   status: "completed" | "started";
+};
+
+/** Provider reasoning fragment emitted while an assistant message streams. */
+export type PiReasoningEvent = {
+  content: string;
+  contentIndex: number;
+  status: "completed" | "delta";
 };
 
 /** Returns user-visible assistant text emitted by a Pi event, if any. */
@@ -15,6 +23,29 @@ export function readPiTextDelta(event: AgentSessionEvent): string | undefined {
   // provider reasoning must not become user-visible transcript text.
   if (update.type === "text_delta") {
     return update.delta;
+  }
+  return undefined;
+}
+
+/** Normalizes Pi reasoning deltas and terminal summaries for session buffering. */
+export function readPiReasoningEvent(
+  event: AgentSessionEvent,
+): PiReasoningEvent | undefined {
+  if (event.type !== "message_update") return undefined;
+  const update = event.assistantMessageEvent;
+  if (update.type === "thinking_delta") {
+    return {
+      content: update.delta,
+      contentIndex: update.contentIndex,
+      status: "delta",
+    };
+  }
+  if (update.type === "thinking_end") {
+    return {
+      content: update.content,
+      contentIndex: update.contentIndex,
+      status: "completed",
+    };
   }
   return undefined;
 }
@@ -51,11 +82,13 @@ export function readPiToolExecution(
     };
   }
   if (event.type === "tool_execution_end") {
+    const result = event.result;
     return {
       args: readToolArgs(event),
       isError: event.isError,
       name: event.toolName,
       status: "completed",
+      ...(result === undefined ? {} : { result }),
     };
   }
   return undefined;
