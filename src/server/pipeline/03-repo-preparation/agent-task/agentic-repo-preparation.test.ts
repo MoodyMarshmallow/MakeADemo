@@ -784,7 +784,7 @@ describe("AgenticRepoPreparation", () => {
     );
   });
 
-  it("reports linked submitted-code clone failures with workspace context", async () => {
+  it("reports submitted-code clone failures with workspace context", async () => {
     const events: unknown[] = [];
     const agent = createRepoPreparationAgent({
       provider: fakeProvider(events, {
@@ -808,7 +808,7 @@ describe("AgenticRepoPreparation", () => {
     expect(result).toMatchObject({
       blockers: [
         expect.stringMatching(
-          /Repo Preparation could not clone the submitted repository in the linked submitted-code workspace[\s\S]*server certificate verification failed/,
+          /Repo Preparation could not clone the submitted repository in the submitted-code workspace[\s\S]*server certificate verification failed/,
         ),
       ],
       status: "failed",
@@ -827,7 +827,7 @@ describe("AgenticRepoPreparation", () => {
     );
   });
 
-  it("writes linked submitted-code clone diagnostics before skipping Agent Task", async () => {
+  it("writes submitted-code clone diagnostics before skipping Agent Task", async () => {
     const events: unknown[] = [];
     const agent = createRepoPreparationAgent({
       cloneFailureDiagnosticsContext: {
@@ -872,7 +872,7 @@ describe("AgenticRepoPreparation", () => {
           sandboxLog: expect.objectContaining({
             caCertificatesCrtExists: true,
             caEnvPath_SSL_CERT_FILE: expect.stringContaining("truncated"),
-            cloneFailureWorkspace: "linked submitted-code workspace",
+            cloneFailureWorkspace: "submitted-code workspace",
             daytonaSubmittedCodeSnapshot: "makeademo-submitted-code-browser",
             event: "clone-failure-diagnostics",
             gitVersion: "git version 2.45.2",

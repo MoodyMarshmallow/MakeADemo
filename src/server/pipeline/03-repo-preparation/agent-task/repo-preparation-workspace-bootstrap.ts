@@ -59,13 +59,13 @@ export async function bootstrapRepoPreparationWorkspace(input: {
     if (submittedClone.exitCode !== 0) {
       await writeDiagnostics(
         input,
-        "linked submitted-code workspace",
+        "submitted-code workspace",
         input.workspace.executeSubmittedCode?.bind(input.workspace),
       );
       return {
         failure: createRepoCloneFailure(
           submittedClone,
-          "linked submitted-code workspace",
+          "submitted-code workspace",
         ),
       };
     }

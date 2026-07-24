@@ -1335,7 +1335,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     ]);
   });
 
-  it("creates a linked ephemeral submitted-code sandbox when configured", async () => {
+  it("creates an archivable submitted-code sandbox when configured", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeLinkedClient(calls),
@@ -1357,17 +1357,17 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       },
       {
         create: {
-          autoDeleteInterval: 0,
-          ephemeral: true,
-          linkedSandbox: "parent_sandbox",
+          autoDeleteInterval: -1,
           networkBlockAll: true,
           snapshot: "makeademo-submitted-code-browser",
         },
       },
     ]);
+    expect(calls[1]).not.toHaveProperty("create.ephemeral");
+    expect(calls[1]).not.toHaveProperty("create.linkedSandbox");
   });
 
-  it("deletes the parent sandbox when linked submitted-code sandbox creation fails", async () => {
+  it("deletes the parent sandbox when submitted-code sandbox creation fails", async () => {
     const calls: unknown[] = [];
     const parentSandbox = fakeLinkedSandbox(
       calls,
@@ -1378,11 +1378,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       client: {
         async create(input: unknown) {
           calls.push({ create: input });
-          if (
-            typeof input === "object" &&
-            input !== null &&
-            "linkedSandbox" in input
-          ) {
+          if (calls.filter((call) => "create" in Object(call)).length > 1) {
             throw new Error("linked create timed out");
           }
 
@@ -1401,7 +1397,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     );
   });
 
-  it("does not attach parent Daytona secrets to the linked submitted-code sandbox", async () => {
+  it("does not attach parent Daytona secrets to the submitted-code sandbox", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeLinkedClient(calls),
@@ -1422,9 +1418,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       },
       {
         create: {
-          autoDeleteInterval: 0,
-          ephemeral: true,
-          linkedSandbox: "parent_sandbox",
+          autoDeleteInterval: -1,
           networkBlockAll: true,
           snapshot: "makeademo-submitted-code-browser",
         },
@@ -1432,7 +1426,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     ]);
   });
 
-  it("routes submitted-code execution, network, and preview through the linked child sandbox", async () => {
+  it("routes submitted-code execution, network, and preview through the logical child sandbox", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeLinkedClient(calls),
@@ -1568,7 +1562,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(calls).toEqual(expect.arrayContaining([{ disconnect: true }]));
   });
 
-  it("materializes uploaded files in the linked child without its bulk upload API", async () => {
+  it("materializes uploaded files in the logical child without its bulk upload API", async () => {
     const calls: unknown[] = [];
     const root = await mkdtemp(join(tmpdir(), "makeademo-child-upload-"));
     const parentWorkspace = join(root, "parent");
@@ -1954,7 +1948,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     );
   });
 
-  it("releases a linked workspace by deleting the child, stopping, then archiving the primary", async () => {
+  it("releases a submitted-code workspace by stopping and archiving the child before the primary", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeLinkedClient(calls),
@@ -1964,15 +1958,24 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
 
     await handle.release();
 
-    expect(calls.slice(-3)).toEqual([
-      { delete: "submitted_sandbox" },
+    expect(
+      calls.filter(
+        (call) =>
+          "stop" in Object(call) ||
+          "archive" in Object(call) ||
+          "delete" in Object(call),
+      ),
+    ).toEqual([
+      { stop: "submitted_sandbox" },
+      { archive: "submitted_sandbox" },
       { stop: "parent_sandbox" },
       { archive: "parent_sandbox" },
     ]);
+    expect(calls).not.toContainEqual({ delete: "submitted_sandbox" });
     expect(calls).not.toContainEqual({ delete: "parent_sandbox" });
   });
 
-  it("reseals both sandboxes before deleting the linked child and archiving the primary", async () => {
+  it("reseals both sandboxes before stopping and archiving the submitted-code child and primary", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeLinkedClient(calls),
@@ -1982,7 +1985,15 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
 
     await handle.release();
 
-    expect(calls.slice(-5)).toEqual([
+    expect(
+      calls.filter(
+        (call) =>
+          "updateNetworkSettings" in Object(call) ||
+          "stop" in Object(call) ||
+          "archive" in Object(call) ||
+          "delete" in Object(call),
+      ),
+    ).toEqual([
       {
         updateNetworkSettings: {
           sandbox: "parent_sandbox",
@@ -1995,7 +2006,8 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
           settings: { networkBlockAll: true },
         },
       },
-      { delete: "submitted_sandbox" },
+      { stop: "submitted_sandbox" },
+      { archive: "submitted_sandbox" },
       { stop: "parent_sandbox" },
       { archive: "parent_sandbox" },
     ]);
@@ -2144,7 +2156,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     await expect(handle.release()).rejects.toThrow(
       "primary network reseal failed",
     );
-    expect(calls.slice(-5)).toEqual([
+    expect(calls.slice(-6)).toEqual([
       {
         updateNetworkSettings: {
           sandbox: "parent_sandbox",
@@ -2157,31 +2169,8 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
           settings: { networkBlockAll: true },
         },
       },
-      { delete: "submitted_sandbox" },
-      { stop: "parent_sandbox" },
-      { archive: "parent_sandbox" },
-    ]);
-  });
-
-  it("still stops and archives the primary when linked submitted-code deletion fails", async () => {
-    const calls: unknown[] = [];
-    const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: {
-        ...fakeLinkedClient(calls),
-        async delete(input: { id?: string; name?: string }) {
-          const id = input.id ?? input.name;
-          calls.push({ delete: id });
-          if (id === "submitted_sandbox")
-            throw new Error("child delete failed");
-        },
-      },
-      submittedCodeSnapshot: "makeademo-submitted-code-browser",
-    });
-    const handle = await provider.create();
-
-    await expect(handle.release()).rejects.toThrow("child delete failed");
-    expect(calls.slice(-3)).toEqual([
-      { delete: "submitted_sandbox" },
+      { stop: "submitted_sandbox" },
+      { archive: "submitted_sandbox" },
       { stop: "parent_sandbox" },
       { archive: "parent_sandbox" },
     ]);
@@ -2199,6 +2188,51 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(calls).not.toContainEqual({ archive: "parent_sandbox" });
   });
 
+  it("reports submitted-code stop failure while still cleaning up the primary", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient(calls, { failSubmittedStop: true }),
+      submittedCodeSnapshot: "makeademo-submitted-code-browser",
+    });
+    const handle = await provider.create();
+
+    await expect(handle.release()).rejects.toThrow(
+      "submitted-code stop failed",
+    );
+    expect(
+      calls.filter(
+        (call) => "stop" in Object(call) || "archive" in Object(call),
+      ),
+    ).toEqual([
+      { stop: "submitted_sandbox" },
+      { stop: "parent_sandbox" },
+      { archive: "parent_sandbox" },
+    ]);
+  });
+
+  it("reports submitted-code archive failure while still cleaning up the primary", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient(calls, { failSubmittedArchive: true }),
+      submittedCodeSnapshot: "makeademo-submitted-code-browser",
+    });
+    const handle = await provider.create();
+
+    await expect(handle.release()).rejects.toThrow(
+      "submitted-code archive failed",
+    );
+    expect(
+      calls.filter(
+        (call) => "stop" in Object(call) || "archive" in Object(call),
+      ),
+    ).toEqual([
+      { stop: "submitted_sandbox" },
+      { archive: "submitted_sandbox" },
+      { stop: "parent_sandbox" },
+      { archive: "parent_sandbox" },
+    ]);
+  });
+
   it("reports an archive failure after stopping the primary", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
@@ -2213,7 +2247,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     ]);
   });
 
-  it("releases an unlinked workspace without deleting the primary", async () => {
+  it("releases a workspace without a submitted-code sandbox", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeLinkedClient(calls),
@@ -2238,13 +2272,12 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     const handle = await provider.create();
 
     await Promise.all([handle.release(), handle.release()]);
-    expect(calls.filter((call) => "delete" in Object(call))).toEqual([
-      { delete: "submitted_sandbox" },
-    ]);
     expect(calls.filter((call) => "stop" in Object(call))).toEqual([
+      { stop: "submitted_sandbox" },
       { stop: "parent_sandbox" },
     ]);
     expect(calls.filter((call) => "archive" in Object(call))).toEqual([
+      { archive: "submitted_sandbox" },
       { archive: "parent_sandbox" },
     ]);
   });
@@ -2264,6 +2297,8 @@ function fakeLinkedClient(
     failArchive?: boolean;
     failParentNetworkDisable?: boolean;
     failSubmittedRestore?: boolean;
+    failSubmittedArchive?: boolean;
+    failSubmittedStop?: boolean;
     failStop?: boolean;
     ptyWaitsForKill?: boolean;
     ptyPrompt?: string;
@@ -2287,11 +2322,7 @@ function fakeLinkedClient(
   return {
     async create(input: unknown) {
       calls.push({ create: input });
-      if (
-        typeof input === "object" &&
-        input !== null &&
-        "linkedSandbox" in input
-      ) {
+      if (calls.filter((call) => "create" in Object(call)).length > 1) {
         return childSandbox;
       }
 
@@ -2310,11 +2341,7 @@ function fakeCommandTimeoutClient(calls: unknown[]) {
   return {
     async create(input: unknown) {
       calls.push({ create: input });
-      if (
-        typeof input === "object" &&
-        input !== null &&
-        "linkedSandbox" in input
-      ) {
+      if (calls.filter((call) => "create" in Object(call)).length > 1) {
         return childSandbox;
       }
 
@@ -2441,11 +2468,7 @@ function fakeLocalShellLinkedClient(
   return {
     async create(input: unknown) {
       calls.push({ create: input });
-      if (
-        typeof input === "object" &&
-        input !== null &&
-        "linkedSandbox" in input
-      ) {
+      if (calls.filter((call) => "create" in Object(call)).length > 1) {
         return childSandbox;
       }
 
@@ -2604,6 +2627,8 @@ function fakeLinkedSandbox(
     failArchive?: boolean;
     failParentNetworkDisable?: boolean;
     failSubmittedRestore?: boolean;
+    failSubmittedArchive?: boolean;
+    failSubmittedStop?: boolean;
     failStop?: boolean;
     ptyWaitsForKill?: boolean;
     ptyPrompt?: string;
@@ -2617,6 +2642,9 @@ function fakeLinkedSandbox(
       calls.push({ archive: id });
       if (options.failArchive === true && id === "parent_sandbox") {
         throw new Error("primary archive failed");
+      }
+      if (options.failSubmittedArchive === true && id === "submitted_sandbox") {
+        throw new Error("submitted-code archive failed");
       }
     },
     fs: {
@@ -2639,6 +2667,9 @@ function fakeLinkedSandbox(
       calls.push({ stop: id });
       if (options.failStop === true && id === "parent_sandbox") {
         throw new Error("primary stop failed");
+      }
+      if (options.failSubmittedStop === true && id === "submitted_sandbox") {
+        throw new Error("submitted-code stop failed");
       }
     },
     async getSignedPreviewUrl(port: number, ttl?: number) {

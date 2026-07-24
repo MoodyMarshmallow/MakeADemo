@@ -1,23 +1,35 @@
 # Archive Usable Daytona Preparation Workspaces on Release
 
 When a Daytona **Preparation Workspace** has yielded a usable handle,
-MakeADemo will release it by cancelling active commands, permanently deleting
-its linked submitted-code sandbox when present, stopping the primary sandbox,
-and archiving that primary sandbox. The primary sandbox must never be deleted
-as part of normal release. Archiving happens only after stop succeeds, because
-the Daytona SDK requires a stopped sandbox before archiving.
+MakeADemo will release it by cancelling active commands, resealing outbound
+network access on both sandboxes, then stopping and archiving the logical
+submitted-code child when present before stopping and archiving the primary.
+Each sandbox is archived only after its own stop succeeds, because the Daytona
+SDK requires a stopped sandbox before archiving. Neither sandbox is permanently
+deleted as part of normal release.
 
-The primary sandbox is created with `autoDeleteInterval: -1`, which disables
-auto-deletion in the pinned Daytona SDK. The linked submitted-code sandbox
-remains ephemeral with `autoDeleteInterval: 0`, as established by ADR 0016.
-If linked-child creation fails before a usable handle is returned, the primary
-sandbox is still deleted as creation rollback.
+The primary and submitted-code sandboxes are both created with
+`autoDeleteInterval: -1`, which disables auto-deletion in the pinned Daytona
+SDK. The submitted-code sandbox remains a separate execution and network
+isolation boundary, but it is an independent Daytona sandbox and only a logical
+child of the Preparation Workspace. Daytona-linked sandboxes must be ephemeral
+with `autoDeleteInterval: 0` and cannot be preserved after stop, so provider
+linkage is incompatible with this retention contract. The submitted-code
+sandbox continues to use its dedicated runtime snapshot, scrubbed environment,
+network policy, and secret isolation.
 
-Release is idempotent and best-effort across independent cleanup actions: a
-linked-child deletion failure does not prevent stopping and archiving the
-primary. A primary stop failure prevents archive. The first cleanup error is
-reported after all applicable independent cleanup work has been attempted.
+Deletion remains valid before a usable handle exists. If submitted-code sandbox
+creation fails, or the primary cannot otherwise yield a usable handle, the
+already-created primary sandbox is deleted as creation rollback.
 
-This supersedes only the primary-workspace teardown portions of ADR 0012 and
-ADR 0015. It does not supersede ADR 0016's linked submitted-code sandbox
-ephemerality or its isolation and secret-scoping constraints.
+Release is idempotent and best-effort across independent cleanup actions. A
+submitted-code stop or archive failure does not prevent stopping and archiving
+the primary. A stop failure prevents archive only for the sandbox whose stop
+failed. The first cleanup error is reported after all applicable independent
+cleanup work has been attempted.
+
+This supersedes the workspace-teardown portions of ADR 0012 and ADR 0015, and
+ADR 0016's requirement that submitted-code execution use a Daytona-linked,
+ephemeral sandbox. It also supersedes the linked-sandbox implementation wording
+in ADR 0014. It preserves ADR 0014 and ADR 0016's separate-execution, runtime
+isolation, network-policy, and secret-scoping constraints.

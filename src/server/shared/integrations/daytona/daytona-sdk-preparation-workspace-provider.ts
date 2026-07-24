@@ -281,9 +281,7 @@ export class DaytonaSdkPreparationWorkspaceProvider
           ? undefined
           : await this.createSandboxWithConnectionRetry(
               {
-                autoDeleteInterval: 0,
-                ephemeral: true,
-                linkedSandbox: id,
+                autoDeleteInterval: -1,
                 networkBlockAll: true,
                 snapshot: this.submittedCodeSnapshot,
               },
@@ -381,10 +379,19 @@ function createPreparationWorkspaceHandle(input: {
           }
         }
         if (input.submittedCodeSandbox !== undefined) {
+          let submittedCodeStopped = false;
           try {
-            await input.client.delete(input.submittedCodeSandbox);
+            await input.submittedCodeSandbox.stop();
+            submittedCodeStopped = true;
           } catch (error) {
             firstError ??= error;
+          }
+          if (submittedCodeStopped) {
+            try {
+              await input.submittedCodeSandbox.archive();
+            } catch (error) {
+              firstError ??= error;
+            }
           }
         }
         let stopped = false;

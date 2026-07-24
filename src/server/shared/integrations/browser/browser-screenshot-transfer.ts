@@ -29,7 +29,7 @@ export class BrowserScreenshotTransferError extends Error {
 }
 
 /**
- * Copies bounded PNG proof from the linked submitted-code sandbox into the
+ * Copies bounded PNG proof from the submitted-code sandbox into the
  * agent-readable parent workspace. The workspace methods are invoked through
  * their receiver because provider adapters retain state on `this`.
  */
