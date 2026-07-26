@@ -223,6 +223,9 @@ export async function runPipelineJob(
     });
     return {
       fallbackPrompt: preparation.fallbackPrompt,
+      ...(preparation.failureKind === undefined
+        ? {}
+        : { failureKind: preparation.failureKind }),
       status: "preparation-failed",
     };
   }

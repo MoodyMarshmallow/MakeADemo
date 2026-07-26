@@ -408,6 +408,45 @@ describe("buildBenchmarkResult", () => {
     });
   });
 
+  it("marks a dependency install SIGKILL as an inconclusive infrastructure run", () => {
+    expect(
+      buildBenchmarkResult({
+        benchmarkRunId: "run-1",
+        benchmarkTimeoutMs: 960_000,
+        command: ["bun", "src/server/composition/full-pipeline-cli.mts"],
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
+        durationMs: 1_000,
+        endedAt: "2026-07-20T00:00:01.000Z",
+        expectedLevel: "L5",
+        fullPipelineLog: {
+          failureStage: "repo-preparation",
+          stageOutcomes: [{ stage: "repo-preparation", status: "failed" }],
+          succeededEvents: [],
+        },
+        fullPipelineResult: {
+          failure: {
+            blockers: ["Dependency install received SIGKILL."],
+            failureKind: "dependency-install-sigkill",
+          },
+          resultPath: "/runs/full-pipeline-result.json",
+          status: "preparation-failed",
+        },
+        lifecycle: { exitCode: 1, killed: false },
+        repoId: "cal",
+        repoUrl: "https://github.com/calcom/cal.com",
+        runDirectory: ".makeademo-benchmark-runs/run-1/cal-r1",
+        startedAt: "2026-07-20T00:00:00.000Z",
+        stderrPath: "stderr.log",
+        stdoutPath: "stdout.log",
+      }),
+    ).toMatchObject({
+      disposition: "inconclusive",
+      failureStage: "repo-preparation",
+      infrastructureFailureKind: "dependency-install-sigkill",
+      status: "failed",
+    });
+  });
+
   it("derives a completed failure stage from the authoritative terminal status", () => {
     expect(
       buildBenchmarkResult({

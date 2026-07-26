@@ -95,6 +95,7 @@ describe("prepareRepo", () => {
         return {
           assumptions: ["remote API shape is not inferable"],
           blockers: ["dashboard data requires a private API"],
+          failureKind: "dependency-install-sigkill",
           status: "failed",
           suggestedChanges: ["add local dashboard fixtures"],
         };
@@ -117,6 +118,7 @@ describe("prepareRepo", () => {
         "dashboard data requires a private API",
       );
       expect(result.fallbackPrompt).toContain("add local dashboard fixtures");
+      expect(result.failureKind).toBe("dependency-install-sigkill");
     }
   });
 

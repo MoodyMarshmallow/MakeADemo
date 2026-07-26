@@ -725,6 +725,7 @@ describe("runPipelineJob", () => {
         async prepareRepo() {
           return {
             fallbackPrompt: "Prepare local dashboard fixtures.",
+            failureKind: "dependency-install-sigkill",
             status: "failed",
           };
         },
@@ -739,6 +740,7 @@ describe("runPipelineJob", () => {
 
     expect(result).toEqual({
       fallbackPrompt: "Prepare local dashboard fixtures.",
+      failureKind: "dependency-install-sigkill",
       status: "preparation-failed",
     });
   });

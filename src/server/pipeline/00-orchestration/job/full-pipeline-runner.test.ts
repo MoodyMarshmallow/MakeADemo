@@ -508,6 +508,7 @@ describe("runFullPipelineJob", () => {
               return {
                 fallbackPrompt:
                   "Repo Preparation agent timed out after 600000ms. Inspect the retained Daytona workspace debug log.",
+                failureKind: "dependency-install-sigkill",
                 status: "failed",
               };
             },
@@ -537,6 +538,7 @@ describe("runFullPipelineJob", () => {
           blockers: [
             "Repo Preparation agent timed out after 600000ms. Inspect the retained Daytona workspace debug log.",
           ],
+          failureKind: "dependency-install-sigkill",
           suggestedChanges: [],
         },
         logPath: join(outputRoot, "failed-run", "pipeline-log.jsonl"),
@@ -567,6 +569,7 @@ describe("runFullPipelineJob", () => {
           blockers: [
             "Repo Preparation agent timed out after 600000ms. Inspect the retained Daytona workspace debug log.",
           ],
+          failureKind: "dependency-install-sigkill",
           suggestedChanges: [],
         },
         status: "preparation-failed",

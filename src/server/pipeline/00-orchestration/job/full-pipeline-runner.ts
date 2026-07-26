@@ -682,6 +682,9 @@ function readPipelineFailure(
   if (preparedDemo.status === "preparation-failed") {
     return {
       blockers: [preparedDemo.fallbackPrompt],
+      ...(preparedDemo.failureKind === undefined
+        ? {}
+        : { failureKind: preparedDemo.failureKind }),
       suggestedChanges: [],
     };
   }

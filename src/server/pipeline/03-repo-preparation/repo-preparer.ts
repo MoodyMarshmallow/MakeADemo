@@ -23,6 +23,9 @@ export async function prepareRepo(
         repoUrl: input.repoUrl,
         suggestedChanges: result.suggestedChanges,
       }),
+      ...(result.failureKind === undefined
+        ? {}
+        : { failureKind: result.failureKind }),
       status: "failed",
     };
   }

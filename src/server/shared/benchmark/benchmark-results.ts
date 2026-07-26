@@ -23,6 +23,7 @@ export type BenchmarkResult = {
   infrastructureFailureKind?:
     | "pipeline-cancelled"
     | "pipeline-deadline-exceeded"
+    | "dependency-install-sigkill"
     | "process-terminated"
     | "terminal-result-unavailable";
   logPath?: string;
@@ -43,7 +44,12 @@ export type BenchmarkTerminalPipelineResult = {
   artifacts?: {
     logPath?: string;
   };
-  failure?: { blockers?: string[] };
+  failure?: {
+    blockers?: string[];
+    failureKind?:
+      | "dependency-install-sigkill"
+      | "repository_node_dependency_incompatible";
+  };
   cancellationReason?: "deadline-exceeded" | "signal";
   resultPath: string;
   status:
@@ -114,8 +120,14 @@ export function buildBenchmarkResult(
   input: BenchmarkResultBuildInput,
 ): BenchmarkResult {
   const terminalResult = input.fullPipelineResult;
+  const terminalInfrastructureFailureKind =
+    terminalResult?.failure?.failureKind === "dependency-install-sigkill"
+      ? terminalResult.failure.failureKind
+      : undefined;
   const disposition =
-    terminalResult === undefined || terminalResult.status === "cancelled"
+    terminalResult === undefined ||
+    terminalResult.status === "cancelled" ||
+    terminalInfrastructureFailureKind !== undefined
       ? "inconclusive"
       : "completed";
   const status =
@@ -132,13 +144,15 @@ export function buildBenchmarkResult(
   const infrastructureFailureKind =
     disposition === "completed"
       ? undefined
-      : terminalResult?.status === "cancelled"
-        ? terminalResult.cancellationReason === "deadline-exceeded"
-          ? "pipeline-deadline-exceeded"
-          : "pipeline-cancelled"
-        : input.lifecycle.terminationReason === undefined
-          ? "terminal-result-unavailable"
-          : "process-terminated";
+      : terminalInfrastructureFailureKind !== undefined
+        ? terminalInfrastructureFailureKind
+        : terminalResult?.status === "cancelled"
+          ? terminalResult.cancellationReason === "deadline-exceeded"
+            ? "pipeline-deadline-exceeded"
+            : "pipeline-cancelled"
+          : input.lifecycle.terminationReason === undefined
+            ? "terminal-result-unavailable"
+            : "process-terminated";
   const stageOutcomes = input.fullPipelineLog.stageOutcomes ?? [];
 
   return {

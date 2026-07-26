@@ -7,6 +7,7 @@ import type {
 } from "../../02-repo-security-screen/repo-security-screen";
 import type { PreparationManifest } from "../../03-repo-preparation/preparation-manifest";
 import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
+import type { RepoPreparationFailureKind } from "../../03-repo-preparation/repo-preparation-agent.interface";
 import type { DemoScript } from "../../04-script-generation/demo-script/demo-script.schema";
 import type { CapturePathValidationResult } from "../../05-capture-path-validation/capture-path-validator.interface";
 
@@ -26,6 +27,7 @@ export type PipelineJobResult =
     }
   | {
       fallbackPrompt: string;
+      failureKind?: RepoPreparationFailureKind;
       status: "preparation-failed";
     }
   | {
