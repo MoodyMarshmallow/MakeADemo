@@ -4,8 +4,8 @@ import type { SubmittedCodeToolchainPlan } from "./submitted-code-toolchain.sche
 export type PreparationWorkspaceHandle = {
   /**
    * Releases a usable Repo Preparation workspace exactly once. Implementations
-   * must cancel active work, reseal network access, then stop and archive (never
-   * delete) both the primary workspace and any logical submitted-code child.
+   * must cancel active work, then stop and archive (never delete) both the
+   * primary workspace and any logical submitted-code child.
    */
   release(): Promise<void>;
   id: string;
@@ -17,7 +17,8 @@ export type PreparationWorkspaceHandle = {
 /**
  * Provisions isolated workspaces for Repo Preparation.
  * Implementations should hide provider-specific lifecycle, execution, logging,
- * network-policy, and teardown details behind this product-level seam.
+ * lifecycle, execution, logging, and teardown details behind this product-level
+ * seam.
  */
 export interface PreparationWorkspaceProvider {
   create(): Promise<PreparationWorkspaceHandle>;
@@ -37,7 +38,6 @@ export async function runInPreparationWorkspace<T>(input: {
   try {
     const result = await raceWithTimeout(input.run(handle), input.timeoutMs);
     if (result.status === "timed-out") {
-      await handle.workspace.setOutboundNetworkAccess(false);
       return result;
     }
 

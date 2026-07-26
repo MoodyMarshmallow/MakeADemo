@@ -4,7 +4,7 @@
 
 MakeADemo needs autonomous Repo Preparation without weakening the Pipeline's trust boundaries. Submitted repositories are untrusted and may contain suspicious dependencies, install hooks, runtime behavior, or prompt injection aimed at the preparation agent.
 
-The preparation agent needs backend-owned research tools, an isolated editable repository, and non-interactive coding tools. Submitted app execution must remain isolated from model credentials, backend infrastructure, and unrestricted network access, and the prepared output must pass deterministic Demo Runtime Preflight before downstream stages trust it.
+The preparation agent needs backend-owned research tools, an isolated editable repository, and non-interactive coding tools. Submitted app execution must remain isolated from model credentials and backend infrastructure. During development, Daytona sandboxes are created network-enabled (`networkBlockAll: false`), subject to organization-level egress policy; the prepared output must still pass deterministic Demo Runtime Preflight and retain browser-level blocked-network evidence before downstream stages trust it.
 
 ## Solution
 
@@ -14,7 +14,7 @@ Pi runs in the backend process. Its `read`, `write`, `edit`, and `bash` tools de
 
 The Pipeline owns Repo Preparation task prompts, tool meaning, retries, acceptance, and outputs. Its Stage Agent Tools request controlled dependency installation, aliasing, deterministic validation, and final manifest submission. Those tools are exposed only during Repo Preparation; global Exa and Context7 research tools remain available in every agent task.
 
-After the deterministic Repo Security Screen passes, Repo Preparation proceeds inside the Daytona workspace. Submitted repository text is evidence, not authority over MakeADemo policy. Dependency-install network windows remain mechanically controlled by the backend Daytona seam, and submitted app build, validation, and capture run with a scrubbed environment and network lockdown.
+After the deterministic Repo Security Screen passes, Repo Preparation proceeds inside the Daytona workspace. Submitted repository text is evidence, not authority over MakeADemo policy. Dependency installation remains an allowlisted backend-controlled operation, while the development Daytona sandboxes stay network-enabled (`networkBlockAll: false`), subject to organization-level egress policy. Submitted app build, validation, and capture continue to run with a scrubbed environment; Daytona sandbox-firewall Runtime Network Lockdown is deferred.
 
 The run still produces the existing Preparation Manifest and workspace diff artifact. Pi is the agent runtime and Daytona is the execution substrate; neither replaces Pipeline contracts.
 
@@ -30,7 +30,7 @@ The run still produces the existing Preparation Manifest and workspace diff arti
 8. As an operator, I want global research tools separated from Repo Preparation Stage Agent Tools.
 9. As an operator, I want all repository shell and file access delegated to Daytona and constrained to `/workspace`.
 10. As an operator, I want submitted-repo agent configuration treated as evidence rather than executable harness configuration.
-11. As an operator, I want network access controlled by the backend Daytona seam rather than prompt-level permissions.
+11. As an operator, I want the Daytona network policy declared by the backend seam rather than prompt-level permissions, with browser-level request interception retained for deterministic evidence.
 12. As an operator, I want bounded provider-neutral Agent Harness lifecycle metadata, plus the existing validation, network, and workspace-diff pipeline artifacts, without persisted transcripts, prompts, tool payloads, secrets, or raw diagnostics.
 13. As an operator, I want bounded inactivity and hard timeouts with workspace cleanup.
 
@@ -45,8 +45,8 @@ The run still produces the existing Preparation Manifest and workspace diff arti
 - The Agent Harness exposes global Exa and Context7 tools on every turn.
 - Repo Preparation defines its own Stage Agent Tools and passes them through the provider-neutral harness interface only for that stage.
 - Daytona remains a backend External Seam for workspace lifecycle, command execution, log streaming, network policy, submitted-code isolation, and cleanup.
-- Dependency-install network access remains mechanically allowlisted and closes immediately after installation.
-- Demo Runtime Preflight and Runtime Network Lockdown remain deterministic trust gates.
+- Dependency installation remains mechanically allowlisted, but the development sandboxes do not open or reseal a temporary network window.
+- Demo Runtime Preflight and browser-level blocked-network evidence remain deterministic trust gates; Daytona sandbox-firewall Runtime Network Lockdown is deferred during development.
 
 ## Testing Decisions
 
@@ -60,7 +60,7 @@ The run still produces the existing Preparation Manifest and workspace diff arti
 
 ## Out of Scope
 
-- Replacing the deterministic Repo Security Screen, Demo Runtime Preflight, or Runtime Network Lockdown.
+- Replacing the deterministic Repo Security Screen, Demo Runtime Preflight, or browser-level request interception; Daytona sandbox-firewall Runtime Network Lockdown is a deferred future hardening step.
 - Baking Pi, model credentials, or research credentials into Daytona images.
 - Requiring an Exa or Context7 API key for the development path.
 - Loading submitted `AGENTS.md`, `CLAUDE.md`, `.pi/`, `.mcp.json`, or `.opencode/` files as authoritative agent configuration.

@@ -27,10 +27,9 @@ export type RepositoryLoadingWorkspaceCommandResult = {
 };
 
 /**
- * Executes backend-authored repository-loading commands and controls outbound
- * network access. Implementations must return the command's exit status and
- * captured output, honor requested timeouts, and settle network changes before
- * the corresponding promise resolves.
+ * Executes backend-authored repository-loading commands. Implementations must
+ * return the command's exit status and captured output and honor requested
+ * timeouts.
  */
 export interface RepositoryLoadingWorkspace {
   /** Terminates active repository-loading commands and waits for settlement. */
@@ -39,7 +38,6 @@ export interface RepositoryLoadingWorkspace {
     command: string,
     options?: { timeoutMs?: number },
   ): Promise<RepositoryLoadingWorkspaceCommandResult>;
-  setOutboundNetworkAccess(enabled: boolean): Promise<void>;
 }
 
 /**
@@ -145,8 +143,7 @@ async function loadDaytonaRepoSecurityInputOperation(
     try {
       throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
       await logCloneEvent(options.logger, "started", input.repoUrl);
-      await handle.workspace.setOutboundNetworkAccess(true);
-      const cloneResult = await cloneWithNetworkAccess(
+      const cloneResult = await clone(
         handle.workspace,
         input.repoUrl,
         input.commitSha,
@@ -302,29 +299,25 @@ async function runReleaseWithTimeout(
   }
 }
 
-async function cloneWithNetworkAccess(
+async function clone(
   workspace: RepositoryLoadingWorkspace,
   repoUrl: string,
   commitSha: string | undefined,
 ) {
-  try {
-    return await runGitCloneWithTransientRetry({
-      clone: () =>
-        workspace.execute(
-          createGitCloneCommand({
-            caBundleCandidates: [...daytonaGitCaBundleCandidates],
-            ...(commitSha === undefined ? {} : { commitSha }),
-            destinationPath: daytonaWorkspaceDirectory,
-            repoUrl,
-            resetCommand: createDaytonaWorkspaceResetCommand(),
-          }),
-          { timeoutMs: defaultCloneAttemptTimeoutMs },
-        ),
-      retryThrownErrors: false,
-    });
-  } finally {
-    await workspace.setOutboundNetworkAccess(false);
-  }
+  return await runGitCloneWithTransientRetry({
+    clone: () =>
+      workspace.execute(
+        createGitCloneCommand({
+          caBundleCandidates: [...daytonaGitCaBundleCandidates],
+          ...(commitSha === undefined ? {} : { commitSha }),
+          destinationPath: daytonaWorkspaceDirectory,
+          repoUrl,
+          resetCommand: createDaytonaWorkspaceResetCommand(),
+        }),
+        { timeoutMs: defaultCloneAttemptTimeoutMs },
+      ),
+    retryThrownErrors: false,
+  });
 }
 
 async function logStatsEvent(

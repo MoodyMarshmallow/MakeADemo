@@ -18,7 +18,7 @@ The demo Playwright script will import a real MakeADemo Capture SDK Contract fro
 
 Footage Capture will record one continuous browser take while the SDK emits Scene marker events. The capture harness derives marker timestamps from its own monotonic recording clock, applies small pre/post padding, trims the continuous take into per-Scene clips, probes those clips, and writes actual durations to the Capture Manifest.
 
-Capture Path Validation remains the dry-run trust gate. It runs the full Demo Script from a fresh deterministic state without presentation simulations, validates marker correctness and visible assertions, and enforces Runtime Network Lockdown. Footage Capture then reruns the accepted Demo Script from a fresh deterministic state with presentation-oriented behavior.
+Capture Path Validation remains the dry-run trust gate. It runs the full Demo Script from a fresh deterministic state without presentation simulations, validates marker correctness and visible assertions, and retains browser-level request interception and blocked-network reporting. Daytona sandbox-firewall Runtime Network Lockdown is deferred during development. Footage Capture then reruns the accepted Demo Script from a fresh deterministic state with presentation-oriented behavior.
 
 Compositing will consume Demo Script presentation metadata plus trimmed Scene clips and captured durations. It will produce a Draft Composite. The same long-lived Agent Session must review the Draft Composite at least once, using derived evidence and the raw video path. Review may accept the draft or request repair within a bounded retry budget.
 
@@ -77,7 +77,7 @@ Compositing will consume Demo Script presentation metadata plus trimmed Scene cl
 - Validation must run without presentation simulations such as human typing, cursor movement, recording pauses, and other recording-only delays.
 - Validation must check contract correctness: marker order, declared Scene coverage, no nested Scenes, no missing ends, no duplicate starts, no undeclared Scene IDs, and no Scenes without visible assertions.
 - Every on-camera Scene must include at least one visible Playwright assertion or equivalent SDK outcome check.
-- Validation must enforce Runtime Network Lockdown.
+- Validation must retain browser-level request interception and blocked-network reporting; Daytona sandbox-firewall Runtime Network Lockdown is deferred during development.
 - Validation must not compute final recorded durations.
 
 ### Footage Capture
@@ -138,7 +138,7 @@ Compositing will consume Demo Script presentation metadata plus trimmed Scene cl
 - Tests should verify behavior through public pipeline seams and durable artifacts rather than private helper internals.
 - Demo Script parsing tests should prove that agent-authored recorded-Scene durations are rejected and that the demo Playwright script, declared Scenes, expected outcomes, and presentation metadata are validated.
 - Capture SDK tests should prove setup emits no Scene markers, callback Scenes emit paired markers in order, thrown Scene bodies still produce well-formed failure/end markers, and marker data is sufficient for trimming.
-- Capture Path Validation tests should cover missing, duplicated, nested, out-of-order, undeclared, and uncovered Scene markers; missing visible assertions; Runtime Network Lockdown; fast validation mode; and fresh deterministic starting state.
+- Capture Path Validation tests should cover missing, duplicated, nested, out-of-order, undeclared, and uncovered Scene markers; missing visible assertions; browser-level blocked-network evidence; fast validation mode; and fresh deterministic starting state.
 - Footage Capture tests should prove one continuous take plus marker events produces per-Scene clips; durations come from probed clips; setup outside markers is excluded; visible actions inside markers are included; state flows across Scenes; validation mutations do not leak; marker ranges at take boundaries work; and missing/malformed raw take, marker log, or ffmpeg trim failures are handled.
 - Compositing tests should prove render plans use captured clip durations and never use Script Generation durations for Playwright-recorded Scenes.
 - Quality gate tests should cover total duration limits, per-Scene duration limits, missing audio when music is enabled, and fully static Scene footage.
@@ -152,7 +152,7 @@ Compositing will consume Demo Script presentation metadata plus trimmed Scene cl
 - User-facing timeline editing or manual trimming controls.
 - Multi-camera or multi-browser recording.
 - Voiceover generation.
-- Replacing Runtime Network Lockdown or Demo Runtime Preflight.
+- Removing browser-level request interception or Demo Runtime Preflight. Daytona sandbox-firewall Runtime Network Lockdown remains a deferred future hardening step.
 - Trusting agent-authored marker data without backend validation.
 - Letting the agent control Playwright `recordVideo`, final timestamps, or clip durations.
 - Coupling Compositing directly to marker logs when Footage Capture can provide trimmed Scene clips.

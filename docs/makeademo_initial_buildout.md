@@ -33,8 +33,8 @@ Repo execution contract:
 - The submitted repo should include a tiny `makeademo.config.json` declaring only the demo command and local URL
 - The demo run command should start the app in a deterministic demo mode
 - Dependency installation may use the network
-- Demo mode should run without runtime network access, external APIs, external databases, environment files, secrets, paid services, OAuth, or manual setup
-- After dependency installation, any inbound or outbound network communication across the sandbox boundary is a hard validation failure
+- Demo mode should run without environment files, secrets, paid services, OAuth, or manual setup. During development, Daytona sandboxes remain network-enabled (`networkBlockAll: false`), subject to organization-level egress policy; browser-level external requests remain intercepted and reported where supported.
+- Observed browser-level external requests can be a hard validation failure, but Daytona sandbox-firewall Runtime Network Lockdown is deferred and is not resealed after dependency installation.
 - Demo data should be seeded or mocked automatically
 - If the repo does not satisfy this contract, MakeADemo should provide a copy-paste preparation prompt for the maker to use with their own coding agent
 - MakeADemo should not directly modify the maker's repo in v1
@@ -83,8 +83,8 @@ Scenes, and composite a polished final video in one Pipeline Job.
 - Repo Security Screen: rejects obvious repository risks before agent or runtime work begins.
 - Repo Preparation: prepares a deterministic demo runtime in an ephemeral workspace without modifying the maker's repo.
 - Preparation Fallback Prompt Generator: explains blockers when the repo cannot be prepared automatically.
-- Sandbox Runner: clones the repo, installs dependencies, seals the runtime network boundary, runs the demo command, and extracts artifacts.
-- Capture Path Validation: proves the prepared app and generated Demo Script can complete the intended browser flow under Runtime Network Lockdown.
+- Sandbox Runner: clones the repo, installs dependencies, runs the demo command in isolated development sandboxes, and extracts artifacts; it does not reseal the Daytona network firewall.
+- Capture Path Validation: proves the prepared app and generated Demo Script can complete the intended browser flow while retaining browser-level request interception and blocked-network evidence. Daytona sandbox-firewall Runtime Network Lockdown is deferred.
 - Script Generator: produces the Demo Script from product intent and prepared repo context.
 - Footage Capture: records presentation-ready Scene footage from a fresh deterministic app state.
 - Draft Composite Reviewer: checks narrative, timing, presentation, and capture quality before final acceptance.
@@ -108,7 +108,7 @@ Scenes, and composite a polished final video in one Pipeline Job.
 ### 3. Generate and Validate the Demo Script
 
 - MakeADemo generates a Demo Script grounded in the prepared runtime and requested features.
-- Capture Path Validation runs the exact browser flow under Runtime Network Lockdown.
+- Capture Path Validation runs the exact browser flow with browser-level request interception and blocked-network reporting; Daytona sandbox-firewall Runtime Network Lockdown is deferred.
 - Repair attempts may update the prepared workspace or Demo Script, but the full validation gate reruns before capture.
 
 ### 4. Capture Footage

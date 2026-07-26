@@ -142,8 +142,6 @@ describe("DaytonaRepoSecurityInputLoader", () => {
     );
 
     expect(result.repoStats).toEqual({ fileCount: 1, sizeBytes: 17 });
-    expect(firstWorkspace.networkAccessChanges).toEqual([true, false]);
-    expect(secondWorkspace.networkAccessChanges).toEqual([true, false]);
     expect(provider.releasedWorkspaceIds).toEqual([
       "workspace-1",
       "workspace-2",
@@ -182,8 +180,6 @@ describe("DaytonaRepoSecurityInputLoader", () => {
     );
 
     expect(result.repoStats).toEqual({ fileCount: 1, sizeBytes: 17 });
-    expect(firstWorkspace.networkAccessChanges).toEqual([true, false]);
-    expect(secondWorkspace.networkAccessChanges).toEqual([true, false]);
     expect(provider.releasedWorkspaceIds).toEqual([
       "workspace-1",
       "workspace-2",
@@ -351,9 +347,6 @@ describe("DaytonaRepoSecurityInputLoader", () => {
           rejectClone = reject;
         });
       },
-      async setOutboundNetworkAccess(enabled) {
-        events.push(`network:${enabled}`);
-      },
     };
     const provider: RepositoryLoadingWorkspaceProvider = {
       async create() {
@@ -377,10 +370,8 @@ describe("DaytonaRepoSecurityInputLoader", () => {
 
     await expect(loading).rejects.toMatchObject({ reason: "signal" });
     expect(events).toEqual([
-      "network:true",
       "clone-started",
       "clone-cancelled",
-      "network:false",
       "workspace-released",
     ]);
   });
@@ -509,7 +500,6 @@ function readWorkspaceAt(
 class FakeRepositoryLoadingWorkspace implements RepositoryLoadingWorkspace {
   cloneAttempts = 0;
   readonly cloneTimeoutsMs: number[] = [];
-  readonly networkAccessChanges: boolean[] = [];
 
   constructor(
     private readonly input: {
@@ -566,9 +556,5 @@ class FakeRepositoryLoadingWorkspace implements RepositoryLoadingWorkspace {
     }
 
     throw new Error(`Unexpected command: ${command}`);
-  }
-
-  async setOutboundNetworkAccess(enabled: boolean): Promise<void> {
-    this.networkAccessChanges.push(enabled);
   }
 }

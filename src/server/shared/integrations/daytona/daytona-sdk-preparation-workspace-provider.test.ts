@@ -56,6 +56,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         autoDeleteInterval: -1,
         autoStopInterval: 15,
         disk: 3,
+        networkBlockAll: false,
         snapshot: "makeademo-opencode",
       },
     });
@@ -107,7 +108,12 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     await provider.create();
 
     expect(calls[0]).toEqual({
-      create: { autoDeleteInterval: -1, autoStopInterval: 15, disk: 3 },
+      create: {
+        autoDeleteInterval: -1,
+        autoStopInterval: 15,
+        disk: 3,
+        networkBlockAll: false,
+      },
       options: { timeout: 180 },
     });
   });
@@ -139,11 +145,21 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(handle.id).toBe("sandbox_123");
     expect(calls.slice(0, 2)).toEqual([
       {
-        create: { autoDeleteInterval: -1, autoStopInterval: 15, disk: 3 },
+        create: {
+          autoDeleteInterval: -1,
+          autoStopInterval: 15,
+          disk: 3,
+          networkBlockAll: false,
+        },
         options: { timeout: 180 },
       },
       {
-        create: { autoDeleteInterval: -1, autoStopInterval: 15, disk: 3 },
+        create: {
+          autoDeleteInterval: -1,
+          autoStopInterval: 15,
+          disk: 3,
+          networkBlockAll: false,
+        },
         options: { timeout: 180 },
       },
     ]);
@@ -163,6 +179,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         autoDeleteInterval: -1,
         autoStopInterval: 15,
         disk: 3,
+        networkBlockAll: false,
         secrets: { OPENAI_API_KEY: "makeademo-openai" },
       },
     });
@@ -391,7 +408,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     );
   });
 
-  it("executes commands, updates network settings, stops, and archives the sandbox", async () => {
+  it("executes commands, stops, and archives the sandbox", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeClient(calls),
@@ -399,7 +416,6 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     const handle = await provider.create();
 
     const result = await handle.workspace.execute("opencode run hello");
-    await handle.workspace.setOutboundNetworkAccess(false);
     await handle.release();
 
     expect(result).toEqual({ exitCode: 0, stderr: "", stdout: "ok" });
@@ -408,7 +424,6 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         {
           decodedPtyScript: expect.stringContaining("opencode run hello"),
         },
-        { updateNetworkSettings: { networkBlockAll: true } },
         { stop: "sandbox_123" },
         { archive: "sandbox_123" },
       ]),

@@ -69,7 +69,7 @@ export function parseCaptureSdkSceneEvents(
 }
 
 /** Parses valid Browser Action marker lines and rejects malformed matching lines. */
-/** Parses valid Runtime Network Lockdown marker lines. */
+/** Parses browser-level blocked-network marker lines. */
 export function parseCaptureSdkBlockedNetworkEvents(
   input: string | readonly string[],
 ): CaptureSdkBlockedNetworkEvent[] {

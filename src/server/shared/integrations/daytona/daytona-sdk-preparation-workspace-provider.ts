@@ -263,6 +263,7 @@ export class DaytonaSdkPreparationWorkspaceProvider
         autoDeleteInterval: -1,
         autoStopInterval: 15,
         disk: this.diskGB,
+        networkBlockAll: false,
         ...(this.secrets === undefined ? {} : { secrets: this.secrets }),
         ...(this.snapshot === undefined ? {} : { snapshot: this.snapshot }),
       },
@@ -282,7 +283,7 @@ export class DaytonaSdkPreparationWorkspaceProvider
           : await this.createSandboxWithConnectionRetry(
               {
                 autoDeleteInterval: -1,
-                networkBlockAll: true,
+                networkBlockAll: false,
                 snapshot: this.submittedCodeSnapshot,
               },
               createOptions,
@@ -365,18 +366,6 @@ function createPreparationWorkspaceHandle(input: {
           await workspace.cancelActiveCommands();
         } catch (error) {
           firstError = error;
-        }
-        try {
-          await workspace.setOutboundNetworkAccess(false);
-        } catch (error) {
-          firstError ??= error;
-        }
-        if (input.submittedCodeSandbox !== undefined) {
-          try {
-            await workspace.setSubmittedCodeNetworkAccess(false);
-          } catch (error) {
-            firstError ??= error;
-          }
         }
         if (input.submittedCodeSandbox !== undefined) {
           let submittedCodeStopped = false;

@@ -146,7 +146,7 @@ Use categories to make failures explainable. The fixed suite includes:
 | `monorepo` | Tests package-manager discovery and workspace command selection. |
 | `database` | Tests seed data, migrations, and local service setup. |
 | `auth` | Tests whether the preparer can create or bypass deterministic auth flows. |
-| `external-services` | Tests Runtime Network Lockdown and mock generation. |
+| `external-services` | Tests browser-level blocked-network evidence and mock generation; Daytona sandbox-firewall Runtime Network Lockdown remains deferred in development. |
 | `legacy` | Tests older dependency and build assumptions. |
 | `large` | Tests clone, dependency install, and agent context pressure. |
 | `hard` | Expected to fail or require a useful Preparation Fallback Prompt. |

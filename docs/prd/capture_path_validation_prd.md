@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-MakeADemo treats Repo Preparation and Script Generation as sequential work, with Demo Runtime Preflight proving that the prepared app can start, load in a browser, and avoid runtime network access. The product also needs the generated capture path to run against the prepared app under Runtime Network Lockdown.
+MakeADemo treats Repo Preparation and Script Generation as sequential work, with Demo Runtime Preflight proving that the prepared app can start, load in a browser, and provide browser-level network evidence. The product also needs the generated capture path to run against the prepared app in isolated, development network-enabled Daytona sandboxes; Daytona sandbox-firewall Runtime Network Lockdown is deferred.
 
 The separation creates two problems. First, Repo Preparation can spend effort trying to make the whole repo generally watertight even though only the eventual Browser Actions or Capture Scripts need to run offline. Second, Script Generation can produce a plausible Demo Script after generic preflight, but the specific capture path may still fail because of missing seeded state, bad selectors, timing issues, routes that were not prepared, or runtime network calls triggered only by the scripted flow.
 
@@ -10,7 +10,7 @@ MakeADemo needs a single non-agent validation gate that proves the prepared app 
 
 ## Solution
 
-Capture Path Validation is the deterministic dry-run validation stage that runs Demo Runtime Preflight and then runs the generated Demo Script against the prepared app under Runtime Network Lockdown.
+Capture Path Validation is the deterministic dry-run validation stage that runs Demo Runtime Preflight and then runs the generated Demo Script against the prepared app. Browser-level request interception and blocked-network reporting remain active; Daytona sandbox-firewall Runtime Network Lockdown is deferred during development.
 
 Repo Preparation and Script Generation may run through one long-lived Agent Session with staged backend prompts. The session can prepare the repo, generate the Demo Script, receive structured Capture Path Validation failures, and repair either the prepared workspace or the Demo Script. The stage contracts remain separate: Repo Preparation still produces a Preparation Manifest, Script Generation produces a Demo Script, and Capture Path Validation remains a backend-owned non-agent gate.
 
@@ -45,7 +45,7 @@ If Capture Path Validation fails, the backend returns structured failure feedbac
 23. As a MakeADemo operator, I want the repair budget to be configurable with `MAKEADEMO_CAPTURE_PATH_REPAIR_ATTEMPTS`, so that deployments can tune cost and latency without code changes.
 24. As a MakeADemo operator, I want exhausted repair attempts to produce an internal failure with logs and artifacts, so that the team can debug pipeline reliability.
 25. As a MakeADemo operator, I want exhausted repair attempts to show the user a report-this-to-us message, so that users do not receive misleading self-service preparation advice for a pipeline failure.
-26. As a MakeADemo operator, I want Runtime Network Lockdown enforced during Capture Path Validation, so that scripted interactions cannot reach external services.
+26. As a MakeADemo operator, I want browser-level external requests intercepted and reported during Capture Path Validation, so that scripted interactions remain deterministic while Daytona sandbox-firewall Runtime Network Lockdown is deferred.
 27. As a MakeADemo operator, I want submitted app runtime commands to run with scrubbed environments, so that agent secrets are not exposed during validation or capture.
 28. As a MakeADemo operator, I want validation and capture to run in backend Sandboxes, so that untrusted app code and Playwright automation remain isolated from the backend host.
 29. As a MakeADemo operator, I want validation dry runs to skip recording-oriented delays, so that the repair loop remains practical for real repos.
@@ -66,9 +66,9 @@ If Capture Path Validation fails, the backend returns structured failure feedbac
 - The MakeADemo Pipeline for script-driven runs should be ordered as Context Gathering, Repo Security Screen, Repo Preparation, Script Generation, Capture Path Validation, Footage Capture, Compositing, and final output.
 - Demo Runtime Preflight runs inside Capture Path Validation rather than as a standalone stage before Script Generation.
 - Project-level checks should move inside Capture Path Validation as preflight checks.
-- Project-level checks should still verify app startup, browser load, obvious fatal runtime states, browser interactability, and Runtime Network Lockdown.
+- Project-level checks should still verify app startup, browser load, obvious fatal runtime states, browser interactability, and browser-level blocked-network evidence. Daytona sandbox-firewall Runtime Network Lockdown is deferred.
 - Capture Path Validation then runs the generated Demo Script against the prepared app.
-- Capture Path Validation should run under Runtime Network Lockdown.
+- Capture Path Validation should retain browser-level request interception and blocked-network reporting; it should not claim Daytona sandbox-firewall Runtime Network Lockdown while that policy is deferred.
 - Capture Path Validation should run in a Sandbox rather than from the backend host.
 - Capture Path Validation should be backend-owned and deterministic; LLM calls should not decide whether validation succeeds.
 - Repo Preparation and Script Generation may use one long-lived Agent Session with staged backend prompts.
@@ -113,8 +113,8 @@ If Capture Path Validation fails, the backend returns structured failure feedbac
 - The highest-value tests should exercise the pipeline orchestration from successful Repo Preparation and Script Generation through Capture Path Validation, repair, and Footage Capture handoff.
 - Capture Path Validation should be tested with fakes for sandbox execution, browser automation, network attempts, and recorder behavior.
 - Tests should prove that project-level app startup and browser checks run inside Capture Path Validation before generated capture actions run.
-- Tests should prove that Runtime Network Lockdown failures during project-level checks fail Capture Path Validation.
-- Tests should prove that Runtime Network Lockdown failures during generated Browser Actions fail Capture Path Validation.
+- Tests should prove that browser-level blocked-network evidence during project-level checks fails Capture Path Validation.
+- Tests should prove that browser-level blocked-network evidence during generated Browser Actions fails Capture Path Validation.
 - Tests should prove that malformed or non-capture-ready Demo Scripts fail before Footage Capture begins.
 - Tests should prove that a successful Capture Path Validation result is required before Footage Capture runs.
 - Tests should prove that Footage Capture does not run after Capture Path Validation failure.
@@ -143,7 +143,7 @@ If Capture Path Validation fails, the backend returns structured failure feedbac
 ## Out of Scope
 
 - Replacing Repo Security Screen.
-- Removing Runtime Network Lockdown.
+- Removing browser-level request interception and blocked-network evidence.
 - Trusting agent-prepared workspace changes without backend validation.
 - Trusting agent-generated Demo Scripts without backend validation.
 - Returning partial Demo Scripts as capture-ready output after validation failure.
@@ -162,7 +162,7 @@ If Capture Path Validation fails, the backend returns structured failure feedbac
 ## Further Notes
 
 - This PRD follows the current MakeADemo glossary and ADR 0017.
-- The important invariant is not that the whole repo is perfectly offline; the invariant is that the generated capture path runs against the prepared app under Runtime Network Lockdown.
+- The important invariant is not that the whole repo is perfectly offline; the invariant is that the generated capture path runs against the prepared app with deterministic browser-level network evidence. Daytona sandbox-firewall Runtime Network Lockdown remains a deferred hardening step.
 - Capture Path Validation should reduce flake by proving the exact browser path before final recording.
 - Capture Path Validation should stay fast enough to support repair loops.
 - Footage Capture remains responsible for creating the final raw Scene videos with presentation quality.

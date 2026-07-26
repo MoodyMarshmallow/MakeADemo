@@ -6,7 +6,7 @@
 - Use `createPipelineEventLogger` for structured pipeline, agent, and sandbox audit events. It writes Pino JSONL with `level`, `time`, `service`, `component`, `stage`, `event`, and `message` fields.
 - Use `createFilePipelineLogSink` for durable JSONL artifacts and `createPrettyPipelineLogSink` for human-readable CLI or PTY progress.
 - Do not add ad-hoc JSONL writers for pipeline or agent activity. Route new stage, agent, validation, sandbox, and Agent Harness audit events through the Pino seam.
-- Exception: generated browser/Playwright cross-process protocols may continue to use `console.*` marker lines such as `[makeademo:scene]`, `[makeademo:action]`, `[makeademo:validation]`, and `[makeademo:network-blocked]` when parent processes parse stdout/stderr for capture timing, validation diagnostics, or Runtime Network Lockdown. The generated submitted-code browser validator also uses `console.log(JSON.stringify(...))` as a one-object stdout result protocol parsed by its parent. Do not migrate those protocols to Pino unless the parser contract is changed at the same seam.
+- Exception: generated browser/Playwright cross-process protocols may continue to use `console.*` marker lines such as `[makeademo:scene]`, `[makeademo:action]`, `[makeademo:validation]`, and `[makeademo:network-blocked]` when parent processes parse stdout/stderr for capture timing, validation diagnostics, or browser-level blocked-network evidence. The generated submitted-code browser validator also uses `console.log(JSON.stringify(...))` as a one-object stdout result protocol parsed by its parent. Do not migrate those protocols to Pino unless the parser contract is changed at the same seam.
 
 ## Log Artifacts
 

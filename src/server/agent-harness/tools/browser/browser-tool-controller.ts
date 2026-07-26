@@ -264,7 +264,6 @@ async function runBrowserCommand(input: {
   workspace: PreparationWorkspace;
 }): Promise<unknown> {
   throwIfCancelled(input.signal, input.deadlineAt);
-  await sealSubmittedCodeNetwork(input.workspace);
   const outputDirectory = `${browserOutputDirectory}/${input.session}`;
   const configPath = `${outputDirectory}/config.json`;
   const commandOutputPath = `${outputDirectory}/command-${randomUUID()}.json`;
@@ -368,17 +367,6 @@ async function removeSessionDirectory(input: {
   } catch {
     // Cleanup is independent and best effort; the original task outcome wins.
   }
-}
-
-async function sealSubmittedCodeNetwork(
-  workspace: PreparationWorkspace,
-): Promise<void> {
-  if (workspace.setSubmittedCodeNetworkAccess === undefined) {
-    throw new Error(
-      "Preparation workspace cannot seal submitted-code network access.",
-    );
-  }
-  await workspace.setSubmittedCodeNetworkAccess(false);
 }
 
 function resolveRelativeUrl(authorizedUrl: string, path: string): string {

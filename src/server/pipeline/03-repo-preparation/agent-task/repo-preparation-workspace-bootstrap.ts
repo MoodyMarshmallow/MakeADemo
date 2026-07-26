@@ -16,7 +16,7 @@ export type RepoPreparationCloneDiagnosticsContext = {
   daytonaSubmittedCodeSnapshot?: string;
 };
 
-/** Clones and verifies both workspace views, resealing their networks. */
+/** Clones and verifies both workspace views. */
 export async function bootstrapRepoPreparationWorkspace(input: {
   cloneFailureDiagnosticsContext?: RepoPreparationCloneDiagnosticsContext;
   commitSha?: string;
@@ -28,7 +28,6 @@ export async function bootstrapRepoPreparationWorkspace(input: {
   failure?: ReturnType<typeof createRepoCloneFailure>;
 }> {
   await writeLog(input, { event: "clone-started" });
-  await input.workspace.setOutboundNetworkAccess(true);
   const parentClone = await cloneParent(
     input.workspace,
     input.repoUrl,
@@ -93,16 +92,12 @@ async function cloneParent(
   repoUrl: string,
   commitSha?: string,
 ) {
-  try {
-    return await runGitCloneWithTransientRetry({
-      clone: () =>
-        workspace.execute(createCloneCommand(repoUrl, commitSha), {
-          timeoutMs: 120_000,
-        }),
-    });
-  } finally {
-    await workspace.setOutboundNetworkAccess(false);
-  }
+  return await runGitCloneWithTransientRetry({
+    clone: () =>
+      workspace.execute(createCloneCommand(repoUrl, commitSha), {
+        timeoutMs: 120_000,
+      }),
+  });
 }
 
 async function cloneSubmittedCode(
@@ -112,18 +107,13 @@ async function cloneSubmittedCode(
 ) {
   const executeSubmittedCode = workspace.executeSubmittedCode;
   if (executeSubmittedCode === undefined) return undefined;
-  await workspace.setSubmittedCodeNetworkAccess?.(true);
-  try {
-    return await runGitCloneWithTransientRetry({
-      clone: () =>
-        executeSubmittedCode.call(
-          workspace,
-          createCloneCommand(repoUrl, commitSha),
-        ),
-    });
-  } finally {
-    await workspace.setSubmittedCodeNetworkAccess?.(false);
-  }
+  return await runGitCloneWithTransientRetry({
+    clone: () =>
+      executeSubmittedCode.call(
+        workspace,
+        createCloneCommand(repoUrl, commitSha),
+      ),
+  });
 }
 
 function createCloneCommand(repoUrl: string, commitSha?: string): string {

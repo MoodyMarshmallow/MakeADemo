@@ -10,11 +10,11 @@ Makers also need a clear way to provide enough product context for a useful demo
 
 The MakeADemo Pipeline starts with Context Gathering. The maker submits a GitHub repo URL, structured demo intent, and Supporting Documents. Supporting Documents are broad document uploads that exclude videos and pictures, and the upload UI should support drag-and-drop document intake with UploadThing. Supporting Documents are normalized into text artifacts before Repo Preparation begins.
 
-MakeADemo clones the repo and runs a fast static Repo Security Screen before any agent or runtime preparation work begins. Repos that pass the static screen move into Repo Preparation, where a preparation agent works in a locked-down ephemeral cloud workspace. The agent first looks for existing demo setup, then reuses, adapts, or creates the smallest deterministic demo runtime it can. Repo Preparation produces a durable Preparation Manifest with the prepared demo command, local URL, workspace changes, mocks, assumptions, risks, and script-generation context. If Repo Preparation fails, MakeADemo returns a targeted Preparation Fallback Prompt for the maker and the maker's coding agent, and Script Generation does not run.
+MakeADemo clones the repo and runs a fast static Repo Security Screen before any agent or runtime preparation work begins. Repos that pass the static screen move into Repo Preparation, where a preparation agent works in an isolated ephemeral cloud workspace. During development, Daytona sandboxes are created network-enabled (`networkBlockAll: false`), subject to organization-level egress policy; the agent still operates without access to backend or model secrets. The agent first looks for existing demo setup, then reuses, adapts, or creates the smallest deterministic demo runtime it can. Repo Preparation produces a durable Preparation Manifest with the prepared demo command, local URL, workspace changes, mocks, assumptions, risks, and script-generation context. If Repo Preparation fails, MakeADemo returns a targeted Preparation Fallback Prompt for the maker and the maker's coding agent, and Script Generation does not run.
 
 Script Generation then uses the prepared workspace, Preparation Manifest, structured demo intent, and normalized Supporting Documents to produce one capture-ready Demo Script. The Demo Script declares the complete Playwright flow, on-camera Scenes, expected visible outcomes, and presentation metadata; it is not trusted for capture yet.
 
-Capture Path Validation is the deterministic acceptance gate for that Demo Script. It first runs Demo Runtime Preflight against the Preparation Manifest: dependency installation may use a controlled network window, then the sandbox network boundary is sealed and the prepared app must start, load, and remain basically interactable. It then dry-runs the generated Demo Script against the prepared runtime under Runtime Network Lockdown. This validation is programmatic and LLM-free; any inbound or outbound communication across the sandbox boundary after dependency installation is a hard failure.
+Capture Path Validation is the deterministic acceptance gate for that Demo Script. It first runs Demo Runtime Preflight against the Preparation Manifest: dependency installation and runtime use the development network-enabled sandboxes, and the prepared app must start, load, and remain basically interactable. It then dry-runs the generated Demo Script against the prepared runtime. Daytona sandbox-firewall Runtime Network Lockdown is deferred during development; browser-level external requests remain intercepted and reported where supported, and observed blocked requests can still fail validation or capture. This validation is programmatic and LLM-free.
 
 Footage Capture starts from fresh deterministic state and records only an accepted Demo Script. Compositing assembles the captured Scenes into a Draft Composite, runs bounded quality review and repair, and stores the accepted final video for delivery.
 
@@ -35,8 +35,8 @@ Footage Capture starts from fresh deterministic state and records only an accept
 13. As a maker, I want Capture Path Validation to run Demo Runtime Preflight before it dry-runs my Demo Script, so that footage is never recorded from an app that cannot start and load reliably.
 14. As a maker, I want validation to avoid LLM API calls, so that the acceptance gate remains cheap and repeatable.
 15. As a maker, I want dependency installation to use the network when needed, so that normal JavaScript/TypeScript package installation works.
-16. As a maker, I want demo runtime to be offline after dependency installation, so that demos do not depend on hosted services.
-17. As a maker, I want validation to fail on external runtime requests, so that the generated demo is deterministic and safe to capture.
+16. As a maker, I want browser-level external runtime requests to be intercepted and reported, so that the generated demo remains deterministic and safe to capture while Daytona firewall lockdown is deferred.
+17. As a maker, I want validation to fail on observed browser-level external runtime requests, so that the generated demo is deterministic and safe to capture.
 18. As a maker, I want validation to run in an isolated sandbox, so that untrusted submitted code is contained.
 19. As a maker, I want Playwright validation to run inside the sandbox, so that browser checks do not require network access into the sandbox from the backend host.
 20. As a maker, I want MakeADemo to infer the install command from standard lockfiles, so that I do not need to configure dependency installation.
@@ -63,22 +63,21 @@ Footage Capture starts from fresh deterministic state and records only an accept
 - Repo Security Screen runs after repo clone and before any agent or runtime preparation work.
 - Repo Security Screen is static-only, fast, deterministic, and does not install dependencies or execute submitted repo code.
 - Repo Security Screen warns, rather than rejects, when repo size or file count may prevent the agent from fully exploring the project and may degrade demo quality.
-- Repo Preparation runs after Repo Security Screen in a locked-down ephemeral cloud workspace.
+- Repo Preparation runs after Repo Security Screen in an isolated ephemeral cloud workspace. Development Daytona sandboxes use `networkBlockAll: false`, subject to organization-level egress policy.
 - Repo Preparation first checks for existing demo setup before creating a new demo runtime.
 - Repo Preparation may edit and execute the ephemeral workspace, but it does not modify the maker's source repo.
-- Repo Preparation may use controlled network access for setup and research, but the prepared app runtime must run without external network access after setup.
-- Repo Preparation should expose a runtime network lockdown tool/check to the agent; if the app runtime attempts external network communication, the tool returns a structured failure so the agent can mock or remove the dependency and retry.
+- Repo Preparation may use the network-enabled development sandboxes for setup, dependency installation, build, runtime, and research. Daytona sandbox-firewall Runtime Network Lockdown is deferred, while browser-level request interception can return structured blocked-network evidence for repair.
 - Repo Preparation produces a durable Preparation Manifest as the source of truth for validation command and URL.
 - The Preparation Manifest records prepared command, local URL, existing demo evidence, workspace changes, mocks, assumptions, risks, and script-generation context.
 - The minimum required Preparation Manifest fields are workspace ID, repo URL, prepared demo command, local URL, preparation status, setup summary, diff artifact ID, assumptions, and risks.
 - If Repo Preparation fails, MakeADemo returns a targeted Preparation Fallback Prompt and does not run Script Generation.
 - The Demo Run Contract requires a deterministic browser-accessible demo inside an isolated sandbox.
 - Dependency installation may use network access.
-- After dependency installation, all inbound and outbound communication across the sandbox boundary is blocked and treated as a hard validation failure.
+- After dependency installation, Daytona sandbox-boundary traffic remains subject to the network-enabled development policy rather than being resealed. Browser-level external requests that are intercepted remain structured validation evidence and can fail the capture path.
 - Script Generation follows Repo Preparation and produces an unaccepted Demo Script from prepared project context, structured demo intent, normalized Supporting Documents, and Preparation Manifest context.
 - The Demo Script is the canonical handoff artifact: it contains the full Playwright flow, declared Scenes and expected visible outcomes, plus presentation metadata. It does not carry preflight evidence, preparation assumptions, or repair risk state.
 - Capture Path Validation follows Script Generation and is the only acceptance gate before Footage Capture.
-- Capture Path Validation first runs Demo Runtime Preflight, then dry-runs the exact generated Demo Script from a fresh state under Runtime Network Lockdown.
+- Capture Path Validation first runs Demo Runtime Preflight, then dry-runs the exact generated Demo Script from a fresh state. Daytona sandbox-firewall Runtime Network Lockdown is deferred; browser-level request interception and blocked-network reporting remain part of the deterministic gate.
 - Demo Runtime Preflight is programmatic and does not use LLM API calls. It runs in backend Daytona sandboxes, not in the web server process, the maker's browser, Docker-specific infrastructure, or a local-only CLI architecture.
 - Playwright validation runs inside the Sandbox rather than from the backend host.
 - Artifacts such as screenshots, logs, normalized documents, preparation manifests, diffs, Demo Scripts, and capture validation evidence are stored as pipeline artifacts.
@@ -97,7 +96,7 @@ Footage Capture starts from fresh deterministic state and records only an accept
 - Install Plan inference should expose a simple repo-inspection interface that returns the install command and warnings.
 - Sandbox Runner should encapsulate clone/install/runtime isolation/artifact extraction behind a small job interface.
 - Network Isolation Policy should make runtime network blocking explicit and testable.
-- Demo Runtime Preflight should return structured success/failure results, logs, warnings, screenshots, and blocked network attempts to Capture Path Validation.
+- Demo Runtime Preflight should return structured success/failure results, logs, warnings, screenshots, and browser-level blocked network attempts to Capture Path Validation; it should not claim Daytona firewall lockdown while that policy is deferred.
 - Browser Validation should encapsulate Playwright page-load, blank-page, runtime-error, screenshot, and interactability checks.
 - Script Generator should consume prepared-project context, structured demo intent, normalized Supporting Documents, and Preparation Manifest context and return a Demo Script.
 - Pipeline Job Orchestrator should coordinate the linear flow without owning the implementation details of each deep module.
@@ -109,14 +108,14 @@ Footage Capture starts from fresh deterministic state and records only an accept
 - Supporting Document Intake should be tested for accepting document-like uploads while rejecting videos and pictures.
 - Supporting Document Normalizer should be tested for producing normalized text artifacts with source metadata.
 - Repo Security Screen should be tested for hard rejects on obviously unsafe repos and warnings for large repos, missing lockfiles, external-service SDKs, auth packages, native dependencies, postinstall scripts, shell scripts, and other non-fatal risks.
-- Repo Preparation should be tested with fake agent/workspace adapters that simulate existing demo reuse, existing demo adaptation, new demo creation, runtime network lockdown failures, successful retry after mocking, and structured preparation failure.
+- Repo Preparation should be tested with fake agent/workspace adapters that simulate existing demo reuse, existing demo adaptation, new demo creation, browser-level blocked-network evidence, successful retry after mocking, and structured preparation failure.
 - Preparation Manifest schema/loader should be tested for required command, URL, status, setup summary, diff artifact ID, assumptions, and risks.
 - Preparation Fallback Prompt Generator should be tested for including blockers, assumptions, suggested changes, and enough context for the maker's coding agent.
 - Install Plan inference should be tested across Bun, pnpm, Yarn, npm lockfile, and package-only fallback cases.
 - Script Generation should be tested for producing one valid Demo Script from structured demo intent, normalized Supporting Documents, Preparation Manifest context, and prepared-project context.
 - Capture Path Validation should be tested end-to-end through its public interface: Demo Runtime Preflight failures prevent a Demo Script dry-run, and only a successful preflight plus capture-path dry-run accepts the script.
 - Demo Runtime Preflight should be tested with fake sandbox adapters that simulate install success, install failure, command failure, page-load failure, blocked network attempts, blank pages, runtime error pages, and successful validation.
-- Network Isolation Policy should be tested as a pure boundary decision where any post-install sandbox-boundary network attempt fails validation.
+- Network Isolation Policy should be tested as a pure boundary that records browser-observed external requests for validation; Daytona firewall lockdown remains a deferred development policy.
 - Browser Validation should be tested with Playwright-style fakes or integration fixtures that prove the validator distinguishes reachable pages, blank pages, and obvious framework/runtime errors.
 - Artifact Store should be tested through public artifact write/read/list behavior for normalized documents, preparation manifests, diffs, logs, screenshots, and Demo Scripts.
 - Pipeline Job Orchestrator should be tested through an integration-style happy path and representative failure paths, using fakes at external seams rather than mocking internal functions.
