@@ -317,37 +317,22 @@ const targetUrl = process.argv[2];
 const localHost = new URL(targetUrl).hostname;
 const blockedRequests = [];
 let browser;
-const { execSync } = require("node:child_process");
 const { createRequire } = require("node:module");
 
 function requireSandboxPlaywright() {
-  const globalNodeModules = readGlobalNodeModules();
-  const candidates = [
-    ...(globalNodeModules.length === 0 ? [] : [
-      { createRequireFrom: globalNodeModules + "/playwright/package.json", id: "playwright" },
-      { createRequireFrom: globalNodeModules + "/@playwright/test/package.json", id: "@playwright/test" },
-    ]),
-    { createRequireFrom: process.cwd() + "/package.json", id: "playwright" },
-    { createRequireFrom: process.cwd() + "/package.json", id: "@playwright/test" },
-  ];
-
-  const failures = [];
-  for (const candidate of candidates) {
-    try {
-      return createRequire(candidate.createRequireFrom)(candidate.id);
-    } catch (error) {
-      failures.push(candidate.id + " from " + candidate.createRequireFrom + ": " + (error instanceof Error ? error.message : String(error)));
-    }
+  const moduleRoot = process.env.MAKEADEMO_PLAYWRIGHT_MODULE_ROOT;
+  if (typeof moduleRoot !== "string" || !moduleRoot.startsWith("/")) {
+    throw new Error("MakeADemo validator dependency failure: Playwright trusted module root is unavailable.");
   }
-
-  throw new Error("MakeADemo validator dependency failure: Playwright is not available inside the submitted-code sandbox. " + failures.join(" | "));
-}
-
-function readGlobalNodeModules() {
   try {
-    return execSync("npm root -g", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-  } catch {
-    return "";
+    const requireFromTrustedRuntime = createRequire(moduleRoot + "/playwright/package.json");
+    const metadata = requireFromTrustedRuntime("playwright/package.json");
+    if (metadata.version !== "1.49.1") {
+      throw new Error("expected playwright@1.49.1, received " + String(metadata.version));
+    }
+    return requireFromTrustedRuntime("playwright");
+  } catch (error) {
+    throw new Error("MakeADemo validator dependency failure: Playwright is not available inside the trusted submitted-code runtime. " + (error instanceof Error ? error.message : String(error)));
   }
 }
 

@@ -5,11 +5,31 @@ import {
   SubmittedCodeWorkspaceSyncError,
   executeSubmittedCode,
   executeSubmittedProject,
-  setSubmittedCodeNetworkAccess,
+  provisionSubmittedCodeToolchain,
   syncSubmittedCodeWorkspace,
 } from "./submitted-code-execution";
 
 describe("submitted-code execution helpers", () => {
+  it("requires a trusted provisioning boundary before a plan is executable", async () => {
+    await expect(
+      provisionSubmittedCodeToolchain(fakeWorkspace(), {
+        catalogRevision: "submitted-js-2026-07-26.1",
+        evidence: [],
+        node: {
+          family: 22,
+          lifecycle: "supported",
+          version: "22.23.1",
+        },
+        packageManager: {
+          generation: "yarn-berry",
+          name: "yarn",
+          version: "4.12.0",
+        },
+        projectRoot: ".",
+      }),
+    ).rejects.toThrow("cannot provision submitted-code toolchains");
+  });
+
   it("passes a resolved plan only to submitted-project execution", async () => {
     const calls: unknown[] = [];
     const workspace = {
@@ -20,18 +40,36 @@ describe("submitted-code execution helpers", () => {
       },
     };
     const plan = {
-      catalogRevision: "submitted-js-2026-07-17.1" as const,
+      catalogRevision: "submitted-js-2026-07-26.1" as const,
       evidence: [],
-      install: { argv: ["i", "--frozen-lockfile"], executable: "pnpm" },
-      node: { version: "22.23.1" as const },
+      install: {
+        argv: [
+          "install",
+          "--frozen-lockfile",
+          "--child-concurrency=2",
+          "--network-concurrency=4",
+        ],
+        executable: "pnpm",
+      },
+      node: {
+        family: 22 as const,
+        lifecycle: "supported" as const,
+        version: "22.23.1" as const,
+      },
       packageManager: {
+        generation: "pnpm-modern" as const,
         name: "pnpm" as const,
         version: "11.13.0" as const,
       },
       projectRoot: "webapp",
     };
     const request = {
-      argv: ["i", "--frozen-lockfile"],
+      argv: [
+        "install",
+        "--frozen-lockfile",
+        "--child-concurrency=2",
+        "--network-concurrency=4",
+      ],
       executable: "pnpm",
       plan,
     };
@@ -45,14 +83,6 @@ describe("submitted-code execution helpers", () => {
     await expect(
       executeSubmittedCode(fakeWorkspace(), "npm run build"),
     ).rejects.toThrow("Preparation workspace cannot execute submitted code");
-  });
-
-  it("fails instead of falling back to outer workspace network controls", async () => {
-    await expect(
-      setSubmittedCodeNetworkAccess(fakeWorkspace(), true),
-    ).rejects.toThrow(
-      "Preparation workspace cannot control submitted-code network access",
-    );
   });
 
   it("wraps submitted-code workspace sync failures with structured metadata", async () => {
@@ -94,7 +124,6 @@ function fakeWorkspace(): PreparationWorkspace {
     async getPreviewUrl() {
       return "https://preview.example.test";
     },
-    async setOutboundNetworkAccess() {},
     async uploadFiles() {},
   };
 }

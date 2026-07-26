@@ -19,6 +19,9 @@ describe("Daytona Repo Preparation image", () => {
     expect(dockerfile).toContain(
       "COPY inspect-submitted-code-toolchain.mjs /usr/local/bin/makeademo-inspect-submitted-code-toolchain",
     );
+    expect(dockerfile).toContain(
+      "COPY provision-submitted-node-runtime.mjs /opt/makeademo/provision-submitted-node-runtime.mjs",
+    );
     expect(dockerfile).toMatch(
       /chmod 0750[^\n]*makeademo-inspect-submitted-code-toolchain/,
     );
@@ -74,53 +77,128 @@ describe("Daytona Repo Preparation image", () => {
     expect(dockerfile).not.toContain(
       "ln -sf /root/.bun/bin/bun /usr/local/bin/bun",
     );
-    expect(dockerfile).toContain("pnpm@10.12.1");
-    expect(dockerfile).toContain("yarn@1.22.22");
+    expect(dockerfile).not.toContain("pnpm@10.12.1");
+    expect(dockerfile).not.toContain("yarn@1.22.22");
     expect(dockerfile).toContain("@playwright/test@1.49.1");
     expect(dockerfile).toContain("playwright@1.49.1");
     expect(dockerfile).toContain("typescript@5.7.3");
     expect(dockerfile).toContain("WORKDIR /workspace");
-    expect(dockerfile).toContain("MISE_VERSION=2026.7.7");
+    expect(dockerfile).not.toContain("MISE_");
     expect(dockerfile).toContain("ARG TARGETARCH");
     expect(dockerfile).toContain('"amd64"');
     expect(dockerfile).toContain("unsupported submitted-code architecture");
     expect(dockerfile).toContain("sha256sum -c");
-    expect(dockerfile).toContain("mise --no-config install node@22.23.1");
-    expect(dockerfile).toContain("corepack@0.35.0");
-    expect(dockerfile).toContain("corepack pack pnpm@10.27.0");
-    expect(dockerfile).toContain("corepack pack pnpm@11.13.0");
-    expect(dockerfile).toContain("corepack install -g --cache-only");
-    expect(dockerfile).toContain("MISE_NO_CONFIG=1");
-    expect(dockerfile).toContain("MISE_OFFLINE=1");
-    expect(dockerfile).toContain("MISE_PARANOID=1");
-    expect(dockerfile).toContain("MISE_LOCKED=1");
-    expect(dockerfile).toContain("COREPACK_ENABLE_NETWORK=0");
-    expect(dockerfile).toContain("COREPACK_DEFAULT_TO_LATEST=0");
-    expect(dockerfile).toContain("COREPACK_ENABLE_AUTO_PIN=0");
-    expect(dockerfile).toContain("COREPACK_ENV_FILE=0");
-    expect(dockerfile).toContain("COREPACK_ENABLE_UNSAFE_CUSTOM_URLS=0");
-    expect(dockerfile).toContain("COREPACK_ENABLE_STRICT=1");
-    expect(dockerfile).toMatch(
-      /chmod -R a-w[^\n]*\/opt\/mise[^\n]*\/opt\/corepack/,
-    );
+    expect(dockerfile).not.toContain("mise --no-config");
+    expect(dockerfile).not.toContain("node@22.23.1");
+    expect(dockerfile).not.toContain("corepack pack pnpm@");
     expect(dockerfile).toMatch(/chown -R pwuser:pwuser[^\n]*\/workspace/);
-    expect(dockerfile).toContain("USER pwuser");
-    expect(dockerfile).toContain("pnpm@10.27.0");
-    expect(dockerfile).toContain("pnpm@11.13.0");
+    expect(dockerfile).toContain("USER root");
+    expect(dockerfile).toContain(
+      "provider always drops submitted-code execution to pwuser",
+    );
+    expect(dockerfile).not.toContain("pnpm@10.27.0");
+    expect(dockerfile).not.toContain("pnpm@11.13.0");
     expect(dockerfile).not.toContain("/opt/makeademo/toolchains/pnpm");
     expect(dockerfile).not.toMatch(/COREPACK_INTEGRITY_KEYS=(?:0|\s*$)/m);
   });
 
-  it("ships the pinned Playwright agent CLI and matching browser for offline runtime use", async () => {
+  it("separates the agent CLI from a read-only trusted Playwright runtime", async () => {
     const dockerfile = await readFile(
       join(import.meta.dirname, "submitted-code-node-browser.Dockerfile"),
       "utf8",
     );
 
     expect(dockerfile).toContain("@playwright/cli@0.1.17");
+    expect(dockerfile).toContain(
+      "npm install --prefix /opt/makeademo/playwright-runtime",
+    );
+    expect(dockerfile).toContain("@playwright/test@1.49.1");
+    expect(dockerfile).toContain("playwright@1.49.1");
+    expect(dockerfile).toContain("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1");
+    expect(dockerfile).toMatch(
+      /chmod -R a-w[^\n]*\/opt\/makeademo\/playwright-runtime/,
+    );
     expect(dockerfile).toContain("playwright-cli install-browser chromium");
+    expect(dockerfile).toContain("PLAYWRIGHT_SKIP_BROWSER_GC=1");
+    expect(dockerfile).toContain(
+      "node /opt/makeademo/playwright-runtime/node_modules/playwright/cli.js install chromium",
+    );
     expect(dockerfile).toContain("PLAYWRIGHT_BROWSERS_PATH=/ms-playwright");
+    expect(dockerfile).toMatch(
+      /playwright-cli install-browser chromium[\s\S]*chown -R root:root \/ms-playwright[\s\S]*chmod -R a-w \/ms-playwright/,
+    );
     expect(dockerfile).toContain("NO_UPDATE_NOTIFIER=1");
+  });
+
+  it("pins Node release signing trust and installs a root-only hydration helper", async () => {
+    const dockerfile = await readFile(
+      join(import.meta.dirname, "submitted-code-node-browser.Dockerfile"),
+      "utf8",
+    );
+
+    expect(dockerfile).toContain("gpgv");
+    expect(dockerfile).toContain("xz-utils");
+    expect(dockerfile).toContain(
+      "ARG NODE_RELEASE_KEYS_COMMIT=b28073028e6d6855cfb53bf7fa0137599c01f967",
+    );
+    expect(dockerfile).toContain(
+      "ARG NODE_RELEASE_KEYRING_SHA256=6030d4e0cd53330acf2ab68acd455b7ca98bb5d5975376f0b7c0892308ba2d57",
+    );
+    expect(dockerfile).toContain("/gpg/pubring.kbx");
+    expect(dockerfile).not.toContain("gpg-only-active-keys/pubring.kbx");
+    expect(dockerfile).toContain("NODE_RELEASE_KEYRING_SHA256");
+    const allowedPrimaryFingerprints = [
+      "5BE8A3F6C8A5C01D106C0AD820B1A390B168D356",
+      "DD792F5973C6DE52C432CBDAC77ABFA00DDBF2B7",
+      "CC68F5A3106FF448322E48ED27F5E38D5B0A215F",
+      "8FCCA13FEF1D0C2E91008E09770F7A9A5AE15600",
+      "890C08DB8579162FEE0DF9DB8BEAB4DFCF555EF4",
+      "C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C",
+      "108F52B48DB57BB0CC439B2997B01419BD92F80A",
+      "A363A499291CBBC940DD62E41F10027AF002F8B0",
+      "655F3B5C1FB3FA8D1A0CA6BDE4A7D232B936D2FD",
+      "C0D6248439F1D5604AAFFB4021D900FFDB233756",
+    ];
+    for (const fingerprint of allowedPrimaryFingerprints) {
+      expect(dockerfile).toContain(fingerprint);
+    }
+    const policyBlock =
+      /printf '%s\\n' \\\n(?<body>[\s\S]+?)> \/opt\/makeademo\/node-release-trust\/allowed-primary-fingerprints\.txt/.exec(
+        dockerfile,
+      )?.groups?.body;
+    expect(policyBlock?.match(/[A-F0-9]{40}/g)).toEqual(
+      allowedPrimaryFingerprints,
+    );
+    for (const version of [
+      "18.20.8",
+      "20.19.5",
+      "22.23.1",
+      "24.0.0",
+      "24.18.0",
+      "24.2.0",
+    ]) {
+      expect(dockerfile).toContain(version);
+    }
+    expect(dockerfile).toContain("NODE_RELEASE_TRUST_SMOKE_VERSIONS");
+    expect(dockerfile).toContain(
+      "https://nodejs.org/dist/v${version}/SHASUMS256.txt.asc",
+    );
+    expect(dockerfile).toContain("gpgv --status-fd=1");
+    expect(dockerfile).toContain("REVKEYSIG|KEYREVOKED");
+    expect(dockerfile).toContain(
+      "COPY provision-submitted-node-runtime.mjs /usr/local/bin/makeademo-provision-submitted-node-runtime",
+    );
+    expect(dockerfile).toMatch(
+      /chmod 0700[^\n]*makeademo-provision-submitted-node-runtime/,
+    );
+    expect(dockerfile).toMatch(
+      /chmod 0400[^\n]*pubring\.kbx[^\n]*allowed-primary-fingerprints\.txt/,
+    );
+    expect(dockerfile).toContain("/opt/makeademo/toolchains/node/sha256");
+    expect(dockerfile).toContain(
+      "chown -R root:root /opt/makeademo/toolchains/node",
+    );
+    expect(dockerfile).toContain("chmod -R a-w /opt/makeademo/toolchains/node");
   });
 
   it("keeps Docker RUN and ENV continuations parseable", async () => {

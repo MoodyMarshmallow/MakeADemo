@@ -5,7 +5,7 @@ import type { PreparationWorkspace } from "../preparation-workspace.interface";
 export const preparationManifestDirectory = "/workspace/.makeademo";
 export const preparationManifestPath = `${preparationManifestDirectory}/preparation-manifest.json`;
 
-export type DependencyInstallRequest = { command: string };
+export type DependencyInstallRequest = Record<string, never>;
 export type ValidationRequest = { manifestPath: string };
 
 /**

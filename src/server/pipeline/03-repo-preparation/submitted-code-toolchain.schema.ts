@@ -1,33 +1,68 @@
-import { resolveCommand } from "package-manager-detector/commands";
+import { createHash } from "node:crypto";
 import {
+  compare,
+  major,
   maxSatisfying,
+  prerelease,
   satisfies as semverSatisfies,
+  valid,
   validRange,
 } from "semver";
+import {
+  type SubmittedCodeNodeFamily,
+  type SubmittedCodeNodeReleaseSnapshot,
+  submittedCodeNodeCompatibility,
+} from "./submitted-code-node-release-catalog.interface";
 import { normalizeSubmittedProjectRoot } from "./submitted-project-root";
 
-const catalogRevision = "submitted-js-2026-07-17.1" as const;
-// The active catalog intentionally targets the Directus/Ghost slice only.
-// Catalog parity for npm, Yarn, Bun, and Node 18/24/26 is required before the
-// full benchmark can represent general JavaScript-project support.
-// Audited follow-up candidates are intentionally not executable catalog
-// entries until the submitted-code image physically contains their paths:
-// Node 18.20.8, 24.11.1, 24.16.0, 26.3.0; Bun 1.2.22; and Yarn
-// 1.22.22/4.11.0/4.12.0/4.13.0.
-const supportedNodeVersions = ["22.23.1"] as const;
-const supportedPackageManagerVersions = {
-  pnpm: ["10.27.0", "11.13.0"],
-} as const;
+const catalogRevision = "submitted-js-2026-07-26.1" as const;
+const supportedNodeFamilies = [18, 20, 22, 24] as const;
+const defaultNodeFamily = 24 as const;
+const bunDigestBackedProvisionerRange = ">=1.2.16 <2";
 
 type SubmittedCodePackageManager = "bun" | "npm" | "pnpm" | "yarn";
+type SubmittedCodePackageManagerGeneration =
+  | "bun-1"
+  | "npm-modern"
+  | "pnpm-modern"
+  | "yarn-berry"
+  | "yarn-classic";
+
+const packageManagerSafeDefaults: Record<
+  Exclude<SubmittedCodePackageManager, "yarn">,
+  readonly string[]
+> = {
+  bun: ["1.2.22"],
+  npm: ["8.19.4", "9.9.4", "10.9.2", "11.6.2"],
+  pnpm: ["8.15.9", "9.15.9", "10.27.0", "11.17.0"],
+};
+
+const yarnSafeDefaults: Record<
+  Extract<SubmittedCodePackageManagerGeneration, "yarn-berry" | "yarn-classic">,
+  readonly string[]
+> = {
+  "yarn-berry": ["2.4.2", "3.8.7", "4.12.0"],
+  "yarn-classic": ["1.22.22"],
+};
 
 /**
  * A normalized, bounded file view produced by MakeADemo's trusted metadata
  * inspector. Keys must be accepted metadata basenames and values must never
  * exceed the inspector's file-size limit.
  */
+type SubmittedCodeCanonicalLockfileEvidence = {
+  kind: "canonical-lockfile";
+  prefixBase64: string;
+  sha256: `sha256:${string}`;
+  size: number;
+};
+
+type SubmittedCodeToolchainFile =
+  | string
+  | SubmittedCodeCanonicalLockfileEvidence;
+
 type SubmittedCodeToolchainCandidate = {
-  files: Readonly<Record<string, string>>;
+  files: Readonly<Record<string, SubmittedCodeToolchainFile>>;
   projectRoot: string;
 };
 
@@ -40,14 +75,14 @@ export type SubmittedCodeToolchainMetadata = {
 };
 
 /**
- * The executable toolchain selected solely from the fixed offline catalog.
- * Consumers must map versions and projectRoot to catalog-owned paths; no raw
- * repository string may be used as an executable path or command.
+ * The immutable install requirement resolved from safe metadata. It is not
+ * executable until a trusted artifact provider has hydrated and attested the
+ * exact requested package-manager release.
  */
 export type SubmittedCodeToolchainPlan = {
   catalogRevision: typeof catalogRevision;
   evidence: readonly SubmittedCodeToolchainEvidence[];
-  /** Present only when the catalog can perform an immutable install. */
+  /** Present only when the package manager has its canonical lockfile. */
   install?: {
     argv: readonly string[];
     executable: string;
@@ -56,15 +91,24 @@ export type SubmittedCodeToolchainPlan = {
   installBlocker?: {
     code: Exclude<
       SubmittedCodeToolchainResolutionError["code"],
-      "unsupported_node_version"
+      | "conflicting_node_constraints"
+      | "invalid_node_constraint"
+      | "unsupported_node_version"
     >;
     reason: string;
   };
-  node: { version: (typeof supportedNodeVersions)[number] };
+  node: {
+    family: SubmittedCodeNodeFamily;
+    lifecycle: "legacy-eol" | "supported";
+    version: string;
+  };
   packageManager?: {
     corepackHash?: string;
-    name: "pnpm";
-    version: (typeof supportedPackageManagerVersions.pnpm)[number];
+    generation: SubmittedCodePackageManagerGeneration;
+    name: SubmittedCodePackageManager;
+    /** Hash of the selected canonical lockfile, bound to the provisioned capability. */
+    projectIntegrity?: `sha256:${string}`;
+    version: string;
   };
   projectRoot: string;
   warnings?: readonly SubmittedCodeToolchainWarning[];
@@ -73,10 +117,14 @@ export type SubmittedCodeToolchainPlan = {
 export class SubmittedCodeToolchainResolutionError extends Error {
   constructor(
     readonly code:
+      | "conflicting_node_constraints"
+      | "incompatible_node_package_manager"
+      | "invalid_node_constraint"
       | "missing_immutable_install"
       | "missing_lockfile"
       | "unsupported_node_version"
       | "unsupported_package_manager"
+      | "unsupported_provisioner"
       | "unsupported_package_manager_version",
     message: string,
   ) {
@@ -91,14 +139,28 @@ type SubmittedCodeToolchainWarning = {
   value: string;
 };
 
+type SubmittedCodeNodeClaimRole =
+  | "hard-compatibility"
+  | "hard-pin"
+  | "soft-preference";
+
 /** One normalized metadata claim retained for audit, never for execution. */
-type SubmittedCodeToolchainEvidence = {
-  kind: "lockfile" | "node" | "package-manager" | "project-root";
-  source: string;
-  value: string;
-};
+type SubmittedCodeToolchainEvidence =
+  | {
+      kind: "node";
+      role: SubmittedCodeNodeClaimRole;
+      source: string;
+      value: string;
+    }
+  | {
+      kind: "lockfile" | "package-manager" | "project-root";
+      source: string;
+      value: string;
+    };
 
 const metadataFileMaxBytes = 64 * 1024;
+const canonicalLockfileMaxBytes = 64 * 1024 * 1024;
+const canonicalLockfilePrefixMaxBytes = 64 * 1024;
 const acceptedMetadataFiles = new Set([
   "package.json",
   "package-lock.json",
@@ -113,10 +175,65 @@ const acceptedMetadataFiles = new Set([
   "mise.toml",
   ".mise.toml",
 ]);
+const canonicalLockfileNames = new Set([
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "bun.lock",
+  "bun.lockb",
+]);
+
+function isCanonicalLockfileEvidence(
+  value: unknown,
+): value is SubmittedCodeCanonicalLockfileEvidence {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const evidence = value as Partial<SubmittedCodeCanonicalLockfileEvidence>;
+  if (
+    evidence.kind !== "canonical-lockfile" ||
+    typeof evidence.prefixBase64 !== "string" ||
+    typeof evidence.sha256 !== "string" ||
+    !/^sha256:[a-f0-9]{64}$/.test(evidence.sha256) ||
+    typeof evidence.size !== "number" ||
+    !Number.isSafeInteger(evidence.size) ||
+    evidence.size < 0 ||
+    evidence.size > canonicalLockfileMaxBytes ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+      evidence.prefixBase64,
+    )
+  ) {
+    return false;
+  }
+  const prefix = Buffer.from(evidence.prefixBase64, "base64");
+  return (
+    prefix.length <= canonicalLockfilePrefixMaxBytes &&
+    prefix.length <= evidence.size &&
+    prefix.toString("base64") === evidence.prefixBase64
+  );
+}
+
+function readTextFile(
+  files: Readonly<Record<string, SubmittedCodeToolchainFile>>,
+  name: string,
+): string | undefined {
+  const value = files[name];
+  return typeof value === "string" ? value : undefined;
+}
+
+function readLockfilePrefix(
+  value: SubmittedCodeToolchainFile | undefined,
+): string | undefined {
+  if (typeof value === "string") return value;
+  if (!isCanonicalLockfileEvidence(value)) return undefined;
+  return Buffer.from(value.prefixBase64, "base64").toString("utf8");
+}
 
 /** Resolves safe submitted-project metadata against the revisioned catalog. */
 export function resolveSubmittedCodeToolchain(
   metadata: SubmittedCodeToolchainMetadata,
+  nodeReleases: SubmittedCodeNodeReleaseSnapshot,
 ): SubmittedCodeToolchainPlan {
   if (
     typeof metadata !== "object" ||
@@ -136,14 +253,15 @@ export function resolveSubmittedCodeToolchain(
   ];
   const nodeConstraints = collectNodeConstraints(candidate.files, packageJson);
   evidence.push(
-    ...nodeConstraints.map(({ source, value }) => ({
+    ...nodeConstraints.map(({ role, source, value }) => ({
       kind: "node" as const,
+      role,
       source,
       value,
     })),
   );
-  const { version: nodeVersion, warnings } =
-    resolveNodeVersion(nodeConstraints);
+  const warnings: SubmittedCodeToolchainWarning[] = [];
+  const node = resolveNodeVersion(nodeConstraints, nodeReleases, warnings);
   let manager: SubmittedCodeToolchainPlan["packageManager"];
   try {
     manager = resolvePackageManager(
@@ -151,11 +269,12 @@ export function resolveSubmittedCodeToolchain(
       packageJson,
       evidence,
       warnings,
+      node.version,
     );
   } catch (error) {
     if (
       error instanceof SubmittedCodeToolchainResolutionError &&
-      error.code !== "unsupported_node_version"
+      isPackageManagerResolutionCode(error.code)
     ) {
       return {
         catalogRevision,
@@ -164,7 +283,7 @@ export function resolveSubmittedCodeToolchain(
           code: error.code,
           reason: installBlockerReason(error.code),
         },
-        node: { version: nodeVersion },
+        node,
         projectRoot: candidate.projectRoot,
         warnings,
       };
@@ -174,19 +293,13 @@ export function resolveSubmittedCodeToolchain(
   if (manager === undefined) {
     throw new Error("Submitted toolchain package manager is missing.");
   }
-  const install = resolveCommand(manager.name, "frozen", []);
-  if (install === null) {
-    throw new SubmittedCodeToolchainResolutionError(
-      "missing_immutable_install",
-      `Package manager ${manager.name} does not define an immutable install command.`,
-    );
-  }
+  const install = immutableInstallCommand(manager);
 
   return {
     catalogRevision,
     evidence,
-    install: { argv: install.args, executable: install.command },
-    node: { version: nodeVersion },
+    install,
+    node,
     packageManager: manager,
     projectRoot: candidate.projectRoot,
     warnings,
@@ -196,19 +309,40 @@ export function resolveSubmittedCodeToolchain(
 function installBlockerReason(
   code: Exclude<
     SubmittedCodeToolchainResolutionError["code"],
-    "unsupported_node_version"
+    | "conflicting_node_constraints"
+    | "invalid_node_constraint"
+    | "unsupported_node_version"
   >,
 ): string {
   switch (code) {
+    case "incompatible_node_package_manager":
+      return "The selected package manager does not support the resolved Node release.";
     case "missing_immutable_install":
       return "The selected package manager has no catalog-owned immutable install.";
     case "missing_lockfile":
       return "The selected package manager requires its canonical lockfile.";
     case "unsupported_package_manager":
       return "The submitted package manager is not available in the active catalog.";
+    case "unsupported_provisioner":
+      return "The submitted package manager has no verified artifact provisioner.";
     case "unsupported_package_manager_version":
       return "The submitted package-manager version is not available in the active catalog.";
   }
+}
+
+function isPackageManagerResolutionCode(
+  code: SubmittedCodeToolchainResolutionError["code"],
+): code is Exclude<
+  SubmittedCodeToolchainResolutionError["code"],
+  | "conflicting_node_constraints"
+  | "invalid_node_constraint"
+  | "unsupported_node_version"
+> {
+  return ![
+    "conflicting_node_constraints",
+    "invalid_node_constraint",
+    "unsupported_node_version",
+  ].includes(code);
 }
 
 function selectProjectRoot(
@@ -230,12 +364,20 @@ function selectProjectRoot(
     }
     normalizeSubmittedProjectRoot(candidate.projectRoot);
     for (const [name, value] of Object.entries(candidate.files)) {
-      if (!acceptedMetadataFiles.has(name) || typeof value !== "string") {
+      if (
+        !acceptedMetadataFiles.has(name) ||
+        (typeof value !== "string" &&
+          (!canonicalLockfileNames.has(name) ||
+            !isCanonicalLockfileEvidence(value)))
+      ) {
         throw new Error(
           `Unsupported submitted toolchain metadata file: ${name}`,
         );
       }
-      if (Buffer.byteLength(value) > metadataFileMaxBytes) {
+      if (
+        typeof value === "string" &&
+        Buffer.byteLength(value) > metadataFileMaxBytes
+      ) {
         throw new Error(
           `Submitted toolchain metadata exceeds ${metadataFileMaxBytes} bytes.`,
         );
@@ -264,10 +406,16 @@ type PackageJson = {
   workspaces?: unknown;
 };
 type EngineValue = { name?: unknown; version?: unknown } | string;
-type Constraint = { source: string; value: string };
+type Constraint = {
+  role: SubmittedCodeNodeClaimRole;
+  source: string;
+  value: string;
+};
 
-function readPackageJson(value: string | undefined): PackageJson {
-  if (value === undefined) throw new Error("package.json is required.");
+function readPackageJson(
+  value: SubmittedCodeToolchainFile | undefined,
+): PackageJson {
+  if (typeof value !== "string") throw new Error("package.json is required.");
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
@@ -281,7 +429,7 @@ function readPackageJson(value: string | undefined): PackageJson {
 }
 
 function collectNodeConstraints(
-  files: Readonly<Record<string, string>>,
+  files: Readonly<Record<string, SubmittedCodeToolchainFile>>,
   packageJson: PackageJson,
 ): Constraint[] {
   const constraints: Constraint[] = [];
@@ -289,13 +437,25 @@ function collectNodeConstraints(
     constraints,
     "package.json engines.node",
     packageJson.engines?.node,
+    "engine",
   );
-  pushTrimmedConstraint(constraints, ".nvmrc", files[".nvmrc"]);
-  pushTrimmedConstraint(constraints, ".node-version", files[".node-version"]);
+  pushTrimmedConstraint(
+    constraints,
+    ".nvmrc",
+    readTextFile(files, ".nvmrc"),
+    "tool-file",
+  );
+  pushTrimmedConstraint(
+    constraints,
+    ".node-version",
+    readTextFile(files, ".node-version"),
+    "tool-file",
+  );
   pushStringConstraint(
     constraints,
     "package.json volta.node",
     packageJson.volta?.node,
+    "volta",
   );
   const runtime = packageJson.devEngines?.runtime;
   if (typeof runtime === "object" && runtime !== null) {
@@ -304,107 +464,259 @@ function collectNodeConstraints(
         constraints,
         "package.json devEngines.runtime.version",
         runtime.version,
+        "runtime-engine",
       );
     }
   }
-  const toolVersions = files[".tool-versions"];
+  const toolVersions = readTextFile(files, ".tool-versions");
   if (toolVersions !== undefined) {
     const nodeLine = toolVersions
       .split(/\r?\n/)
       .map((line) => line.trim().split(/\s+/))
       .find(([name]) => name === "nodejs");
     if (nodeLine?.[1] !== undefined) {
-      constraints.push({ source: ".tool-versions nodejs", value: nodeLine[1] });
+      constraints.push({
+        role: classifyNodeClaimRole(
+          ".tool-versions nodejs",
+          nodeLine.slice(1).join(" "),
+          "tool-file",
+        ),
+        source: ".tool-versions nodejs",
+        value: nodeLine.slice(1).join(" "),
+      });
     }
   }
   for (const filename of ["mise.toml", ".mise.toml"]) {
-    const content = files[filename];
+    const content = readTextFile(files, filename);
     if (content === undefined) continue;
-    const match = /^node\s*=\s*["']([^"']+)["']/m.exec(content);
-    if (match?.[1] !== undefined) {
-      constraints.push({ source: `${filename} node`, value: match[1] });
+    const constraint = readMiseNodeConstraint(content);
+    if (constraint !== undefined) {
+      constraints.push({
+        role: classifyNodeClaimRole(
+          `${filename} node`,
+          constraint,
+          "tool-file",
+        ),
+        source: `${filename} node`,
+        value: constraint,
+      });
     }
   }
   return constraints;
 }
 
-function resolveNodeVersion(constraints: Constraint[]): {
-  version: (typeof supportedNodeVersions)[number];
-  warnings: SubmittedCodeToolchainWarning[];
-} {
-  const selected = constraints[0];
-  if (selected === undefined) {
-    return {
-      version: supportedNodeVersions[
-        supportedNodeVersions.length - 1
-      ] as (typeof supportedNodeVersions)[number],
-      warnings: [],
-    };
-  }
-  const range = validRange(selected.value);
-  if (range === null) {
-    throw new Error(
-      `Invalid Node constraint: ${selected.source}=${selected.value}.`,
-    );
-  }
-  const version = maxSatisfying([...supportedNodeVersions], range, {
-    includePrerelease: false,
-    loose: false,
-  });
-  if (version === null) {
-    throw new SubmittedCodeToolchainResolutionError(
-      "unsupported_node_version",
-      `Node constraints do not intersect the ${catalogRevision} active catalog (${supportedNodeVersions.join(", ")}): ${selected.source}=${selected.value}.`,
-    );
-  }
-  return {
-    version,
-    warnings: constraints.slice(1).flatMap((constraint) => {
-      const lowerRange = validRange(constraint.value);
+function readMiseNodeConstraint(content: string): string | undefined {
+  let inTools = false;
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (/^\[.*\]$/.test(trimmed)) {
+      inTools = trimmed === "[tools]";
+      continue;
+    }
+    if (!inTools || trimmed === "" || trimmed.startsWith("#")) continue;
+    const declaration = /^(node|nodejs)\s*=\s*(.+)$/.exec(trimmed);
+    if (declaration?.[2] === undefined) continue;
+    const encoded = declaration[2].replace(/\s+#.*$/, "").trim();
+    const quoted = /^(["'])([^"']+)\1$/.exec(encoded);
+    if (quoted?.[2] !== undefined) return quoted[2];
+    const array = /^\[(.*)\]$/.exec(encoded);
+    if (array?.[1] !== undefined) {
+      const entries = array[1].split(",").map((entry) => entry.trim());
+      const values = entries.map(
+        (entry) => /^(["'])([^"']+)\1$/.exec(entry)?.[2],
+      );
       if (
-        lowerRange !== null &&
-        semverSatisfies(version, lowerRange, {
+        values.length > 0 &&
+        values.every((value): value is string => value !== undefined)
+      ) {
+        return values.join(" || ");
+      }
+    }
+    return encoded;
+  }
+  return undefined;
+}
+
+function resolveNodeVersion(
+  constraints: Constraint[],
+  snapshot: SubmittedCodeNodeReleaseSnapshot,
+  warnings: SubmittedCodeToolchainWarning[],
+): SubmittedCodeToolchainPlan["node"] {
+  const hardRanges = constraints
+    .filter(({ role }) => role !== "soft-preference")
+    .map((constraint) => ({
+      ...constraint,
+      range:
+        constraint.role === "hard-pin"
+          ? parseExactStableNodeVersion(constraint)
+          : parseStableNodeRange(constraint),
+    }));
+  const preferences = constraints
+    .filter(({ role }) => role === "soft-preference")
+    .map((constraint) => ({
+      ...constraint,
+      family: parseIncompleteNodeFamily(constraint),
+    }));
+  const releases = snapshot.releases
+    .filter(isEligibleNodeRelease)
+    .sort((left, right) => compare(right.version, left.version));
+  const candidates =
+    hardRanges.length === 0
+      ? releases.filter((release) => release.family === defaultNodeFamily)
+      : releases.filter((release) =>
+          hardRanges.every(({ range }) =>
+            semverSatisfies(release.version, range, {
+              includePrerelease: false,
+              loose: false,
+            }),
+          ),
+        );
+  const selected = candidates[0];
+  if (selected === undefined) {
+    const everyClaimHasCandidate = hardRanges.every(({ range }) =>
+      releases.some((release) =>
+        semverSatisfies(release.version, range, {
           includePrerelease: false,
           loose: false,
-        })
-      ) {
-        return [];
-      }
-      return [
-        {
-          reason: `Lower-priority Node metadata disagrees with ${selected.source}.`,
-          source: constraint.source,
-          value: constraint.value,
-        },
-      ];
-    }),
+        }),
+      ),
+    );
+    const code =
+      hardRanges.length > 1 && everyClaimHasCandidate
+        ? "conflicting_node_constraints"
+        : "unsupported_node_version";
+    throw new SubmittedCodeToolchainResolutionError(
+      code,
+      `Node constraints do not resolve against the active release snapshot: ${
+        constraints.length === 0
+          ? `default family ${defaultNodeFamily}`
+          : constraints
+              .map(({ source, value }) => `${source}=${value}`)
+              .join(", ")
+      }.`,
+    );
+  }
+  for (const preference of preferences) {
+    if (preference.family !== selected.family) {
+      warnings.push({
+        reason: `Selected Node ${selected.version} from hard compatibility constraints instead of the soft Node ${preference.family} preference.`,
+        source: preference.source,
+        value: preference.value,
+      });
+    }
+  }
+  return {
+    family: selected.family,
+    lifecycle: submittedCodeNodeCompatibility[selected.family].lifecycle,
+    version: selected.version,
   };
+}
+
+function parseExactStableNodeVersion(constraint: Constraint): string {
+  const normalized = constraint.value.replace(/^v(?=\d)/, "");
+  if (valid(normalized) !== normalized || prerelease(normalized) !== null) {
+    throw new SubmittedCodeToolchainResolutionError(
+      "invalid_node_constraint",
+      `Invalid exact stable Node constraint: ${constraint.source}=${constraint.value}.`,
+    );
+  }
+  return normalized;
+}
+
+function parseIncompleteNodeFamily(constraint: Constraint): number {
+  const family = /^v?(\d+)(?:\.x)?$/.exec(constraint.value)?.[1];
+  if (family === undefined) {
+    throw new SubmittedCodeToolchainResolutionError(
+      "invalid_node_constraint",
+      `Invalid soft Node preference: ${constraint.source}=${constraint.value}.`,
+    );
+  }
+  return Number(family);
+}
+
+function parseStableNodeRange(constraint: Constraint): string {
+  const range = validRange(constraint.value, { loose: false });
+  if (
+    range === null ||
+    /(?:^|\s)(?:https?:|git\+|file:)/i.test(constraint.value) ||
+    /(?:^|[\s<>=~^|])v?\d+(?:\.\d+){0,2}-[0-9A-Za-z]/.test(constraint.value)
+  ) {
+    throw new SubmittedCodeToolchainResolutionError(
+      "invalid_node_constraint",
+      `Invalid stable Node constraint: ${constraint.source}=${constraint.value}.`,
+    );
+  }
+  return range;
+}
+
+function isEligibleNodeRelease(
+  release: SubmittedCodeNodeReleaseSnapshot["releases"][number],
+): boolean {
+  if (!supportedNodeFamilies.includes(release.family)) return false;
+  if (valid(release.version) !== release.version) return false;
+  if (prerelease(release.version) !== null) return false;
+  if (major(release.version) !== release.family) return false;
+  return semverSatisfies(
+    release.version,
+    `>=${submittedCodeNodeCompatibility[release.family].compatibilityMinimum}`,
+  );
 }
 
 function pushStringConstraint(
   constraints: Constraint[],
   source: string,
   value: unknown,
+  origin: "engine" | "runtime-engine" | "tool-file" | "volta",
 ): void {
   if (typeof value === "string" && value.trim() !== "") {
-    constraints.push({ source, value: value.trim() });
+    const normalized = value.trim();
+    constraints.push({
+      role: classifyNodeClaimRole(source, normalized, origin),
+      source,
+      value: normalized,
+    });
   }
 }
+
+function classifyNodeClaimRole(
+  _source: string,
+  value: string,
+  origin: "engine" | "runtime-engine" | "tool-file" | "volta",
+): SubmittedCodeNodeClaimRole {
+  if (origin === "engine") return "hard-compatibility";
+  if (origin === "volta") return "hard-pin";
+  const normalized = value.replace(/^v(?=\d)/, "");
+  if (valid(normalized) === normalized && prerelease(normalized) === null) {
+    return "hard-pin";
+  }
+  if (origin === "tool-file" && /^v?\d+(?:\.x)?$/.test(value)) {
+    return "soft-preference";
+  }
+  return "hard-compatibility";
+}
+
 function pushTrimmedConstraint(
   constraints: Constraint[],
   source: string,
   value: string | undefined,
+  origin: "tool-file",
 ): void {
   if (value !== undefined && value.trim() !== "") {
-    constraints.push({ source, value: value.trim() });
+    const normalized = value.trim();
+    constraints.push({
+      role: classifyNodeClaimRole(source, normalized, origin),
+      source,
+      value: normalized,
+    });
   }
 }
 
 function resolvePackageManager(
-  files: Readonly<Record<string, string>>,
+  files: Readonly<Record<string, SubmittedCodeToolchainFile>>,
   packageJson: PackageJson,
   evidence: SubmittedCodeToolchainEvidence[],
   warnings: SubmittedCodeToolchainWarning[],
+  nodeVersion: string,
 ): SubmittedCodeToolchainPlan["packageManager"] {
   const lockArtifacts = collectLockArtifacts(files);
   const duplicateArtifacts = findDuplicateLockArtifacts(lockArtifacts);
@@ -450,16 +762,10 @@ function resolvePackageManager(
     lockName ??
     selectedDeclaration?.name ??
     "npm") as SubmittedCodePackageManager;
-  if (name !== "pnpm") {
-    throw new SubmittedCodeToolchainResolutionError(
-      "unsupported_package_manager",
-      `Package manager ${name} is not in the ${catalogRevision} active catalog (pnpm 10.27.0, pnpm 11.13.0).`,
-    );
-  }
   if (lockName === undefined) {
     throw new SubmittedCodeToolchainResolutionError(
       "missing_lockfile",
-      "Package manager pnpm requires canonical lock artifact pnpm-lock.yaml before an immutable install can be planned.",
+      `Package manager ${name} requires canonical lock artifact ${lockfileName(name)} before an immutable install can be planned.`,
     );
   }
   for (const declaration of declarations) {
@@ -476,21 +782,24 @@ function resolvePackageManager(
       value: artifact.manager,
     });
   }
-  const versions = supportedPackageManagerVersions[name];
   const selectedConstraint =
     exact ?? lowerDeclarations.find((entry) => entry.name === name);
-  const version = selectCatalogVersion(
+  const yarnGeneration =
+    name === "yarn"
+      ? inferYarnGeneration(readLockfilePrefix(files["yarn.lock"]))
+      : undefined;
+  const version = selectPackageManagerVersion(
     name,
-    versions,
-    selectedConstraint === undefined
-      ? []
-      : [
-          {
-            source: selectedConstraint.source,
-            value: selectedConstraint.version,
-          },
-        ],
+    selectedConstraint,
+    yarnGeneration,
+    nodeVersion,
   );
+  const generation = packageManagerGeneration(name, version);
+  if (yarnGeneration !== undefined && generation !== yarnGeneration) {
+    throw new Error(
+      `Yarn lockfile generation selects ${yarnGeneration}, but package-manager metadata selects ${generation}.`,
+    );
+  }
   for (const declaration of declarations) {
     if (declaration === selectedConstraint) continue;
     const range = validRange(declaration.version);
@@ -517,10 +826,45 @@ function resolvePackageManager(
   const corepackHash = packageManagerField?.includes("+")
     ? packageManagerField.slice(packageManagerField.indexOf("+") + 1)
     : undefined;
+  const projectIntegrity = lockfileIntegrity(lockArtifacts[0], files);
   return {
     ...(corepackHash === undefined ? {} : { corepackHash }),
+    generation,
     name,
+    ...(projectIntegrity === undefined ? {} : { projectIntegrity }),
     version,
+  };
+}
+
+function immutableInstallCommand(
+  manager: NonNullable<SubmittedCodeToolchainPlan["packageManager"]>,
+): {
+  argv: readonly string[];
+  executable: string;
+} {
+  if (manager.name === "npm") {
+    return { argv: ["ci", "--maxsockets=4"], executable: "npm" };
+  }
+  if (manager.name === "pnpm") {
+    return {
+      argv: [
+        "install",
+        "--frozen-lockfile",
+        "--child-concurrency=2",
+        "--network-concurrency=4",
+      ],
+      executable: "pnpm",
+    };
+  }
+  if (manager.name === "bun") {
+    return { argv: ["install", "--frozen-lockfile"], executable: "bun" };
+  }
+  return {
+    argv:
+      manager.generation === "yarn-classic"
+        ? ["install", "--frozen-lockfile", "--network-concurrency", "4"]
+        : ["install", "--immutable"],
+    executable: "yarn",
   };
 }
 
@@ -541,6 +885,11 @@ function collectManagerDeclarations(packageJson: PackageJson): Array<{
         field.trim(),
       );
     if (match?.[1] !== undefined && match[2] !== undefined) {
+      if (match[1] === "bun" && match[3] !== undefined) {
+        throw new Error(
+          "package.json packageManager must be an exact safe descriptor.",
+        );
+      }
       result.push({
         name: match[1] as SubmittedCodePackageManager,
         source: "package.json packageManager",
@@ -594,7 +943,7 @@ type LockArtifact = {
 };
 
 function collectLockArtifacts(
-  files: Readonly<Record<string, string>>,
+  files: Readonly<Record<string, SubmittedCodeToolchainFile>>,
 ): LockArtifact[] {
   const known = [
     { manager: "pnpm", name: "pnpm-lock.yaml" },
@@ -624,43 +973,204 @@ function lockfileName(manager: SubmittedCodePackageManager): string {
   return "package-lock.json/npm-shrinkwrap.json";
 }
 
-function selectCatalogVersion<T extends string>(
-  tool: string,
-  versions: readonly T[],
-  constraints: readonly Constraint[],
-): T {
-  if (constraints.length === 0) return versions[versions.length - 1] as T;
-  for (const constraint of constraints) {
-    if (validRange(constraint.value) === null) {
-      throw new Error(
-        `Invalid ${tool} constraint: ${constraint.source}=${constraint.value}.`,
-      );
-    }
+function selectPackageManagerVersion(
+  name: SubmittedCodePackageManager,
+  declaration: { source: string; version: string } | undefined,
+  yarnGeneration:
+    | Extract<
+        SubmittedCodePackageManagerGeneration,
+        "yarn-berry" | "yarn-classic"
+      >
+    | undefined,
+  nodeVersion: string,
+): string {
+  if (declaration === undefined) {
+    return defaultPackageManagerVersion(name, yarnGeneration, nodeVersion);
   }
-  const compatible = versions.filter((version) =>
-    constraints.every((constraint) => {
-      const range = validRange(constraint.value);
-      return (
-        range !== null &&
-        semverSatisfies(version, range, {
-          includePrerelease: false,
-          loose: false,
-        })
-      );
-    }),
-  );
-  const selected = compatible[compatible.length - 1];
-  if (selected === undefined) {
-    throw new SubmittedCodeToolchainResolutionError(
-      "unsupported_package_manager_version",
-      `${tool} constraints do not intersect the ${catalogRevision} active catalog (${versions.join(", ")}): ${constraints.map((entry) => `${entry.source}=${entry.value}`).join(", ")}.`,
+  const exact = /^\d+\.\d+\.\d+$/.test(declaration.version);
+  const range = validRange(declaration.version);
+  if (range === null) {
+    throw new Error(
+      `Invalid ${name} constraint: ${declaration.source}=${declaration.version}.`,
     );
   }
-  return selected;
+  if (!exact) {
+    const safeVersion = maxSatisfying(
+      safePackageManagerVersions(name, yarnGeneration).filter((version) =>
+        isNodeCompatiblePackageManager(name, version, nodeVersion),
+      ),
+      range,
+      { includePrerelease: false, loose: false },
+    );
+    if (safeVersion === null) {
+      throw new SubmittedCodeToolchainResolutionError(
+        name === "bun"
+          ? "unsupported_provisioner"
+          : "unsupported_package_manager_version",
+        `${name} constraint ${declaration.source}=${declaration.version} does not include a revisioned safe default.`,
+      );
+    }
+    return safeVersion;
+  }
+  if (
+    name === "bun" &&
+    !semverSatisfies(declaration.version, bunDigestBackedProvisionerRange)
+  ) {
+    throw new SubmittedCodeToolchainResolutionError(
+      "unsupported_provisioner",
+      `bun@${declaration.version} predates authoritative GitHub release-asset digests.`,
+    );
+  }
+  if (!isCompatiblePackageManagerVersion(name, declaration.version)) {
+    throw new SubmittedCodeToolchainResolutionError(
+      "unsupported_package_manager_version",
+      `${name}@${declaration.version} is outside the supported ${packageManagerGeneration(name, declaration.version)} compatibility generation.`,
+    );
+  }
+  if (
+    name !== "bun" &&
+    !isNodeCompatiblePackageManager(name, declaration.version, nodeVersion)
+  ) {
+    throw new SubmittedCodeToolchainResolutionError(
+      "incompatible_node_package_manager",
+      `${name}@${declaration.version} does not support Node ${nodeVersion}.`,
+    );
+  }
+  return declaration.version;
+}
+
+function defaultPackageManagerVersion(
+  name: SubmittedCodePackageManager,
+  yarnGeneration:
+    | Extract<
+        SubmittedCodePackageManagerGeneration,
+        "yarn-berry" | "yarn-classic"
+      >
+    | undefined,
+  nodeVersion: string,
+): string {
+  const versions = safePackageManagerVersions(name, yarnGeneration).filter(
+    (version) => isNodeCompatiblePackageManager(name, version, nodeVersion),
+  );
+  if (versions.length === 0) {
+    throw new SubmittedCodeToolchainResolutionError(
+      "incompatible_node_package_manager",
+      `${name} has no revisioned safe default compatible with Node ${nodeVersion}.`,
+    );
+  }
+  return versions[versions.length - 1] as string;
+}
+
+function safePackageManagerVersions(
+  name: SubmittedCodePackageManager,
+  yarnGeneration:
+    | Extract<
+        SubmittedCodePackageManagerGeneration,
+        "yarn-berry" | "yarn-classic"
+      >
+    | undefined,
+): readonly string[] {
+  if (name === "yarn") {
+    return yarnSafeDefaults[yarnGeneration ?? "yarn-berry"];
+  }
+  return packageManagerSafeDefaults[name];
+}
+
+function inferYarnGeneration(
+  lockfile: string | undefined,
+):
+  | Extract<
+      SubmittedCodePackageManagerGeneration,
+      "yarn-berry" | "yarn-classic"
+    >
+  | undefined {
+  if (lockfile === undefined) return undefined;
+  if (/^# yarn lockfile v1\b/m.test(lockfile)) return "yarn-classic";
+  if (/^__metadata:\s*$/m.test(lockfile)) return "yarn-berry";
+  return undefined;
+}
+
+function lockfileIntegrity(
+  artifact: LockArtifact | undefined,
+  files: Readonly<Record<string, SubmittedCodeToolchainFile>>,
+): `sha256:${string}` | undefined {
+  if (artifact === undefined) return undefined;
+  const value = files[artifact.name];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") return value.sha256;
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function packageManagerGeneration(
+  name: SubmittedCodePackageManager,
+  version: string,
+): SubmittedCodePackageManagerGeneration {
+  const major = Number(version.split(".")[0]);
+  if (name === "yarn") return major === 1 ? "yarn-classic" : "yarn-berry";
+  if (name === "pnpm") return "pnpm-modern";
+  if (name === "npm") return "npm-modern";
+  return "bun-1";
+}
+
+function isCompatiblePackageManagerVersion(
+  name: SubmittedCodePackageManager,
+  version: string,
+): boolean {
+  const ranges: Record<SubmittedCodePackageManager, string> = {
+    bun: bunDigestBackedProvisionerRange,
+    npm: ">=8 <12",
+    pnpm: ">=8 <12",
+    yarn: ">=1 <5",
+  };
+  return semverSatisfies(version, ranges[name], {
+    includePrerelease: false,
+    loose: false,
+  });
+}
+
+function isNodeCompatiblePackageManager(
+  name: SubmittedCodePackageManager,
+  version: string,
+  nodeVersion: string,
+): boolean {
+  if (name === "bun") return true;
+  const managerMajor = major(version);
+  const ranges: Record<
+    Exclude<SubmittedCodePackageManager, "bun">,
+    Record<number, string>
+  > = {
+    npm: {
+      8: ">=16",
+      9: ">=18",
+      10: "^18.17.0 || >=20.5.0",
+      11: "^20.17.0 || >=22.9.0",
+    },
+    pnpm: {
+      8: ">=16.14.0",
+      9: ">=18.12.0",
+      10: ">=18.12.0",
+      11: ">=22.13.0",
+    },
+    yarn: {
+      1: ">=4",
+      2: ">=10",
+      3: ">14.10.0",
+      4: ">=18.12.0",
+    },
+  };
+  const range = ranges[name][managerMajor];
+  return (
+    range !== undefined &&
+    semverSatisfies(nodeVersion, range, {
+      includePrerelease: false,
+      loose: false,
+    })
+  );
 }
 
 export const submittedCodeToolchainCatalog = {
-  node: supportedNodeVersions,
-  pnpm: supportedPackageManagerVersions.pnpm,
+  node: submittedCodeNodeCompatibility,
+  packageManagerSafeDefaults,
   revision: catalogRevision,
+  yarnSafeDefaults,
 } as const;

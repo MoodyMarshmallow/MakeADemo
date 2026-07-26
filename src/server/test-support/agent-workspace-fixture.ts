@@ -244,7 +244,6 @@ export function createAgentWorkspaceFixture(input: {
     async getPreviewUrl(port) {
       return `https://preview.example.test:${port}`;
     },
-    async setOutboundNetworkAccess() {},
     async uploadFiles(files, options) {
       events.push({ uploadFiles: files });
       activeUploads += 1;

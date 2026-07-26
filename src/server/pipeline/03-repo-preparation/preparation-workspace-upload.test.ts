@@ -13,7 +13,6 @@ describe("uploadSubmittedCodeWorkspaceFiles", () => {
       async getPreviewUrl(port) {
         return `https://preview.example.test:${port}`;
       },
-      async setOutboundNetworkAccess() {},
       async uploadFiles(files) {
         uploaded.push(...files);
       },

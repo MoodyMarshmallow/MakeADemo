@@ -15,8 +15,8 @@ import {
   pipelineCancellationFromSignal,
   throwIfPipelineCancelled,
 } from "../../00-orchestration/job/pipeline-cancellation";
-import { runPlannedDependencyInstallWithNetworkWindow } from "../dependency-install-network-window";
-import { evaluateDependencyNetworkRequest } from "../dependency-network-gate";
+import { classifyDependencyInstallFailure } from "../dependency-install-failure-classifier";
+import { runPlannedDependencyInstall } from "../planned-dependency-install";
 import {
   type readPreparationManifest,
   validateNativeVisibleInterfaceProvenance,
@@ -31,6 +31,11 @@ import type {
   RepoPreparationInput,
 } from "../repo-preparation-agent.interface";
 import type { RepoPreparationPreflightResult } from "../repo-preparation-preflight.interface";
+import {
+  provisionSubmittedCodeToolchain,
+  syncSubmittedCodeWorkspace,
+} from "../submitted-code-execution";
+import type { SubmittedCodeNodeReleaseCatalog } from "../submitted-code-node-release-catalog.interface";
 import { inspectSubmittedCodeToolchain } from "../submitted-code-toolchain-inspection";
 import { createRepoPreparationAgentWorkspace } from "./repo-preparation-agent-workspace";
 import {
@@ -63,6 +68,7 @@ const defaultInactivityTimeoutMs = 600_000;
 const defaultHardTimeoutMs = 1_800_000;
 const validationRepairAttemptLimit = 8;
 const maximumAgentTaskTurns = validationRepairAttemptLimit * 2;
+const dependencyInstallDiagnosticMaxBytes = 1_500;
 export type AgenticRepoPreparationOptions = {
   /** Supplies browser tools only after a failed authoritative browser preflight. */
   browserToolControllerProvider?: BrowserToolControllerProvider;
@@ -78,6 +84,8 @@ export type AgenticRepoPreparationOptions = {
    * logging fails; this class suppresses logger write failures for that reason.
    */
   logger?: PipelineEventLogger;
+  /** One immutable trusted Node.js release view shared for this Pipeline Job. */
+  nodeReleaseCatalog: SubmittedCodeNodeReleaseCatalog;
   provider: PreparationWorkspaceProvider;
   runner: AgentTaskRunner;
   timeoutMs?: number;
@@ -97,6 +105,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     | RepoPreparationCloneDiagnosticsContext
     | undefined;
   private readonly logger: PipelineEventLogger;
+  private readonly nodeReleaseCatalog: SubmittedCodeNodeReleaseCatalog;
   private readonly provider: PreparationWorkspaceProvider;
   private readonly runner: AgentTaskRunner;
   private readonly timeoutMs: number;
@@ -113,6 +122,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     this.cloneFailureDiagnosticsContext =
       options.cloneFailureDiagnosticsContext;
     this.logger = options.logger ?? createRepoPreparationLogger();
+    this.nodeReleaseCatalog = options.nodeReleaseCatalog;
     this.provider = options.provider;
     this.runner = options.runner;
     this.timeoutMs = options.timeoutMs ?? defaultInactivityTimeoutMs;
@@ -280,7 +290,10 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     if (bootstrap.failure !== undefined) {
       return { result: bootstrap.failure, status: "result" };
     }
-    const toolchain = await inspectSubmittedCodeToolchain(handle.workspace);
+    const toolchain = await inspectSubmittedCodeToolchain(
+      handle.workspace,
+      this.nodeReleaseCatalog,
+    );
     throwIfPipelineCancelled(input.signal);
     if (toolchain.mode === "unsupported") {
       await this.writeSandboxLog(handle.workspace, {
@@ -507,52 +520,76 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
 
       const dependencyRequest = controlState.takeDependencyInstallRequest();
       if (dependencyRequest !== undefined) {
-        const dependencyDecision = evaluateDependencyNetworkRequest({
-          command: dependencyRequest.command,
-          reason: "dependency-install",
-        });
-        if (dependencyDecision.status === "denied") {
-          throw new Error(dependencyDecision.reason);
-        }
+        const dependencyDeadlineAt = Math.min(
+          Date.now() + this.timeoutMs,
+          hardDeadlineAt,
+        );
         await this.writeSandboxLog(handle.workspace, {
-          command: dependencyRequest.command,
           event: "dependency-install-requested",
         });
-        if (deadlineAt - Date.now() < minimumBackendToolBudgetMs) {
+        if (dependencyDeadlineAt - Date.now() < minimumBackendToolBudgetMs) {
           return backendToolDeadlineFailure("dependency installation");
         }
-        const refreshedToolchain = await inspectSubmittedCodeToolchain(
-          handle.workspace,
-        );
-        if (refreshedToolchain.mode === "unsupported") {
-          throw new Error(
-            `Submitted code toolchain is unsupported (${refreshedToolchain.code}): ${refreshedToolchain.reason}`,
-          );
-        }
-        handle.toolchainPlan = refreshedToolchain.plan;
-        const plannedInstall = handle.toolchainPlan;
-        if (plannedInstall.install === undefined) {
-          const blocker = plannedInstall.installBlocker;
-          throw new Error(
-            `Submitted code toolchain cannot install dependencies (${blocker?.code ?? "missing_immutable_install"}): ${blocker?.reason ?? "No catalog-owned immutable install is available."}`,
-          );
-        }
-        await this.writeSandboxLog(handle.workspace, {
-          event: "dependency-install-catalog-command-selected",
-          executedArgv: plannedInstall.install.argv,
-          executedExecutable: plannedInstall.install.executable,
-          requestedCommand: dependencyRequest.command,
-        });
+        let dependencyOperationCancelled = false;
+        const throwIfDependencyOperationCancelled = () => {
+          if (dependencyOperationCancelled) {
+            throw new Error("Dependency installation was cancelled.");
+          }
+          throwIfPipelineCancelled(input.signal);
+        };
         const installRun = await runSettledPreparationOperation({
-          operation: runPlannedDependencyInstallWithNetworkWindow({
-            toolchainPlan: plannedInstall,
-            workspace: handle.workspace,
-          }),
-          onCancel: () => cancelActiveCommandsQuietly(handle),
+          operation: (async () => {
+            const refreshedToolchain = await inspectSubmittedCodeToolchain(
+              handle.workspace,
+              this.nodeReleaseCatalog,
+            );
+            throwIfDependencyOperationCancelled();
+            if (refreshedToolchain.mode === "unsupported") {
+              throw new Error(
+                `Submitted code toolchain is unsupported (${refreshedToolchain.code}): ${refreshedToolchain.reason}`,
+              );
+            }
+            handle.toolchainPlan = refreshedToolchain.plan;
+            const plannedInstall = handle.toolchainPlan;
+            if (plannedInstall.install === undefined) {
+              const blocker = plannedInstall.installBlocker;
+              throw new Error(
+                `Submitted code toolchain cannot install dependencies (${blocker?.code ?? "missing_immutable_install"}): ${blocker?.reason ?? "No catalog-owned immutable install is available."}`,
+              );
+            }
+            await this.writeSandboxLog(handle.workspace, {
+              event: "dependency-install-catalog-command-selected",
+              executedArgv: plannedInstall.install.argv,
+              executedExecutable: plannedInstall.install.executable,
+              installProfile: "bounded",
+            });
+            throwIfDependencyOperationCancelled();
+            handle.toolchainReceipt = await provisionSubmittedCodeToolchain(
+              handle.workspace,
+              plannedInstall,
+            );
+            throwIfDependencyOperationCancelled();
+            await syncSubmittedCodeWorkspace(handle.workspace);
+            throwIfDependencyOperationCancelled();
+            return await runPlannedDependencyInstall({
+              toolchainPlan: plannedInstall,
+              toolchainReceipt: handle.toolchainReceipt,
+              workspace: handle.workspace,
+            });
+          })(),
+          onCancel: () => {
+            dependencyOperationCancelled = true;
+            return cancelActiveCommandsQuietly(handle);
+          },
           signal: input.signal,
-          timeoutMs: Math.max(1, deadlineAt - Date.now()),
+          timeoutLabel: "Repo Preparation dependency installation",
+          timeoutMs: Math.max(1, dependencyDeadlineAt - Date.now()),
         });
-        this.throwIfCancelled(input, hardDeadlineAt);
+        if (input.deadlineAt === undefined) {
+          throwIfPipelineCancelled(input.signal);
+        } else {
+          this.throwIfCancelled(input, hardDeadlineAt);
+        }
         if (installRun.status !== "succeeded") {
           return this.timeoutPreparation(
             handle,
@@ -561,12 +598,70 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
           );
         }
         const installResult = installRun.value;
+        const installedToolchainPlan = handle.toolchainPlan;
+        if (installedToolchainPlan === undefined) {
+          throw new Error(
+            "Dependency installation completed without a resolved toolchain plan.",
+          );
+        }
         await this.writeSandboxLog(handle.workspace, {
           event: "dependency-install-finished",
           exitCode: installResult.exitCode,
           stderrLength: installResult.stderr.length,
           stdoutLength: installResult.stdout.length,
         });
+        const installFailure = classifyDependencyInstallFailure({
+          plan: installedToolchainPlan,
+          result: installResult,
+        });
+        if (installFailure !== undefined) {
+          await this.writeSandboxLog(handle.workspace, {
+            ...installFailure,
+            event: "dependency-install.repository-node-incompatible",
+            level: "error",
+          });
+          return {
+            assumptions: [],
+            blockers: [
+              "A repository dependency rejects the selected catalog Node runtime.",
+            ],
+            failureKind: installFailure.failureKind,
+            status: "failed" as const,
+            suggestedChanges: [
+              "Align the repository's Node engine constraints and dependency versions, then retry Repo Preparation.",
+            ],
+          };
+        }
+        if (installResult.exitCode === 137) {
+          const failureKind = "dependency-install-sigkill" as const;
+          await this.writeSandboxLog(handle.workspace, {
+            event: failureKind,
+            exitCode: installResult.exitCode,
+            failureKind,
+            interpretation:
+              "SIGKILL observed; OOM pressure, provider termination, and external kill remain possible.",
+            level: "error",
+            stderrTail: boundUtf8Tail(
+              installResult.stderr,
+              dependencyInstallDiagnosticMaxBytes,
+            ),
+            stdoutTail: boundUtf8Tail(
+              installResult.stdout,
+              dependencyInstallDiagnosticMaxBytes,
+            ),
+          });
+          return {
+            assumptions: [],
+            blockers: [
+              "Dependency installation ended with SIGKILL (exit 137); the cause is unproven and could be OOM pressure, provider termination, or another external kill.",
+            ],
+            failureKind,
+            status: "failed" as const,
+            suggestedChanges: [
+              "Inspect provider metrics and sandbox logs to identify the SIGKILL source before choosing a recovery, then retry Repo Preparation.",
+            ],
+          };
+        }
         if (attempt + 1 >= maximumAgentTaskTurns) {
           return {
             assumptions: [],
@@ -710,6 +805,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         operation: (async () => {
           const refreshedToolchain = await inspectSubmittedCodeToolchain(
             input.handle.workspace,
+            this.nodeReleaseCatalog,
           );
           if (refreshedToolchain.mode === "unsupported") {
             throw new Error(
@@ -853,6 +949,16 @@ type RepoPreparationResult = Awaited<
   ReturnType<RepoPreparationAgent["prepare"]>
 >;
 
+function boundUtf8Tail(value: string, maxBytes: number): string {
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.length <= maxBytes) return value;
+  let start = bytes.length - maxBytes;
+  while (start < bytes.length && (bytes[start] ?? 0) >> 6 === 2) {
+    start += 1;
+  }
+  return bytes.subarray(start).toString("utf8");
+}
+
 type TimedRunResult<T> =
   | { status: "succeeded"; value: T }
   | ({ reason: string; status: "failed" | "timed-out" } & TimeoutMetadata);
@@ -909,6 +1015,7 @@ function runSettledPreparationOperation<T>(input: {
   onCancel: () => Promise<void>;
   operation: Promise<T>;
   signal: AbortSignal | undefined;
+  timeoutLabel?: string;
   timeoutMs: number;
 }): Promise<TimedRunResult<T>> {
   return new Promise((resolve, reject) => {
@@ -938,7 +1045,7 @@ function runSettledPreparationOperation<T>(input: {
         reject(preparationCancellation(undefined, input.signal));
       } else {
         resolve({
-          reason: `Repo Preparation agent timed out after ${input.timeoutMs}ms.`,
+          reason: `${input.timeoutLabel ?? "Repo Preparation agent"} timed out after ${input.timeoutMs}ms.`,
           status: "timed-out",
         });
       }

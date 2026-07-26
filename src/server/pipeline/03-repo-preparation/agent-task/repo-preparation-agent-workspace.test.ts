@@ -16,7 +16,6 @@ function createWorkspace(): PreparationWorkspace & {
       stdout: "ok",
     })),
     getPreviewUrl: vi.fn(),
-    setOutboundNetworkAccess: vi.fn(),
     uploadFiles: vi.fn(),
   };
 }
@@ -91,7 +90,6 @@ describe("createRepoPreparationAgentWorkspace", () => {
       expect.not.objectContaining({ env: expect.anything() }),
     );
     expect(underlying.execute).not.toHaveBeenCalled();
-    expect(underlying.setOutboundNetworkAccess).not.toHaveBeenCalled();
   });
 
   it("preserves workspace method receivers for cancellation and audit logging", async () => {

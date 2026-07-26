@@ -18,27 +18,19 @@ export type RepoPreparationToolDefinition = {
 export const repoPreparationToolDefinitions = {
   dependencyRequestInstall: {
     acceptance:
-      "The backend accepts only an allowlisted package-manager install command before continuing.",
-    argumentDescription:
-      "Exact allowlisted dependency install command, such as npm ci --ignore-scripts or pnpm install --frozen-lockfile.",
-    argumentName: "command",
-    description:
-      "Request one backend-controlled dependency install with temporary outbound network access.",
+      "The backend selects and runs the plan-owned immutable dependency install before continuing.",
+    description: "Request the backend-selected immutable dependency install.",
     name: "makeademo_dependency_request_install",
     precondition:
-      "The backend records and validates the request before opening the dependency-install network window.",
+      "The backend records and validates the request before running the install.",
   },
   dependencyInstallAlias: {
     acceptance:
-      "The backend accepts only an allowlisted package-manager install command before continuing.",
-    argumentDescription:
-      "Exact allowlisted dependency install command, such as npm ci --ignore-scripts or pnpm install --frozen-lockfile.",
-    argumentName: "command",
-    description:
-      "Request one backend-controlled dependency install with temporary outbound network access.",
+      "The backend selects and runs the plan-owned immutable dependency install before continuing.",
+    description: "Request the backend-selected immutable dependency install.",
     name: "makeademo_install_dependencies",
     precondition:
-      "The backend records and validates the request before opening the dependency-install network window.",
+      "The backend records and validates the request before running the install.",
   },
   submitPreparationResult: {
     acceptance:

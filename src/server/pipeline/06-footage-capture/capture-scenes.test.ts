@@ -233,7 +233,6 @@ describe("captureScenesFromScript", () => {
         async getPreviewUrl() {
           return "https://preview.example.test/";
         },
-        async setOutboundNetworkAccess() {},
         async uploadFiles() {
           throw new Error("parent upload must not be used for scene files");
         },
@@ -277,7 +276,10 @@ describe("captureScenesFromScript", () => {
     expect(submittedCommands.join("\n")).toContain(
       "/workspace/.makeademo/footage-capture-runs/capture-sandbox",
     );
-    expect(submittedCommands.join("\n")).toContain("npm root -g");
+    expect(submittedCommands.join("\n")).toContain(
+      "/opt/makeademo/playwright-runtime/node_modules",
+    );
+    expect(submittedCommands.join("\n")).not.toContain("npm root -g");
     expect(submittedCommands.join("\n")).toContain("ffmpeg");
     expect(submittedCommands.join("\n")).toContain("ffprobe");
     expect(submittedCommands.join("\n")).toContain("ssim");
@@ -341,7 +343,6 @@ describe("captureScenesFromScript", () => {
         async getPreviewUrl() {
           return "https://preview.example.test/";
         },
-        async setOutboundNetworkAccess() {},
         async uploadFiles() {},
       },
     };
@@ -408,7 +409,6 @@ describe("captureScenesFromScript", () => {
         async getPreviewUrl() {
           return "https://preview.example.test/";
         },
-        async setOutboundNetworkAccess() {},
         async uploadFiles() {},
         async uploadSubmittedCodeFiles() {},
       },
@@ -463,7 +463,6 @@ describe("captureScenesFromScript", () => {
         async getPreviewUrl() {
           return "https://preview.example.test/";
         },
-        async setOutboundNetworkAccess() {},
         async uploadFiles() {},
         async uploadSubmittedCodeFiles() {},
       },

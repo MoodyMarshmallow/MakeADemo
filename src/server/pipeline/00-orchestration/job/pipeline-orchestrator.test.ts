@@ -797,7 +797,6 @@ function fakeWorkspaceHandle(): PreparationWorkspaceHandle {
       async getPreviewUrl(port: number) {
         return `https://preview.example.test:${port}`;
       },
-      async setOutboundNetworkAccess() {},
       async uploadFiles() {},
     },
   };

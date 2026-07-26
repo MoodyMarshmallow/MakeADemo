@@ -1,5 +1,9 @@
 import type { PreparationWorkspace } from "./preparation-workspace.interface";
 import {
+  type SubmittedCodeNodeReleaseCatalog,
+  SubmittedCodeNodeReleaseCatalogError,
+} from "./submitted-code-node-release-catalog.interface";
+import {
   type SubmittedCodeToolchainPlan,
   SubmittedCodeToolchainResolutionError,
   resolveSubmittedCodeToolchain,
@@ -20,6 +24,7 @@ export type SubmittedCodeToolchainInspectionResult =
 /** Inspects trusted bounded metadata and selects a catalog plan or product blocker. */
 export async function inspectSubmittedCodeToolchain(
   workspace: PreparationWorkspace,
+  nodeReleaseCatalog: SubmittedCodeNodeReleaseCatalog,
 ): Promise<SubmittedCodeToolchainInspectionResult> {
   const result = await workspace.execute(inspectorCommand, {
     timeoutMs: 30_000,
@@ -45,10 +50,12 @@ export async function inspectSubmittedCodeToolchain(
   }
 
   try {
+    const nodeReleases = await nodeReleaseCatalog.load();
     return {
       mode: "catalog",
       plan: resolveSubmittedCodeToolchain(
         metadata as Parameters<typeof resolveSubmittedCodeToolchain>[0],
+        nodeReleases,
       ),
     };
   } catch (error) {
@@ -59,6 +66,7 @@ export async function inspectSubmittedCodeToolchain(
         reason: unsupportedToolchainReason(error.code),
       };
     }
+    if (error instanceof SubmittedCodeNodeReleaseCatalogError) throw error;
     throw new Error("Submitted toolchain metadata could not be resolved.");
   }
 }
@@ -67,6 +75,12 @@ function unsupportedToolchainReason(
   code: SubmittedCodeToolchainResolutionError["code"],
 ): string {
   switch (code) {
+    case "conflicting_node_constraints":
+      return "The submitted Node version claims conflict with one another.";
+    case "invalid_node_constraint":
+      return "A submitted Node version claim is not a stable semver constraint.";
+    case "incompatible_node_package_manager":
+      return "The selected package manager does not support the resolved Node release.";
     case "missing_immutable_install":
       return "The selected package manager has no catalog-owned immutable install.";
     case "missing_lockfile":
@@ -75,6 +89,8 @@ function unsupportedToolchainReason(
       return "The submitted Node version is not available in the active catalog.";
     case "unsupported_package_manager":
       return "The submitted package manager is not available in the active catalog.";
+    case "unsupported_provisioner":
+      return "The submitted package manager has no verified artifact provisioner.";
     case "unsupported_package_manager_version":
       return "The submitted package-manager version is not available in the active catalog.";
   }

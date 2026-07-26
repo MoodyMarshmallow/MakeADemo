@@ -1072,7 +1072,6 @@ function fakePreparationWorkspaceHandle() {
       async getPreviewUrl() {
         return "https://preview.example.test/";
       },
-      async setOutboundNetworkAccess() {},
       async uploadFiles() {},
     },
   };

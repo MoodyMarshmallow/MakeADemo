@@ -22,13 +22,9 @@ describe("Repo Preparation control state", () => {
   it("keeps dependency requests in backend memory until the orchestrator consumes them", async () => {
     const state = createState();
 
-    await state.requestDependencyInstall({
-      command: "npm ci --ignore-scripts",
-    });
+    await state.requestDependencyInstall({});
 
-    expect(state.takeDependencyInstallRequest()).toEqual({
-      command: "npm ci --ignore-scripts",
-    });
+    expect(state.takeDependencyInstallRequest()).toEqual({});
     expect(state.takeDependencyInstallRequest()).toBeUndefined();
   });
 

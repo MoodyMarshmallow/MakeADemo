@@ -17,6 +17,10 @@ export type RepoPreparationInput = {
   workspaceId: string;
 };
 
+export type RepoPreparationFailureKind =
+  | "dependency-install-sigkill"
+  | "repository_node_dependency_incompatible";
+
 type RepoPreparationAgentResult =
   | {
       /**
@@ -33,6 +37,8 @@ type RepoPreparationAgentResult =
   | {
       assumptions: string[];
       blockers: string[];
+      /** Stable infrastructure classification for failures the agent cannot repair. */
+      failureKind?: RepoPreparationFailureKind;
       status: "failed";
       suggestedChanges: string[];
       /** The final bounded preflight verdict, when Repo Preparation exhausted repairs. */
@@ -60,5 +66,6 @@ export type RepoPreparationResult =
     }
   | {
       fallbackPrompt: string;
+      failureKind?: RepoPreparationFailureKind;
       status: "failed";
     };

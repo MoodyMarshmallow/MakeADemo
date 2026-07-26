@@ -1,9 +1,13 @@
 #!/usr/bin/env node
-import { lstat, opendir, readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { constants } from "node:fs";
+import { lstat, open, opendir, readFile } from "node:fs/promises";
 import { posix } from "node:path";
 
 const workspace = process.cwd();
 const maxFileBytes = 64 * 1024;
+const maxLockfileBytes = 64 * 1024 * 1024;
+const maxLockfilePrefixBytes = 64 * 1024;
 const maxCandidates = 32;
 const maxDirectoryEntries = 256;
 const maxVisitedRoots = 96;
@@ -96,12 +100,70 @@ async function readMetadataFile(files, directory, projectRoot, name, details) {
     throw new Error(`unsafe toolchain metadata file: ${projectRoot}/${name}`);
   }
   if (presenceOnlyFiles.has(name)) {
-    files[name] = "";
+    files[name] = await readCanonicalLockEvidence(
+      posix.join(directory, name),
+      projectRoot,
+      name,
+    );
     return;
   }
   if (details.size > maxFileBytes)
     throw new Error(`unsafe toolchain metadata file: ${projectRoot}/${name}`);
   files[name] = await readFile(posix.join(directory, name), "utf8");
+}
+
+async function readCanonicalLockEvidence(path, projectRoot, name) {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const initial = await handle.stat();
+    if (!initial.isFile() || initial.size > maxLockfileBytes) {
+      throw new Error(`unsafe toolchain metadata file: ${projectRoot}/${name}`);
+    }
+    const digest = createHash("sha256");
+    const prefix = Buffer.allocUnsafe(
+      Math.min(initial.size, maxLockfilePrefixBytes),
+    );
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    let position = 0;
+    let prefixBytes = 0;
+    while (position < initial.size) {
+      const { bytesRead } = await handle.read(
+        chunk,
+        0,
+        Math.min(chunk.length, initial.size - position),
+        position,
+      );
+      if (bytesRead === 0) {
+        throw new Error(
+          `unsafe toolchain metadata file: ${projectRoot}/${name}`,
+        );
+      }
+      const bytes = chunk.subarray(0, bytesRead);
+      digest.update(bytes);
+      if (prefixBytes < prefix.length) {
+        const copied = Math.min(bytesRead, prefix.length - prefixBytes);
+        bytes.copy(prefix, prefixBytes, 0, copied);
+        prefixBytes += copied;
+      }
+      position += bytesRead;
+    }
+    const final = await handle.stat();
+    if (
+      !final.isFile() ||
+      final.size !== initial.size ||
+      position !== initial.size
+    ) {
+      throw new Error(`unsafe toolchain metadata file: ${projectRoot}/${name}`);
+    }
+    return {
+      kind: "canonical-lockfile",
+      prefixBase64: prefix.subarray(0, prefixBytes).toString("base64"),
+      sha256: `sha256:${digest.digest("hex")}`,
+      size: initial.size,
+    };
+  } finally {
+    await handle.close();
+  }
 }
 
 async function safeNames(directory) {

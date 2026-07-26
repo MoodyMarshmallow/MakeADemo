@@ -249,8 +249,6 @@ describe("PlaywrightBrowserValidator", () => {
           async getPreviewUrl() {
             return "https://preview.example.test";
           },
-          async setOutboundNetworkAccess() {},
-          async setSubmittedCodeNetworkAccess() {},
           async uploadFiles() {},
         },
       },
@@ -266,10 +264,11 @@ describe("PlaywrightBrowserValidator", () => {
       screenshotArtifactId: "",
     });
     expect(submittedCommands.join("\n")).toContain("chromium.launch");
-    expect(submittedCommands.join("\n")).toContain("npm root -g");
-    expect(submittedCommands.join("\n")).not.toContain(
-      "/usr/local/lib/node_modules",
+    expect(submittedCommands.join("\n")).toContain(
+      "MAKEADEMO_PLAYWRIGHT_MODULE_ROOT",
     );
+    expect(submittedCommands.join("\n")).not.toContain("npm root -g");
+    expect(submittedCommands.join("\n")).not.toContain("process.cwd()");
     expect(submittedCommands.join("\n")).not.toContain('import("playwright")');
     expect(submittedCommands.join("\n")).toContain('page.route("**/*"');
     expect(submittedCommands.join("\n")).toContain(
@@ -301,6 +300,10 @@ describe("PlaywrightBrowserValidator", () => {
                     cwd: workspacePath,
                     env: {
                       ...process.env,
+                      MAKEADEMO_PLAYWRIGHT_MODULE_ROOT: join(
+                        workspacePath,
+                        "node_modules",
+                      ),
                       PATH: `${join(workspacePath, "bin")}:${process.env.PATH ?? ""}`,
                     },
                   });
@@ -325,8 +328,6 @@ describe("PlaywrightBrowserValidator", () => {
               async getPreviewUrl() {
                 return "https://preview.example.test";
               },
-              async setOutboundNetworkAccess() {},
-              async setSubmittedCodeNetworkAccess() {},
               async uploadFiles() {},
             },
           },
@@ -374,6 +375,10 @@ describe("PlaywrightBrowserValidator", () => {
                     cwd: workspacePath,
                     env: {
                       ...process.env,
+                      MAKEADEMO_PLAYWRIGHT_MODULE_ROOT: join(
+                        workspacePath,
+                        "node_modules",
+                      ),
                       PATH: `${join(workspacePath, "bin")}:${process.env.PATH ?? ""}`,
                     },
                   });
@@ -398,8 +403,6 @@ describe("PlaywrightBrowserValidator", () => {
               async getPreviewUrl() {
                 return "https://preview.example.test";
               },
-              async setOutboundNetworkAccess() {},
-              async setSubmittedCodeNetworkAccess() {},
               async uploadFiles() {},
             },
           },
@@ -424,7 +427,7 @@ describe("PlaywrightBrowserValidator", () => {
     }
   });
 
-  it("discovers validator-owned Playwright from non-/usr/local global npm installs inside submitted code", async () => {
+  it("loads validator Playwright only from the trusted module root", async () => {
     const validator = new PlaywrightBrowserValidator();
 
     const result = await validator.validate({
@@ -438,11 +441,15 @@ describe("PlaywrightBrowserValidator", () => {
             );
           },
           async executeSubmittedCode(command) {
-            if (!command.includes("npm root -g")) {
+            if (
+              !command.includes("MAKEADEMO_PLAYWRIGHT_MODULE_ROOT") ||
+              command.includes("npm root -g") ||
+              command.includes("process.cwd()")
+            ) {
               return {
                 exitCode: 1,
                 stderr:
-                  "Error: Cannot find module 'playwright' from /home/node/.nvm/versions/node/v22/lib/node_modules",
+                  "Error: validator did not bind its trusted Playwright runtime",
                 stdout: "",
               };
             }
@@ -453,15 +460,13 @@ describe("PlaywrightBrowserValidator", () => {
               stdout: JSON.stringify({
                 interactable: true,
                 logs: ["Loaded http://localhost:3000"],
-                screenshotArtifactId: "screenshot:global-npm-root",
+                screenshotArtifactId: "screenshot:trusted-runtime",
               }),
             };
           },
           async getPreviewUrl() {
             return "https://preview.example.test";
           },
-          async setOutboundNetworkAccess() {},
-          async setSubmittedCodeNetworkAccess() {},
           async uploadFiles() {},
         },
       },
@@ -502,8 +507,6 @@ describe("PlaywrightBrowserValidator", () => {
           async getPreviewUrl() {
             return "https://preview.example.test";
           },
-          async setOutboundNetworkAccess() {},
-          async setSubmittedCodeNetworkAccess() {},
           async uploadFiles() {},
         },
       },
@@ -874,8 +877,6 @@ describe("PlaywrightBrowserValidator", () => {
             async getPreviewUrl() {
               return "https://preview.example.test";
             },
-            async setOutboundNetworkAccess() {},
-            async setSubmittedCodeNetworkAccess() {},
             async uploadFiles() {},
           },
         },
@@ -934,8 +935,6 @@ describe("PlaywrightBrowserValidator", () => {
             async getPreviewUrl() {
               return "https://preview.example.test";
             },
-            async setOutboundNetworkAccess() {},
-            async setSubmittedCodeNetworkAccess() {},
             async uploadFiles() {},
           },
         },
@@ -1022,8 +1021,6 @@ function fakeWorkspace(stdout: string) {
       async getPreviewUrl() {
         return "https://preview.example.test";
       },
-      async setOutboundNetworkAccess() {},
-      async setSubmittedCodeNetworkAccess() {},
       async uploadFiles() {},
     },
   };
@@ -1045,7 +1042,7 @@ async function createFakeSubmittedCodeWorkspace(
   await chmod(join(workspacePath, "bin", "npm"), 0o755);
   await writeFile(
     join(workspacePath, "node_modules", "playwright", "package.json"),
-    '{"main":"index.js"}\n',
+    '{"main":"index.js","version":"1.49.1"}\n',
   );
   await writeFile(
     join(workspacePath, "node_modules", "playwright", "index.js"),

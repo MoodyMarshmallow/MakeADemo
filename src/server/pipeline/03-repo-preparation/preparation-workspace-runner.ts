@@ -1,4 +1,5 @@
 import type { PreparationWorkspace } from "./preparation-workspace.interface";
+import type { SubmittedCodeToolchainArtifactReceipt } from "./submitted-code-toolchain-artifact.interface";
 import type { SubmittedCodeToolchainPlan } from "./submitted-code-toolchain.schema";
 
 export type PreparationWorkspaceHandle = {
@@ -11,6 +12,8 @@ export type PreparationWorkspaceHandle = {
   id: string;
   /** Backend-owned catalog selection attached once after trusted inspection. */
   toolchainPlan?: SubmittedCodeToolchainPlan;
+  /** Opaque capability issued after the selected toolchain is provisioned. */
+  toolchainReceipt?: SubmittedCodeToolchainArtifactReceipt;
   workspace: PreparationWorkspace;
 };
 

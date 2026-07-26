@@ -33,7 +33,7 @@ describe("Repo Preparation stage tools", () => {
     );
   });
 
-  it("sends a dependency install request directly to backend control state", async () => {
+  it("requests a backend-selected dependency install without command arguments", async () => {
     const state = createState();
     const tools = createRepoPreparationStageTools(state);
     const tool = tools.find(
@@ -42,14 +42,11 @@ describe("Repo Preparation stage tools", () => {
 
     if (tool === undefined) throw new Error("Dependency tool is missing.");
 
-    await expect(
-      tool.execute({ command: "npm ci --ignore-scripts" }),
-    ).resolves.toBe(
-      "Requested backend dependency install: npm ci --ignore-scripts",
+    expect(tool.args).toEqual({});
+    await expect(tool.execute({})).resolves.toBe(
+      "Requested the backend-selected immutable dependency install.",
     );
-    expect(state.takeDependencyInstallRequest()).toEqual({
-      command: "npm ci --ignore-scripts",
-    });
+    expect(state.takeDependencyInstallRequest()).toEqual({});
   });
 
   it("writes a validation request only for the canonical manifest path", async () => {

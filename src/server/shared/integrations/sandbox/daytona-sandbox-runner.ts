@@ -1,12 +1,13 @@
-import { runPlannedDependencyInstallWithNetworkWindow } from "../../../pipeline/03-repo-preparation/dependency-install-network-window";
-import { SubmittedCodeNetworkResealError } from "../../../pipeline/03-repo-preparation/dependency-install-network-window";
+import { runPlannedDependencyInstall } from "../../../pipeline/03-repo-preparation/planned-dependency-install";
 import type { PreparationManifest } from "../../../pipeline/03-repo-preparation/preparation-manifest";
 import type { PreparationWorkspaceHandle } from "../../../pipeline/03-repo-preparation/preparation-workspace-runner";
 import {
   executeSubmittedCode,
   executeSubmittedRuntime,
+  provisionSubmittedCodeToolchain,
   syncSubmittedCodeWorkspace,
 } from "../../../pipeline/03-repo-preparation/submitted-code-execution";
+import type { SubmittedCodeNodeReleaseCatalog } from "../../../pipeline/03-repo-preparation/submitted-code-node-release-catalog.interface";
 import { inspectSubmittedCodeToolchain } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain-inspection";
 import type { SubmittedCodeToolchainPlan } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
 import type {
@@ -23,19 +24,20 @@ import type { PipelineEventLogger } from "../../logging/pipeline-event-logger";
 export class DaytonaSandboxRunner implements SandboxRunner {
   private readonly releaseWorkspaceOnCleanup: boolean;
   private readonly logger: PipelineEventLogger | undefined;
+  private readonly nodeReleaseCatalog: SubmittedCodeNodeReleaseCatalog;
   private readonly readinessPollIntervalMs: number;
   private readonly readinessTimeoutMs: number;
 
-  constructor(
-    options: {
-      releaseWorkspaceOnCleanup?: boolean;
-      logger?: PipelineEventLogger;
-      readinessPollIntervalMs?: number;
-      readinessTimeoutMs?: number;
-    } = {},
-  ) {
+  constructor(options: {
+    releaseWorkspaceOnCleanup?: boolean;
+    logger?: PipelineEventLogger;
+    nodeReleaseCatalog: SubmittedCodeNodeReleaseCatalog;
+    readinessPollIntervalMs?: number;
+    readinessTimeoutMs?: number;
+  }) {
     this.releaseWorkspaceOnCleanup = options.releaseWorkspaceOnCleanup ?? false;
     this.logger = options.logger;
+    this.nodeReleaseCatalog = options.nodeReleaseCatalog;
     this.readinessPollIntervalMs = options.readinessPollIntervalMs ?? 1_000;
     this.readinessTimeoutMs = options.readinessTimeoutMs ?? 30_000;
   }
@@ -53,6 +55,7 @@ export class DaytonaSandboxRunner implements SandboxRunner {
     const handle = input.preparationWorkspace;
     const refreshedToolchain = await inspectSubmittedCodeToolchain(
       handle.workspace,
+      this.nodeReleaseCatalog,
     );
     if (refreshedToolchain.mode === "unsupported") {
       throw new Error(
@@ -60,7 +63,7 @@ export class DaytonaSandboxRunner implements SandboxRunner {
       );
     }
     handle.toolchainPlan = refreshedToolchain.plan;
-    requireToolchainPlan(handle, "Daytona validation");
+    const toolchainPlan = requireToolchainPlan(handle, "Daytona validation");
     const writeSandboxLog = (entry: Record<string, unknown>) =>
       writeSandboxLogBestEffort({
         entry: {
@@ -77,6 +80,10 @@ export class DaytonaSandboxRunner implements SandboxRunner {
 
     try {
       await writeSandboxLog({ event: "demo-runtime-preflight.started" });
+      handle.toolchainReceipt = await provisionSubmittedCodeToolchain(
+        handle.workspace,
+        toolchainPlan,
+      );
       await syncSubmittedCodeWorkspace(handle.workspace);
       await writeSandboxLog({
         event: "demo-runtime-preflight.repo-files.started",
@@ -256,9 +263,6 @@ export class DaytonaSandboxRunner implements SandboxRunner {
         runtimeExitCode: runtimeResult.exitCode,
       };
     } catch (error) {
-      if (error instanceof SubmittedCodeNetworkResealError) {
-        await handle.release();
-      }
       await this.cleanup(handle);
       throw error;
     }
@@ -289,8 +293,12 @@ export class DaytonaSandboxRunner implements SandboxRunner {
       event: "demo-runtime-preflight.dependency-install.started",
       executable: toolchainPlan.install.executable,
     });
-    const installResult = await runPlannedDependencyInstallWithNetworkWindow({
+    const installResult = await runPlannedDependencyInstall({
       toolchainPlan,
+      toolchainReceipt: requireToolchainReceipt(
+        input.handle,
+        "Daytona validation",
+      ),
       workspace: input.handle.workspace,
     });
     if (installResult.exitCode !== 0) {
@@ -315,6 +323,7 @@ export class DaytonaSandboxRunner implements SandboxRunner {
 }
 
 export async function restartPreparedDemoForFreshCapture(input: {
+  nodeReleaseCatalog: SubmittedCodeNodeReleaseCatalog;
   preparationManifest: PreparationManifest;
   preparationWorkspace: PreparationWorkspaceHandle;
   readinessPollIntervalMs?: number;
@@ -322,6 +331,7 @@ export async function restartPreparedDemoForFreshCapture(input: {
 }): Promise<{ browserUrl: string }> {
   const refreshedToolchain = await inspectSubmittedCodeToolchain(
     input.preparationWorkspace.workspace,
+    input.nodeReleaseCatalog,
   );
   if (refreshedToolchain.mode === "unsupported") {
     throw new Error(
@@ -329,7 +339,15 @@ export async function restartPreparedDemoForFreshCapture(input: {
     );
   }
   input.preparationWorkspace.toolchainPlan = refreshedToolchain.plan;
-  requireToolchainPlan(input.preparationWorkspace, "Fresh Footage Capture");
+  const freshCapturePlan = requireToolchainPlan(
+    input.preparationWorkspace,
+    "Fresh Footage Capture",
+  );
+  input.preparationWorkspace.toolchainReceipt =
+    await provisionSubmittedCodeToolchain(
+      input.preparationWorkspace.workspace,
+      freshCapturePlan,
+    );
   const writeSandboxLog = (entry: Record<string, unknown>) =>
     writeSandboxLogBestEffort({
       entry: {
@@ -414,6 +432,7 @@ async function executeDemoStart(
   return await executeSubmittedRuntime(handle.workspace, {
     command: createStartDemoScript(demoCommand),
     plan,
+    toolchainReceipt: requireToolchainReceipt(handle, "Demo runtime startup"),
   });
 }
 
@@ -425,6 +444,16 @@ function requireToolchainPlan(
     throw new Error(`${seam} requires an authoritative toolchain plan.`);
   }
   return handle.toolchainPlan;
+}
+
+function requireToolchainReceipt(
+  handle: PreparationWorkspaceHandle,
+  seam: string,
+) {
+  if (handle.toolchainReceipt === undefined) {
+    throw new Error(`${seam} requires a provisioned toolchain receipt.`);
+  }
+  return handle.toolchainReceipt;
 }
 
 async function writeDemoServerLog(

@@ -62,7 +62,17 @@ describe("Demo Script sandbox execution", () => {
       "mkdir -p '/workspace/.makeademo/demo-script-runs/run_one'",
     );
     expect(executedCommands[1]).toMatchObject({ timeoutMs: 21_500 });
-    expect(executedCommands[1]?.command).toContain("npm root -g");
+    expect(executedCommands[1]?.command).toContain(
+      "MAKEADEMO_PLAYWRIGHT_MODULE_ROOT",
+    );
+    expect(executedCommands[1]?.command).toContain(
+      "/opt/makeademo/playwright-runtime/node_modules",
+    );
+    expect(executedCommands[1]?.command).not.toContain("npm root -g");
+    expect(executedCommands[1]?.command).toContain(
+      "rm -rf node_modules/@playwright node_modules/playwright node_modules/playwright-core",
+    );
+    expect(executedCommands[1]?.command).toContain("|| exit $?");
     expect(executedCommands[1]?.command).toContain("timeout -s TERM 17 bun");
     expect(result).toEqual({
       blockedNetworkAttempts: [
@@ -138,7 +148,6 @@ function sandboxWorkspace(
     async getPreviewUrl() {
       return "https://preview.example.test/";
     },
-    async setOutboundNetworkAccess() {},
     async uploadFiles() {
       throw new Error("parent upload must not stage Demo Scripts");
     },

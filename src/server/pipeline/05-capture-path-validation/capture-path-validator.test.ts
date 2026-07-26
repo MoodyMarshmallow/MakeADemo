@@ -115,7 +115,6 @@ describe("validateCapturePath", () => {
         async getPreviewUrl() {
           return "https://preview.example.test/";
         },
-        async setOutboundNetworkAccess() {},
         async uploadFiles() {},
         writeSandboxLog(entry: Record<string, unknown>) {
           const delayMs =
@@ -890,7 +889,6 @@ function workspaceHandle(
       async getPreviewUrl() {
         return "https://preview.example.test/";
       },
-      async setOutboundNetworkAccess() {},
       async uploadFiles() {},
       async writeSandboxLog(entry: Record<string, unknown>) {
         logs.push(entry);
@@ -910,7 +908,6 @@ function hangingLogWorkspaceHandle() {
       async getPreviewUrl() {
         return "https://preview.example.test/";
       },
-      async setOutboundNetworkAccess() {},
       async uploadFiles() {},
       async writeSandboxLog() {
         await new Promise(() => {});
@@ -930,7 +927,6 @@ function failingLogWorkspaceHandle() {
       async getPreviewUrl() {
         return "https://preview.example.test/";
       },
-      async setOutboundNetworkAccess() {},
       async uploadFiles() {},
       async writeSandboxLog() {
         throw new Error("disk full");
@@ -962,7 +958,6 @@ function controlledVerboseDiagnosticsWorkspaceHandle(
         async getPreviewUrl() {
           return "https://preview.example.test/";
         },
-        async setOutboundNetworkAccess() {},
         async uploadFiles() {},
         async writeSandboxLog(entry: Record<string, unknown>) {
           if (

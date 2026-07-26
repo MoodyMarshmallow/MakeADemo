@@ -1,9 +1,12 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
+import { submittedCodeKnownGoodNodeReleaseSnapshot } from "../../src/server/pipeline/03-repo-preparation/submitted-code-node-release-catalog.interface";
+import { resolveSubmittedCodeToolchain as resolveAgainstNodeCatalog } from "../../src/server/pipeline/03-repo-preparation/submitted-code-toolchain.schema";
 
 const execFileAsync = promisify(execFile);
 const inspectorPath = new URL(
@@ -11,6 +14,15 @@ const inspectorPath = new URL(
   import.meta.url,
 );
 const workspaces: string[] = [];
+
+function resolveSubmittedCodeToolchain(
+  metadata: Parameters<typeof resolveAgainstNodeCatalog>[0],
+) {
+  return resolveAgainstNodeCatalog(
+    metadata,
+    submittedCodeKnownGoodNodeReleaseSnapshot,
+  );
+}
 
 async function createWorkspace(): Promise<string> {
   const workspace = await mkdtemp(
@@ -29,6 +41,17 @@ async function runInspector(workspace: string): Promise<string> {
   return stdout;
 }
 
+function expectedLockEvidence(contents: string) {
+  return {
+    kind: "canonical-lockfile",
+    prefixBase64: Buffer.from(contents)
+      .subarray(0, 64 * 1024)
+      .toString("base64"),
+    sha256: `sha256:${createHash("sha256").update(contents).digest("hex")}`,
+    size: Buffer.byteLength(contents),
+  };
+}
+
 afterEach(async () => {
   await Promise.all(
     workspaces
@@ -44,10 +67,8 @@ describe("submitted-code toolchain inspector CLI", () => {
       join(workspace, "package.json"),
       '{"packageManager":"pnpm@10.27.0"}\n',
     );
-    await writeFile(
-      join(workspace, "pnpm-lock.yaml"),
-      "# lockfile\n".repeat(8192),
-    );
+    const lockfile = "# lockfile\n".repeat(8192);
+    await writeFile(join(workspace, "pnpm-lock.yaml"), lockfile);
 
     const stdout = await runInspector(workspace);
 
@@ -56,7 +77,7 @@ describe("submitted-code toolchain inspector CLI", () => {
         {
           files: {
             "package.json": '{"packageManager":"pnpm@10.27.0"}\n',
-            "pnpm-lock.yaml": "",
+            "pnpm-lock.yaml": expectedLockEvidence(lockfile),
           },
           projectRoot: ".",
         },
@@ -85,7 +106,7 @@ describe("submitted-code toolchain inspector CLI", () => {
         {
           files: {
             "package.json": '{"packageManager":"pnpm@11.13.0"}\n',
-            "pnpm-lock.yaml": "",
+            "pnpm-lock.yaml": expectedLockEvidence("lockfileVersion: '9.0'\n"),
           },
           projectRoot: ".",
         },
@@ -151,13 +172,53 @@ describe("submitted-code toolchain inspector CLI", () => {
         {
           files: {
             "package.json": '{"packageManager":"pnpm@10.27.0"}\n',
-            "pnpm-lock.yaml": "",
+            "pnpm-lock.yaml": expectedLockEvidence("lockfileVersion: '9.0'\n"),
           },
           projectRoot: "webapp",
         },
       ],
     });
   });
+
+  it.each([
+    {
+      expectedGeneration: "pnpm-modern",
+      lockfile: "lockfileVersion: '9.0'\npackages:\n  left-pad@1.3.0: {}\n",
+      lockfileName: "pnpm-lock.yaml",
+      packageManager: "pnpm@10.26.1",
+    },
+    {
+      expectedGeneration: "yarn-classic",
+      lockfile: '# yarn lockfile v1\nleft-pad@^1.3.0:\n  version "1.3.0"\n',
+      lockfileName: "yarn.lock",
+      packageManager: "yarn@1.22.19",
+    },
+    {
+      expectedGeneration: "yarn-berry",
+      lockfile:
+        "__metadata:\n  version: 8\n  cacheKey: 10c0\n\nleft-pad@npm:^1.3.0:\n  version: 1.3.0\n",
+      lockfileName: "yarn.lock",
+      packageManager: "yarn@4.11.0",
+    },
+  ])(
+    "feeds non-empty $expectedGeneration evidence from the real inspector into the planner",
+    async ({ expectedGeneration, lockfile, lockfileName, packageManager }) => {
+      const workspace = await createWorkspace();
+      await writeFile(
+        join(workspace, "package.json"),
+        JSON.stringify({ packageManager }),
+      );
+      await writeFile(join(workspace, lockfileName), lockfile);
+
+      const metadata = JSON.parse(await runInspector(workspace));
+      const plan = resolveSubmittedCodeToolchain(metadata);
+
+      expect(plan.packageManager).toMatchObject({
+        generation: expectedGeneration,
+        projectIntegrity: expectedLockEvidence(lockfile).sha256,
+      });
+    },
+  );
 
   it("fails early when directory fanout exceeds the bounded traversal budget", async () => {
     const workspace = await createWorkspace();

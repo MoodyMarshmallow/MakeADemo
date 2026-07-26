@@ -17,16 +17,32 @@ import type {
   PreparationWorkspaceCommandResult,
   SubmittedProjectExecutionRequest,
 } from "../preparation-workspace.interface";
+import { submittedCodeKnownGoodNodeReleaseCatalog } from "../submitted-code-node-release-catalog.interface";
 import {
   AgenticRepoPreparation,
   type AgenticRepoPreparationOptions,
 } from "./agentic-repo-preparation";
 import type { RepoPreparationToolHandoff } from "./tools/repo-preparation-tool-protocol";
 
+const fakeToolchainReceipt = {
+  node: {
+    archiveDigest: { algorithm: "sha256", value: "c".repeat(64) },
+    nodeBinaryDigest: { algorithm: "sha256", value: "d".repeat(64) },
+    signedManifestDigest: { algorithm: "sha256", value: "e".repeat(64) },
+    signerPrimaryFingerprint: "F".repeat(40),
+    version: "22.23.1",
+  },
+  packageManager: {
+    artifactDigest: { algorithm: "sha512", value: "a".repeat(128) },
+    upstreamDigest: { algorithm: "sha512", value: "b".repeat(128) },
+  },
+} as const;
+
 type RepoPreparationTestOptions = Omit<
   AgenticRepoPreparationOptions,
-  "runner"
+  "nodeReleaseCatalog" | "runner"
 > & {
+  nodeReleaseCatalog?: AgenticRepoPreparationOptions["nodeReleaseCatalog"];
   runner?: AgenticRepoPreparationOptions["runner"];
 };
 
@@ -83,6 +99,9 @@ function createRepoPreparationAgent(options: RepoPreparationTestOptions) {
   const { ...agentOptions } = options;
   return new AgenticRepoPreparation({
     ...agentOptions,
+    nodeReleaseCatalog:
+      agentOptions.nodeReleaseCatalog ??
+      submittedCodeKnownGoodNodeReleaseCatalog,
     runner: agentOptions.runner ?? new RecordingAgentTaskRunner(),
     runRuntimePreflight:
       agentOptions.runRuntimePreflight ??
@@ -230,9 +249,7 @@ describe("AgenticRepoPreparation", () => {
       workspaceId: "workspace_123",
     });
 
-    await vi.waitFor(() => {
-      expect(events).toEqual(expect.arrayContaining([{ network: true }]));
-    });
+    await waitFor(() => events.some((event) => "sandboxLog" in Object(event)));
     controller.abort(new PipelineCancellationError("signal"));
 
     await expect(preparation).rejects.toMatchObject({ reason: "signal" });
@@ -288,9 +305,9 @@ describe("AgenticRepoPreparation", () => {
       workspaceId: "workspace_123",
     });
 
-    await vi.waitFor(() => {
-      expect(events).toEqual(expect.arrayContaining([{ cloneAttempt: 1 }]));
-    });
+    await waitFor(() =>
+      events.some((event) => "cloneAttempt" in Object(event)),
+    );
     controller.abort(new PipelineCancellationError("signal"));
 
     await expect(preparation).rejects.toMatchObject({ reason: "signal" });
@@ -371,13 +388,11 @@ describe("AgenticRepoPreparation", () => {
     });
     expect(events).toEqual(
       expect.arrayContaining([
-        { network: true },
         {
           execute: expect.stringContaining(
             "checkout --detach '0123456789abcdef0123456789abcdef01234567'",
           ),
         },
-        { network: false },
         { prepareForAgent: true },
       ]),
     );
@@ -708,11 +723,7 @@ describe("AgenticRepoPreparation", () => {
       ],
     });
     expect(events).toEqual(
-      expect.arrayContaining([
-        { network: true },
-        { network: false },
-        { release: "daytona_workspace" },
-      ]),
+      expect.arrayContaining([{ release: "daytona_workspace" }]),
     );
   });
 
@@ -817,13 +828,7 @@ describe("AgenticRepoPreparation", () => {
       ],
     });
     expect(events).toEqual(
-      expect.arrayContaining([
-        { network: true },
-        { network: false },
-        { submittedCodeNetwork: true },
-        { submittedCodeNetwork: false },
-        { release: "daytona_workspace" },
-      ]),
+      expect.arrayContaining([{ release: "daytona_workspace" }]),
     );
   });
 
@@ -987,7 +992,7 @@ describe("AgenticRepoPreparation", () => {
           {
             exitCode: 0,
             handoff: {
-              input: { command: "bun install" },
+              input: {},
               toolName: "makeademo_dependency_request_install" as const,
             },
           },
@@ -1160,7 +1165,7 @@ describe("AgenticRepoPreparation", () => {
           agentResults: Array.from({ length: 16 }, (_, index) => ({
             exitCode: 0,
             handoff: {
-              input: { command: "bun install" },
+              input: {},
               toolName: "makeademo_dependency_request_install" as const,
             },
             lastMeaningfulActivity: {
@@ -1195,6 +1200,145 @@ describe("AgenticRepoPreparation", () => {
     }
   });
 
+  it("classifies dependency install exit 137 as an uncertain SIGKILL with byte-bounded evidence", async () => {
+    const events: unknown[] = [];
+    const runner = new RecordingAgentTaskRunner();
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider(events, {
+        agentResults: [
+          {
+            exitCode: 0,
+            handoff: {
+              input: {},
+              toolName: "makeademo_dependency_request_install" as const,
+            },
+          },
+        ],
+        submittedCodeInstallResult: {
+          exitCode: 137,
+          stderr: `${"🧨".repeat(2_000)}killed`,
+          stdout: `${"🛠️".repeat(2_000)}installing`,
+        },
+      }),
+      runner,
+      timeoutMs: 1_000,
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result).toMatchObject({
+      blockers: [
+        expect.stringContaining(
+          "could be OOM pressure, provider termination, or another external kill",
+        ),
+      ],
+      failureKind: "dependency-install-sigkill",
+      status: "failed",
+      suggestedChanges: [
+        expect.stringContaining("provider metrics and sandbox logs"),
+      ],
+    });
+    expect(runner.calls).toHaveLength(1);
+    const diagnostic = events.find(
+      (event): event is { sandboxLog: Record<string, unknown> } =>
+        typeof event === "object" &&
+        event !== null &&
+        "sandboxLog" in event &&
+        (event as { sandboxLog?: { event?: unknown } }).sandboxLog?.event ===
+          "dependency-install-sigkill",
+    )?.sandboxLog;
+    expect(diagnostic).toMatchObject({
+      exitCode: 137,
+      failureKind: "dependency-install-sigkill",
+      interpretation:
+        "SIGKILL observed; OOM pressure, provider termination, and external kill remain possible.",
+      level: "error",
+    });
+    expect(
+      Buffer.byteLength(String(diagnostic?.stderrTail), "utf8"),
+    ).toBeLessThanOrEqual(1_500);
+    expect(
+      Buffer.byteLength(String(diagnostic?.stdoutTail), "utf8"),
+    ).toBeLessThanOrEqual(1_500);
+    expect(String(diagnostic?.stderrTail).endsWith("killed")).toBe(true);
+    expect(String(diagnostic?.stdoutTail).endsWith("installing")).toBe(true);
+  });
+
+  it("classifies Yarn Classic Node engine incompatibility without another agent turn", async () => {
+    const events: unknown[] = [];
+    const runner = new RecordingAgentTaskRunner();
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider(events, {
+        agentResults: [
+          {
+            exitCode: 0,
+            handoff: {
+              input: {},
+              toolName: "makeademo_dependency_request_install" as const,
+            },
+          },
+        ],
+        submittedCodeInstallResult: {
+          exitCode: 1,
+          stderr: "",
+          stdout: [
+            "yarn install v1.22.22",
+            'error @excalidraw/excalidraw@0.18.0: The engine "node" is incompatible with this module. Expected version ">=20". Got "18.20.8".',
+            "error Found incompatible module.",
+          ].join("\n"),
+        },
+        toolchainMetadata: {
+          candidates: [
+            {
+              files: {
+                ".nvmrc": "18",
+                "package.json": JSON.stringify({
+                  engines: { node: ">=18 <20" },
+                  packageManager: "yarn@1.22.22",
+                }),
+                "yarn.lock": "# yarn lockfile v1\n",
+              },
+              projectRoot: ".",
+            },
+          ],
+        },
+      }),
+      runner,
+      timeoutMs: 1_000,
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/excalidraw/excalidraw",
+      structuredDemoIntent: { keyProductFeatures: ["drawing"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result).toMatchObject({
+      failureKind: "repository_node_dependency_incompatible",
+      status: "failed",
+    });
+    expect(runner.calls).toHaveLength(1);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        {
+          sandboxLog: expect.objectContaining({
+            actualNodeVersion: "18.20.8",
+            event: "dependency-install.repository-node-incompatible",
+            expectedNodeRange: ">=20",
+            failureKind: "repository_node_dependency_incompatible",
+            level: "error",
+          }),
+        },
+      ]),
+    );
+  });
+
   it("stops dependency turns at the maximum task-turn boundary", async () => {
     const events: unknown[] = [];
     const runner = new RecordingAgentTaskRunner();
@@ -1203,7 +1347,7 @@ describe("AgenticRepoPreparation", () => {
         agentResults: Array.from({ length: 16 }, () => ({
           exitCode: 0,
           handoff: {
-            input: { command: "bun install" },
+            input: {},
             toolName: "makeademo_dependency_request_install" as const,
           },
         })),
@@ -1350,11 +1494,11 @@ describe("AgenticRepoPreparation", () => {
     );
   });
 
-  it("reseals submitted-code network when dependency installation times out", async () => {
+  it("cancels submitted-code execution when dependency installation times out", async () => {
     const events: unknown[] = [];
     const agent = createRepoPreparationAgent({
       provider: fakeProvider(events, {
-        dependencyInstallRequest: { command: "bun install" },
+        dependencyInstallRequest: {},
         submittedCodeNeverSettles: true,
       }),
       timeoutMs: 150,
@@ -1370,20 +1514,126 @@ describe("AgenticRepoPreparation", () => {
     expect(result).toMatchObject({ status: "failed" });
     expect(events).toEqual(
       expect.arrayContaining([
-        { submittedCodeNetwork: true },
         {
           submittedProjectExecute: {
-            argv: ["i", "--frozen-lockfile"],
+            argv: [
+              "install",
+              "--frozen-lockfile",
+              "--child-concurrency=2",
+              "--network-concurrency=4",
+            ],
             executable: "pnpm",
             nodeVersion: "22.23.1",
           },
         },
         { cancelActiveCommands: true },
-        { submittedCodeNetwork: false },
       ]),
     );
     expect(events).toEqual(
       expect.arrayContaining([{ release: "daytona_workspace" }]),
+    );
+  });
+
+  it("gives backend dependency installation a fresh inactivity budget after the agent handoff", async () => {
+    const events: unknown[] = [];
+    let agentTurn = 0;
+    const runner: AgentTaskRunner = {
+      async run<T>(): Promise<AgentTaskRunResult<T>> {
+        agentTurn += 1;
+        if (agentTurn === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 150));
+          return {
+            exitCode: 0,
+            handoff: {
+              input: {},
+              toolName: "makeademo_dependency_request_install",
+            },
+          } as AgentTaskRunResult<T>;
+        }
+
+        return {
+          exitCode: 0,
+          handoff: {
+            input: {
+              manifestPath: "/workspace/.makeademo/preparation-manifest.json",
+            },
+            toolName: "makeademo_validate_preparation",
+          },
+        } as AgentTaskRunResult<T>;
+      },
+    };
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider(events, {
+        submittedCodeInstallDelayMs: 100,
+      }),
+      runner,
+      timeoutMs: 200,
+    });
+
+    await expect(
+      agent.prepare({
+        normalizedSupportingDocuments: [],
+        repoUrl: "https://github.com/example/app",
+        structuredDemoIntent: { keyProductFeatures: ["validation"] },
+        workspaceId: "workspace_123",
+      }),
+    ).resolves.toMatchObject({ status: "succeeded" });
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        {
+          sandboxLog: expect.objectContaining({
+            event: "dependency-install-finished",
+            exitCode: 0,
+          }),
+        },
+      ]),
+    );
+  });
+
+  it("caps dependency synchronization at the absolute deadline and cancels active commands", async () => {
+    const events: unknown[] = [];
+    const agent = createRepoPreparationAgent({
+      hardTimeoutMs: 250,
+      provider: fakeProvider(events, {
+        dependencyInstallRequest: {},
+        submittedCodeSyncNeverSettles: true,
+      }),
+      timeoutMs: 1_000,
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result).toMatchObject({
+      blockers: [
+        expect.stringContaining(
+          "Repo Preparation dependency installation timed out after",
+        ),
+      ],
+      status: "failed",
+    });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        { submittedCodeSync: true },
+        { cancelActiveCommands: true },
+        { release: "daytona_workspace" },
+        {
+          sandboxLog: expect.objectContaining({
+            event: "preparation-timeout",
+            timeoutKind: "hard-cap",
+          }),
+        },
+      ]),
+    );
+    expect(events).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ submittedProjectExecute: expect.anything() }),
+      ]),
     );
   });
 
@@ -1420,7 +1670,7 @@ describe("AgenticRepoPreparation", () => {
             {
               files: {
                 "package.json": JSON.stringify({
-                  engines: { node: "20" },
+                  engines: { node: "16" },
                   packageManager: "npm@10.8.2",
                 }),
                 "package-lock.json": "",
@@ -1734,10 +1984,9 @@ describe("AgenticRepoPreparation", () => {
     expect(submittedCodeClone).toMatch(/export GIT_SSL_CAINFO=.*git clone/s);
     expect(submittedCodeClone).not.toContain("GIT_SSL_NO_VERIFY");
     expect(submittedCodeClone).not.toContain("sslVerify=false");
-    expect(events).toEqual(
+    expect(events).not.toEqual(
       expect.arrayContaining([
-        { submittedCodeNetwork: true },
-        { submittedCodeNetwork: false },
+        expect.objectContaining({ submittedCodeNetwork: expect.anything() }),
       ]),
     );
   });
@@ -1845,7 +2094,7 @@ function fakeProvider(
         cloneDiagnosticsStdout?: string;
         captureCloneTimeouts?: boolean;
         cloneResults?: Array<PreparationWorkspaceCommandResult | Error>;
-        dependencyInstallRequest?: { command: string };
+        dependencyInstallRequest?: Record<string, never>;
         manifestPayload?: unknown;
         agentResults?: Array<
           AgentTaskRunResult<RepoPreparationToolHandoff> | Error
@@ -1859,6 +2108,7 @@ function fakeProvider(
         submittedCodeInstallResult?: PreparationWorkspaceCommandResult;
         submittedCodeNeverSettles?: boolean;
         submittedCodeInstallDelayMs?: number;
+        submittedCodeSyncNeverSettles?: boolean;
         validationRequest?: {
           manifestPath: string;
         };
@@ -1915,7 +2165,7 @@ function fakeWorkspace(
     cloneDiagnosticsStdout?: string;
     captureCloneTimeouts?: boolean;
     cloneResults?: Array<PreparationWorkspaceCommandResult | Error>;
-    dependencyInstallRequest?: { command: string };
+    dependencyInstallRequest?: Record<string, never>;
     manifestPayload?: unknown;
     agentResults?: Array<
       AgentTaskRunResult<RepoPreparationToolHandoff> | Error
@@ -1929,6 +2179,7 @@ function fakeWorkspace(
     submittedCodeInstallResult?: PreparationWorkspaceCommandResult;
     submittedCodeNeverSettles?: boolean;
     submittedCodeInstallDelayMs?: number;
+    submittedCodeSyncNeverSettles?: boolean;
     validationRequest?: {
       manifestPath: string;
     };
@@ -1944,6 +2195,7 @@ function fakeWorkspace(
   let dependencyInstallRequest = input.dependencyInstallRequest;
   let sandboxLogChain = Promise.resolve();
   let settleSubmittedCodeExecution: (() => void) | undefined;
+  let settleSubmittedCodeSync: (() => void) | undefined;
   let validationRequest = input.validationRequest;
   let validationResult = input.validationResult;
 
@@ -2120,9 +2372,6 @@ function fakeWorkspace(
           : (commandStdout.shift() ?? ""),
       };
     },
-    async setOutboundNetworkAccess(enabled) {
-      events.push({ network: enabled });
-    },
     async executeSubmittedCode(command) {
       events.push({ submittedCodeExecute: command });
       if (command.includes("git clone")) {
@@ -2179,16 +2428,24 @@ function fakeWorkspace(
       }
       return { exitCode: 0, stderr: "", stdout: "installed" };
     },
-    async setSubmittedCodeNetworkAccess(enabled) {
-      events.push({ submittedCodeNetwork: enabled });
+    async provisionSubmittedCodeToolchain() {
+      return fakeToolchainReceipt;
+    },
+    async syncSubmittedCodeWorkspace() {
+      if (input.submittedCodeSyncNeverSettles === true) {
+        events.push({ submittedCodeSync: true });
+        await new Promise<void>((resolve) => {
+          settleSubmittedCodeSync = resolve;
+        });
+      }
     },
     async getPreviewUrl(port) {
       return `https://preview.example.test:${port}`;
     },
     async cancelActiveCommands() {
       events.push({ cancelActiveCommands: true });
-      events.push({ submittedCodeNetwork: false });
       settleSubmittedCodeExecution?.();
+      settleSubmittedCodeSync?.();
     },
     async uploadFiles() {
       throw new Error("Repo Preparation should clone inside Daytona.");
@@ -2232,6 +2489,14 @@ function providerInvalidApiKeyFailure(
 
 function isReleaseEvent(event: unknown): boolean {
   return typeof event === "object" && event !== null && "release" in event;
+}
+
+async function waitFor(condition: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error("Timed out waiting for test setup.");
 }
 
 function validationArtifact() {

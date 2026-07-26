@@ -1,6 +1,7 @@
 import type { PreparationManifest } from "../../03-repo-preparation/preparation-manifest";
 import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
 import { SubmittedCodeWorkspaceSyncError } from "../../03-repo-preparation/submitted-code-execution";
+import type { SubmittedCodeNodeReleaseCatalog } from "../../03-repo-preparation/submitted-code-node-release-catalog.interface";
 import { inspectSubmittedCodeToolchain } from "../../03-repo-preparation/submitted-code-toolchain-inspection";
 import type { BrowserValidator } from "./browser-validator.interface";
 import {
@@ -24,6 +25,7 @@ export type DemoRuntimePreflightInput = {
 export type DemoRuntimePreflightDependencies = {
   browserValidationTimeoutMs?: number;
   browserValidator: BrowserValidator;
+  nodeReleaseCatalog: SubmittedCodeNodeReleaseCatalog;
   sandboxRunner: SandboxRunner;
 };
 
@@ -37,6 +39,7 @@ export async function runDemoRuntimePreflight(
   try {
     const inspectedToolchain = await inspectSubmittedCodeToolchain(
       input.preparationWorkspace.workspace,
+      dependencies.nodeReleaseCatalog,
     );
     if (inspectedToolchain.mode === "unsupported") {
       throw new Error(inspectedToolchain.reason);

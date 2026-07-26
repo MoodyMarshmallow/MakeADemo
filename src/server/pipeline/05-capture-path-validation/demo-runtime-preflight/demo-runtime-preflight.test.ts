@@ -2,8 +2,25 @@ import { describe, expect, it } from "vitest";
 
 import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
 import { SubmittedCodeWorkspaceSyncError } from "../../03-repo-preparation/submitted-code-execution";
+import { submittedCodeKnownGoodNodeReleaseCatalog } from "../../03-repo-preparation/submitted-code-node-release-catalog.interface";
 import type { BrowserValidator } from "./browser-validator.interface";
-import { runDemoRuntimePreflight } from "./demo-runtime-preflight";
+import { runDemoRuntimePreflight as runAgainstNodeCatalog } from "./demo-runtime-preflight";
+
+function runDemoRuntimePreflight(
+  input: Parameters<typeof runAgainstNodeCatalog>[0],
+  dependencies: Omit<
+    Parameters<typeof runAgainstNodeCatalog>[1],
+    "nodeReleaseCatalog"
+  > &
+    Partial<
+      Pick<Parameters<typeof runAgainstNodeCatalog>[1], "nodeReleaseCatalog">
+    >,
+) {
+  return runAgainstNodeCatalog(input, {
+    nodeReleaseCatalog: submittedCodeKnownGoodNodeReleaseCatalog,
+    ...dependencies,
+  });
+}
 import type { SandboxRunner } from "./sandbox-runner.interface";
 
 describe("runDemoRuntimePreflight", () => {
@@ -695,7 +712,7 @@ describe("runDemoRuntimePreflight", () => {
     });
   });
 
-  it("redacts and bounds lower-priority toolchain metadata warnings", async () => {
+  it("does not expose malformed Node metadata in bounded failures", async () => {
     const secret = "token=supersecret";
     const result = await runDemoRuntimePreflight(
       {
@@ -738,10 +755,10 @@ describe("runDemoRuntimePreflight", () => {
       },
     );
 
-    expect(result.warnings).toHaveLength(1);
-    expect(result.warnings[0]).not.toContain(secret);
-    expect(result.warnings[0]).toContain("token=***");
-    expect(result.warnings[0]?.length).toBeLessThanOrEqual(1_000);
+    expect(result.status).toBe("failed");
+    expect(result.failureReason).not.toContain(secret);
+    expect(result.failureReason).toContain("stable semver constraint");
+    expect(result.failureReason?.length).toBeLessThanOrEqual(1_000);
   });
 });
 
@@ -788,8 +805,6 @@ function workspaceHandle(
       async getPreviewUrl() {
         return "https://preview.example.test";
       },
-      async setOutboundNetworkAccess() {},
-      async setSubmittedCodeNetworkAccess() {},
       async uploadFiles() {},
       async writeSandboxLog(entry) {
         sandboxLogs.push(entry);
@@ -819,8 +834,6 @@ function hangingLogWorkspaceHandle(): PreparationWorkspaceHandle {
       async getPreviewUrl() {
         return "https://preview.example.test";
       },
-      async setOutboundNetworkAccess() {},
-      async setSubmittedCodeNetworkAccess() {},
       async uploadFiles() {},
       async writeSandboxLog() {
         await new Promise(() => {});

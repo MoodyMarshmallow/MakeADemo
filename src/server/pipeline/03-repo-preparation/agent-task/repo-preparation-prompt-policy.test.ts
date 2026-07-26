@@ -1,6 +1,40 @@
 import { describe, expect, it } from "vitest";
 
-import { createValidationFeedbackPrompt } from "./repo-preparation-prompt-policy";
+import {
+  createContinueRepoPreparationPrompt,
+  createDaytonaRepoPreparationPrompt,
+  createDependencyInstallFailurePrompt,
+  createValidationFeedbackPrompt,
+} from "./repo-preparation-prompt-policy";
+
+const promptInput = {
+  normalizedSupportingDocuments: [],
+  repoUrl: "https://github.com/example/app",
+  structuredDemoIntent: { keyProductFeatures: ["demo"] },
+  workspaceId: "workspace_123",
+};
+
+describe("dependency install prompt policy", () => {
+  it("describes the argumentless backend-selected install tool truthfully", () => {
+    const prompts = [
+      createDaytonaRepoPreparationPrompt(promptInput),
+      createContinueRepoPreparationPrompt(promptInput),
+      createDependencyInstallFailurePrompt(promptInput, {
+        exitCode: 1,
+        stderr: "failed",
+        stdout: "",
+      }),
+    ];
+
+    for (const prompt of prompts) {
+      expect(prompt).toContain(
+        "call `makeademo_dependency_request_install` without arguments",
+      );
+      expect(prompt).toContain("backend selects the exact immutable command");
+      expect(prompt).not.toMatch(/npm ci|ignore-scripts|allowlisted install/);
+    }
+  });
+});
 
 describe("createValidationFeedbackPrompt", () => {
   it("projects bounded redacted validation evidence without inline screenshot bytes", () => {

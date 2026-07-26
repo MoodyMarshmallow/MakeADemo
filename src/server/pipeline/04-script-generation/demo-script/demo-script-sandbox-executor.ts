@@ -16,6 +16,8 @@ import {
 import { prepareStylizedPlaywrightScript } from "./stylized-playwright-script";
 
 const submittedCodeEvidenceGraceMs = 5_000;
+const trustedPlaywrightModuleRoot =
+  "/opt/makeademo/playwright-runtime/node_modules";
 
 export type DemoScriptSandboxExecutionInput = {
   baseUrl: string;
@@ -118,7 +120,7 @@ export async function executeDemoScriptInSandbox(
       input.workspace,
       [
         `cd ${shellQuote(input.remoteRunDirectory)}`,
-        createExposeGlobalPlaywrightCommand(),
+        createExposeTrustedPlaywrightCommand(),
         `timeout -s TERM ${Math.ceil(input.timeoutMs / 1000)} bun ${shellQuote(remoteScriptPath)} > ${shellQuote(remoteStdoutPath)} 2> ${shellQuote(remoteStderrPath)}`,
         "code=$?",
         `cat ${shellQuote(remoteStdoutPath)}`,
@@ -150,12 +152,18 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function createExposeGlobalPlaywrightCommand() {
-  return [
-    "global_node_modules=$(npm root -g 2>/dev/null || true)",
-    'if [ -n "$global_node_modules" ]; then mkdir -p node_modules; fi',
-    'if [ -e "$global_node_modules/@playwright" ]; then ln -sfn "$global_node_modules/@playwright" node_modules/@playwright; fi',
-    'if [ -e "$global_node_modules/playwright" ]; then ln -sfn "$global_node_modules/playwright" node_modules/playwright; fi',
-    'if [ -e "$global_node_modules/playwright-core" ]; then ln -sfn "$global_node_modules/playwright-core" node_modules/playwright-core; fi',
-  ].join("; ");
+function createExposeTrustedPlaywrightCommand() {
+  const commands = [
+    'trusted_playwright_modules="${MAKEADEMO_PLAYWRIGHT_MODULE_ROOT:?}"',
+    `test "$trusted_playwright_modules" = ${shellQuote(trustedPlaywrightModuleRoot)}`,
+    'test -d "$trusted_playwright_modules/@playwright/test"',
+    'test -d "$trusted_playwright_modules/playwright"',
+    'test -d "$trusted_playwright_modules/playwright-core"',
+    "mkdir -p node_modules",
+    "rm -rf node_modules/@playwright node_modules/playwright node_modules/playwright-core",
+    'ln -s "$trusted_playwright_modules/@playwright" node_modules/@playwright',
+    'ln -s "$trusted_playwright_modules/playwright" node_modules/playwright',
+    'ln -s "$trusted_playwright_modules/playwright-core" node_modules/playwright-core',
+  ];
+  return `${commands.join(" && ")} || exit $?`;
 }

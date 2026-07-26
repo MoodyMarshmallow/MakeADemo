@@ -7,14 +7,52 @@ import { describe, expect, it } from "vitest";
 
 import type { PreparationWorkspaceHandle } from "../../../pipeline/03-repo-preparation/preparation-workspace-runner";
 import type { SubmittedProjectRuntimeRequest } from "../../../pipeline/03-repo-preparation/preparation-workspace.interface";
+import {
+  submittedCodeKnownGoodNodeReleaseCatalog,
+  submittedCodeKnownGoodNodeReleaseSnapshot,
+} from "../../../pipeline/03-repo-preparation/submitted-code-node-release-catalog.interface";
 import { resolveSubmittedCodeToolchain } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
 import type { PipelineEventLogger } from "../../logging/pipeline-event-logger";
 import {
-  DaytonaSandboxRunner,
+  DaytonaSandboxRunner as RuntimeDaytonaSandboxRunner,
   createStartDemoScript,
   parseDemoProcessState,
-  restartPreparedDemoForFreshCapture,
+  restartPreparedDemoForFreshCapture as restartAgainstNodeCatalog,
 } from "./daytona-sandbox-runner";
+
+type DaytonaSandboxRunnerOptions = NonNullable<
+  ConstructorParameters<typeof RuntimeDaytonaSandboxRunner>[0]
+>;
+
+class DaytonaSandboxRunner extends RuntimeDaytonaSandboxRunner {
+  constructor(
+    options: Omit<DaytonaSandboxRunnerOptions, "nodeReleaseCatalog"> &
+      Partial<Pick<DaytonaSandboxRunnerOptions, "nodeReleaseCatalog">> = {},
+  ) {
+    super({
+      nodeReleaseCatalog: submittedCodeKnownGoodNodeReleaseCatalog,
+      ...options,
+    });
+  }
+}
+
+function restartPreparedDemoForFreshCapture(
+  input: Omit<
+    Parameters<typeof restartAgainstNodeCatalog>[0],
+    "nodeReleaseCatalog"
+  > &
+    Partial<
+      Pick<
+        Parameters<typeof restartAgainstNodeCatalog>[0],
+        "nodeReleaseCatalog"
+      >
+    >,
+) {
+  return restartAgainstNodeCatalog({
+    nodeReleaseCatalog: submittedCodeKnownGoodNodeReleaseCatalog,
+    ...input,
+  });
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -72,7 +110,12 @@ describe("DaytonaSandboxRunner", () => {
     expect(workspace.submittedCommands[0]).toContain("find /workspace");
     expect(workspace.plannedInstalls).toEqual([
       {
-        argv: ["i", "--frozen-lockfile"],
+        argv: [
+          "install",
+          "--frozen-lockfile",
+          "--child-concurrency=2",
+          "--network-concurrency=4",
+        ],
         executable: "pnpm",
         nodeVersion: "22.23.1",
       },
@@ -93,7 +136,6 @@ describe("DaytonaSandboxRunner", () => {
     expect(workspace.submittedCommands[4]).toBe(
       "if test -f /tmp/makeademo-demo.log; then tail -c 16384 /tmp/makeademo-demo.log; fi",
     );
-    expect(workspace.submittedNetworkAccess).toEqual([true, false]);
     expect(result).toMatchObject({
       browserUrl: "https://preview.example.test:3000/",
       blockedNetworkAttempts: [],
@@ -129,7 +171,6 @@ describe("DaytonaSandboxRunner", () => {
     });
 
     expect(workspace.submittedCommands).not.toContain("yarn install");
-    expect(workspace.submittedNetworkAccess).toEqual([]);
     expect(workspace.submittedCommands).toEqual(
       expect.arrayContaining([
         expect.stringContaining("fetch"),
@@ -169,25 +210,6 @@ describe("DaytonaSandboxRunner", () => {
     expect(workspace.plannedRuntimes).toEqual([]);
   });
 
-  it("releases the workspace if a planned dependency install cannot reseal network access", async () => {
-    const workspace = new FakePreparationWorkspaceHandle();
-    workspace.workspace.setSubmittedCodeNetworkAccess = async (enabled) => {
-      workspace.submittedNetworkAccess.push(enabled);
-      if (!enabled) throw new Error("reseal failed");
-    };
-
-    await expect(
-      new DaytonaSandboxRunner().runValidation({
-        demoCommand: "npm run demo",
-        preparationManifest: manifest("workspace_123"),
-        preparationWorkspace: workspace,
-        repoUrl: "https://github.com/example/app",
-        url: "http://localhost:3000",
-      }),
-    ).rejects.toThrow("could not be resealed");
-    expect(workspace.released).toBe(true);
-  });
-
   it("uses one catalog plan for dependency installation and demo startup while leaving control commands raw", async () => {
     const workspace = new FakePreparationWorkspaceHandle();
     workspace.toolchainPlan = supportedPlan();
@@ -203,7 +225,12 @@ describe("DaytonaSandboxRunner", () => {
 
     expect(workspace.plannedInstalls).toEqual([
       {
-        argv: ["i", "--frozen-lockfile"],
+        argv: [
+          "install",
+          "--frozen-lockfile",
+          "--child-concurrency=2",
+          "--network-concurrency=4",
+        ],
         executable: "pnpm",
         nodeVersion: "22.23.1",
       },
@@ -261,7 +288,8 @@ describe("DaytonaSandboxRunner", () => {
       url: "http://localhost:3000",
     });
 
-    expect(workspace.events.slice(0, 2)).toEqual([
+    expect(workspace.events.slice(0, 3)).toEqual([
+      "provisionSubmittedCodeToolchain",
       "syncSubmittedCodeWorkspace",
       expect.stringContaining("find /workspace"),
     ]);
@@ -462,7 +490,7 @@ describe("DaytonaSandboxRunner", () => {
     expect(workspace.released).toBe(false);
   });
 
-  it("closes outbound network and destroys the workspace when install execution throws", async () => {
+  it("keeps the workspace available when install execution throws", async () => {
     const workspace = new FakePreparationWorkspaceHandle(new Map(), "npm ci");
     const runner = new DaytonaSandboxRunner();
 
@@ -476,7 +504,6 @@ describe("DaytonaSandboxRunner", () => {
       }),
     ).rejects.toThrow("npm ci exploded");
 
-    expect(workspace.submittedNetworkAccess).toEqual([true, false]);
     expect(workspace.released).toBe(false);
   });
 
@@ -827,7 +854,6 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
   commands: string[] = [];
   released = false;
   id = "daytona_workspace";
-  networkAccess: boolean[] = [];
   previewPorts: number[] = [];
   plannedInstalls: Array<{
     argv: string[];
@@ -835,10 +861,10 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
     nodeVersion: string;
   }> = [];
   plannedRuntimes: Array<{ command: string; nodeVersion: string }> = [];
+  provisionedToolchains: string[] = [];
   readinessResults: number[] = [];
   sandboxLogs: Record<string, unknown>[] = [];
   submittedCommands: string[] = [];
-  submittedNetworkAccess: boolean[] = [];
   toolchainPlan: ReturnType<typeof supportedPlan> = supportedPlan();
   toolchainMetadata: unknown = supportedToolchainMetadata();
   events: string[] = [];
@@ -890,6 +916,30 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
       }
       return { exitCode: 0, stderr: "", stdout: "planned install" };
     },
+    provisionSubmittedCodeToolchain: async (
+      plan: ReturnType<typeof supportedPlan>,
+    ) => {
+      this.provisionedToolchains.push(
+        `${plan.packageManager?.name}@${plan.packageManager?.version}`,
+      );
+      this.events.push("provisionSubmittedCodeToolchain");
+      return {
+        node: {
+          archiveDigest: { algorithm: "sha256", value: "c".repeat(64) },
+          nodeBinaryDigest: { algorithm: "sha256", value: "d".repeat(64) },
+          signedManifestDigest: {
+            algorithm: "sha256",
+            value: "e".repeat(64),
+          },
+          signerPrimaryFingerprint: "F".repeat(40),
+          version: plan.node.version,
+        },
+        packageManager: {
+          artifactDigest: { algorithm: "sha512", value: "a".repeat(128) },
+          upstreamDigest: { algorithm: "sha512", value: "b".repeat(128) },
+        },
+      } as const;
+    },
     executeSubmittedRuntime: async (
       request: SubmittedProjectRuntimeRequest,
     ) => {
@@ -902,12 +952,6 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
     getPreviewUrl: async (port: number) => {
       this.previewPorts.push(port);
       return `https://preview.example.test:${port}`;
-    },
-    setOutboundNetworkAccess: async (enabled: boolean) => {
-      this.networkAccess.push(enabled);
-    },
-    setSubmittedCodeNetworkAccess: async (enabled: boolean) => {
-      this.submittedNetworkAccess.push(enabled);
     },
     syncSubmittedCodeWorkspace: async () => {
       this.events.push("syncSubmittedCodeWorkspace");
@@ -979,7 +1023,10 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
 }
 
 function supportedPlan() {
-  return resolveSubmittedCodeToolchain(supportedToolchainMetadata());
+  return resolveSubmittedCodeToolchain(
+    supportedToolchainMetadata(),
+    submittedCodeKnownGoodNodeReleaseSnapshot,
+  );
 }
 
 function supportedToolchainMetadata() {
@@ -1018,7 +1065,7 @@ function unsupportedToolchainMetadata() {
       {
         files: {
           "package.json": JSON.stringify({
-            engines: { node: "20" },
+            engines: { node: "16" },
             packageManager: "pnpm@11.13.0",
           }),
           "pnpm-lock.yaml": "",

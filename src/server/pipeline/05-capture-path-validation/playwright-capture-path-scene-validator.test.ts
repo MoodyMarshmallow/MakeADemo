@@ -221,7 +221,6 @@ function preparedWorkspaceReturning(
       async getPreviewUrl() {
         return "https://preview.example.test/";
       },
-      async setOutboundNetworkAccess() {},
       async uploadFiles() {},
     },
   };

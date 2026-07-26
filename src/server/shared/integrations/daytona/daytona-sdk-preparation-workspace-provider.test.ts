@@ -5,6 +5,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -15,13 +16,24 @@ import { promisify } from "node:util";
 
 import { describe, expect, it } from "vitest";
 
-import { resolveSubmittedCodeToolchain } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
+import type { PreparationWorkspaceHandle } from "../../../pipeline/03-repo-preparation/preparation-workspace-runner";
+import { submittedCodeKnownGoodNodeReleaseSnapshot } from "../../../pipeline/03-repo-preparation/submitted-code-node-release-catalog.interface";
+import { resolveSubmittedCodeToolchain as resolveAgainstNodeCatalog } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
 import {
   DaytonaSdkPreparationWorkspaceProvider,
   createDaytonaSdkPreparationWorkspaceHandle,
 } from "./daytona-sdk-preparation-workspace-provider";
 
 const execFileAsync = promisify(execFile);
+
+function resolveSubmittedCodeToolchain(
+  metadata: Parameters<typeof resolveAgainstNodeCatalog>[0],
+) {
+  return resolveAgainstNodeCatalog(
+    metadata,
+    submittedCodeKnownGoodNodeReleaseSnapshot,
+  );
+}
 
 function supportedPnpmMetadata(projectRoot: string) {
   return {
@@ -40,8 +52,65 @@ function supportedPnpmMetadata(projectRoot: string) {
   };
 }
 
+async function provisionToolchainForSubmittedCodeSync(
+  handle: PreparationWorkspaceHandle,
+): Promise<{
+  plan: ReturnType<typeof resolveSubmittedCodeToolchain>;
+  receipt: NonNullable<PreparationWorkspaceHandle["toolchainReceipt"]>;
+}> {
+  const plan = resolveSubmittedCodeToolchain(supportedPnpmMetadata("."));
+  const receipt =
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+  if (receipt === undefined) {
+    throw new Error("submitted-code toolchain provisioning is unavailable");
+  }
+  return { plan, receipt };
+}
+
+function hydrationAttestationStdout(): string {
+  return [
+    `MAKEADEMO_UPSTREAM_SRI=sha512-${Buffer.alloc(64).toString("base64")}`,
+    `MAKEADEMO_ARTIFACT_SHA512=${"a".repeat(128)}`,
+    "",
+  ].join("\n");
+}
+
+function bunHydrationAttestationStdout(): string {
+  return [
+    `MAKEADEMO_UPSTREAM_SHA256=${"b".repeat(64)}`,
+    `MAKEADEMO_ARTIFACT_SHA256=${"b".repeat(64)}`,
+    "",
+  ].join("\n");
+}
+
+function nodeRuntimeAttestationStdout(version: string): string {
+  return JSON.stringify({
+    schemaVersion: 1,
+    version,
+    archiveSha256: "c".repeat(64),
+    nodeBinarySha256: "d".repeat(64),
+    signedManifestSha256: "e".repeat(64),
+    signerPrimaryFingerprint: "F".repeat(40),
+    cacheStatus: "miss",
+  });
+}
+
+function trustedNodeProvisionAttestation(script: string): string | undefined {
+  if (
+    !script.includes("makeademo-provision-submitted-node-runtime provision")
+  ) {
+    return undefined;
+  }
+  const version = /\bprovision[^0-9]+([0-9]+\.[0-9]+\.[0-9]+)/.exec(
+    script,
+  )?.[1];
+  return version === undefined
+    ? undefined
+    : nodeRuntimeAttestationStdout(version);
+}
+
 describe("DaytonaSdkPreparationWorkspaceProvider", () => {
-  it("creates a sandbox from the configured snapshot", async () => {
+  it("creates the primary sandbox with network access enabled", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeClient(calls),
@@ -58,6 +127,25 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         disk: 3,
         networkBlockAll: false,
         snapshot: "makeademo-opencode",
+      },
+    });
+  });
+
+  it("creates the submitted-code sandbox with network access enabled", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+
+    await provider.create();
+
+    expect(calls).toContainEqual({
+      create: {
+        autoDeleteInterval: -1,
+        networkBlockAll: false,
+        snapshot: "makeademo-submitted-code",
+        user: "root",
       },
     });
   });
@@ -496,7 +584,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
   });
 
-  it("maps submitted-project plans to catalog PATH and cwd without changing control execution", async () => {
+  it("owns pnpm bounded argv and common build limits after caller input", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeCommandTimeoutClient(calls),
@@ -509,7 +597,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
           files: {
             "package.json": JSON.stringify({
               engines: { node: "22" },
-              packageManager: "pnpm@11.13.0+sha512.0123456789abcdef",
+              packageManager: "pnpm@10.27.0+sha512.0123456789abcdef",
             }),
             "pnpm-lock.yaml": "",
           },
@@ -518,17 +606,36 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       ],
     });
 
+    const toolchainReceipt =
+      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+    if (toolchainReceipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+
     await handle.workspace.executeSubmittedProject?.(
       {
-        argv: ["i", "--frozen-lockfile"],
+        argv: [
+          "install",
+          "--frozen-lockfile",
+          "--child-concurrency=2",
+          "--network-concurrency=4",
+        ],
         executable: "pnpm",
+        installProfile: "bounded",
         plan,
+        toolchainReceipt,
       },
       {
         env: {
+          CHILD_CONCURRENCY: "99",
           CI: "true",
+          CMAKE_BUILD_PARALLEL_LEVEL: "99",
+          MAKEFLAGS: "-j99",
+          NODE_ENV: "development",
           OPENAI_API_KEY: "agent-secret",
           TOKEN: "caller-secret",
+          TURBO_CONCURRENCY: "99",
+          npm_config_child_concurrency: "99",
+          npm_config_network_concurrency: "99",
         },
       },
     );
@@ -539,41 +646,1271 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(calls).toContainEqual({
       createPty: {
         cwd: "/workspace/webapp",
-        envs: {
-          COREPACK_DEFAULT_TO_LATEST: "0",
-          COREPACK_ENABLE_AUTO_PIN: "0",
-          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
-          COREPACK_ENABLE_NETWORK: "0",
-          COREPACK_ENABLE_PROJECT_SPEC: "1",
-          COREPACK_ENABLE_STRICT: "1",
-          COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: "0",
-          COREPACK_ENV_FILE: "0",
-          MISE_LOCKED: "1",
-          MISE_NO_CONFIG: "1",
-          MISE_NO_ENV: "1",
-          MISE_NO_HOOKS: "1",
-          MISE_NOT_FOUND_AUTO_INSTALL: "0",
-          MISE_OFFLINE: "1",
-          MISE_PARANOID: "1",
-        },
+        envs: {},
         sandbox: "submitted_sandbox",
       },
     });
     expect(calls).toContainEqual({
       decodedPtyScript: {
         sandbox: "submitted_sandbox",
-        script: expect.stringContaining("pnpm@11.13.0+sha512.0123456789abcdef"),
+        script: expect.stringContaining("runuser -u"),
       },
     });
     expect(calls).toContainEqual({
       decodedPtyScript: {
         sandbox: "submitted_sandbox",
-        script: expect.stringContaining("node playwright-control.mjs"),
+        script: expect.stringContaining("YARN_IGNORE_PATH"),
       },
     });
+    const submittedExecution = calls
+      .filter(
+        (call): call is { decodedPtyScript: { script: string } } =>
+          typeof call === "object" &&
+          call !== null &&
+          "decodedPtyScript" in call,
+      )
+      .map((call) =>
+        decodeSubmittedExecutionFromFramedScript(call.decodedPtyScript.script),
+      )
+      .find((execution) => execution?.command.startsWith("'pnpm'"));
+    expect(submittedExecution).toEqual(
+      expect.objectContaining({
+        command:
+          "'pnpm' 'install' '--frozen-lockfile' '--child-concurrency=2' '--network-concurrency=4'",
+        env: expect.objectContaining({
+          CHILD_CONCURRENCY: "2",
+          CMAKE_BUILD_PARALLEL_LEVEL: "2",
+          MAKEFLAGS: "-j2",
+          NODE_ENV: "development",
+          TURBO_CONCURRENCY: "2",
+        }),
+      }),
+    );
     expect(JSON.stringify(calls)).not.toContain("22.12.0");
+    expect(JSON.stringify(calls)).not.toContain('"99"');
     expect(JSON.stringify(calls)).not.toContain("agent-secret");
     expect(JSON.stringify(calls)).not.toContain("caller-secret");
+  });
+
+  it("owns Yarn 4 concurrency configuration after caller input", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "package.json": JSON.stringify({
+              engines: { node: "22" },
+              packageManager: "yarn@4.12.0",
+            }),
+            "yarn.lock": "__metadata:\n  version: 8\n",
+          },
+          projectRoot: ".",
+        },
+      ],
+    });
+    const receipt =
+      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+    if (receipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+
+    await handle.workspace.executeSubmittedProject?.(
+      {
+        argv: ["install", "--immutable"],
+        executable: "yarn",
+        installProfile: "bounded",
+        plan,
+        toolchainReceipt: receipt,
+      },
+      {
+        env: {
+          YARN_NETWORK_CONCURRENCY: "99",
+          YARN_TASK_POOL_CONCURRENCY: "99",
+        },
+      },
+    );
+
+    const executions = calls
+      .filter(
+        (call): call is { decodedPtyScript: { script: string } } =>
+          typeof call === "object" &&
+          call !== null &&
+          "decodedPtyScript" in call,
+      )
+      .map((call) =>
+        decodeSubmittedExecutionFromFramedScript(call.decodedPtyScript.script),
+      )
+      .flatMap((execution) => (execution === undefined ? [] : [execution]));
+    expect(executions).toContainEqual(
+      expect.objectContaining({
+        command: "'yarn' 'install' '--immutable'",
+        env: expect.objectContaining({
+          YARN_NETWORK_CONCURRENCY: "4",
+          YARN_TASK_POOL_CONCURRENCY: "2",
+        }),
+      }),
+    );
+    await expect(
+      handle.workspace.executeSubmittedProject?.({
+        argv: ["install", "--immutable", "--mode=skip-build"],
+        executable: "yarn",
+        installProfile: "bounded",
+        plan,
+        toolchainReceipt: receipt,
+      }),
+    ).rejects.toThrow("not the catalog install");
+  });
+
+  it("hydrates Corepack's real cache root before binding it to submitted execution", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "package.json": JSON.stringify({ packageManager: "pnpm@11.13.0" }),
+            "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+          },
+          projectRoot: ".",
+        },
+      ],
+    });
+
+    const receipt =
+      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+    if (receipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    await handle.workspace.executeSubmittedProject?.({
+      argv: plan.install?.argv ?? [],
+      executable: plan.install?.executable ?? "pnpm",
+      plan,
+      toolchainReceipt: receipt,
+    });
+
+    expect(calls).toContainEqual({
+      createPty: {
+        cwd: "/",
+        envs: expect.objectContaining({
+          COREPACK_ENABLE_PROJECT_SPEC: "0",
+          COREPACK_ENV_FILE: "0",
+          HOME: "/var/empty",
+        }),
+        sandbox: "submitted_sandbox",
+      },
+    });
+    const scripts = calls
+      .filter(
+        (
+          call,
+        ): call is { decodedPtyScript: { sandbox: string; script: string } } =>
+          typeof call === "object" &&
+          call !== null &&
+          "decodedPtyScript" in call,
+      )
+      .map((call) => call.decodedPtyScript.script);
+    expect(scripts).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("staging-corepack/v1/pnpm"),
+        expect.stringMatching(/COREPACK_HOME=.*\/corepack/),
+        expect.stringContaining("! -user root"),
+      ]),
+    );
+  });
+
+  it("accepts a root-owned read-only artifact that submitted code cannot modify", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls, {
+        emulateLinuxRootArtifactWriteAccess: true,
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain(supportedPnpmMetadata("."));
+    const receipt =
+      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+    if (receipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+
+    await expect(
+      handle.workspace.executeSubmittedProject?.({
+        argv: plan.install?.argv ?? [],
+        executable: plan.install?.executable ?? "pnpm",
+        plan,
+        toolchainReceipt: receipt,
+      }),
+    ).resolves.toMatchObject({ exitCode: 0 });
+
+    const verificationScript = calls
+      .filter(
+        (
+          call,
+        ): call is { decodedPtyScript: { sandbox: string; script: string } } =>
+          typeof call === "object" &&
+          call !== null &&
+          "decodedPtyScript" in call,
+      )
+      .map((call) => call.decodedPtyScript.script)
+      .find((script) => script.includes("MAKEADEMO_VERIFY_TRUSTED_ARTIFACT"));
+    expect(verificationScript).toContain("-perm /222");
+    expect(verificationScript).toContain("runuser -u");
+    expect(verificationScript).toContain(
+      'test ! -w "$artifact_root" || fail "artifact-root-pwuser-write"',
+    );
+  });
+
+  it("binds every submitted command to the hydrated Node and package-manager paths without mise", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "package.json": JSON.stringify({ packageManager: "pnpm@10.26.1" }),
+            "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+          },
+          projectRoot: ".",
+        },
+      ],
+    });
+    const receipt =
+      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+    if (receipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    await handle.workspace.executeSubmittedProject?.({
+      argv: plan.install?.argv ?? [],
+      executable: "pnpm",
+      plan,
+      toolchainReceipt: receipt,
+    });
+    await handle.workspace.executeSubmittedRuntime?.({
+      command: "command -v pnpm && pnpm --version",
+      plan,
+      toolchainReceipt: receipt,
+    });
+    await handle.workspace.executeSubmittedCode?.("pnpm --version", {
+      env: { PATH: "/submitted/caller/bin" },
+    });
+
+    const scripts = calls
+      .filter(
+        (call): call is { decodedPtyScript: { script: string } } =>
+          typeof call === "object" &&
+          call !== null &&
+          "decodedPtyScript" in call,
+      )
+      .map((call) => call.decodedPtyScript.script);
+    const executions = scripts
+      .map(decodeSubmittedExecutionFromFramedScript)
+      .filter((execution) => execution !== undefined);
+    const runtimeExecution = executions.find((execution) =>
+      execution.command.includes("command -v pnpm"),
+    );
+    if (runtimeExecution === undefined) {
+      throw new Error("missing decoded submitted runtime execution");
+    }
+    const artifactBin = runtimeExecution.env.PATH?.split(":")[0];
+    if (artifactBin === undefined) throw new Error("missing artifact bin");
+    const trustedNodeBin = `/opt/makeademo/toolchains/node/sha256/${"c".repeat(64)}/bin`;
+    expect(executions).toHaveLength(3);
+    for (const execution of executions) {
+      expect(execution.env.PATH).toBe(
+        `${artifactBin}:${trustedNodeBin}:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin`,
+      );
+      expect(execution.env.PATH).not.toContain("/submitted/caller/bin");
+      expect(Object.keys(execution.env)).not.toEqual(
+        expect.arrayContaining([expect.stringMatching(/^MISE_/)]),
+      );
+    }
+    expect(executions.map((execution) => execution.command)).toEqual([
+      "'pnpm' 'install' '--frozen-lockfile' '--child-concurrency=2' '--network-concurrency=4'",
+      "command -v pnpm && pnpm --version",
+      "pnpm --version",
+    ]);
+    const allSubmittedScripts = scripts.join("\n");
+    expect(allSubmittedScripts).not.toContain("mise");
+    expect(allSubmittedScripts).not.toContain(`node@${plan.node.version}`);
+    expect(allSubmittedScripts).toContain(`${trustedNodeBin}/node`);
+  });
+
+  it("keeps a provisioned npm launcher ahead of the hydrated Node bundle's npm", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "package-lock.json": "{}",
+            "package.json": JSON.stringify({
+              engines: { node: "22" },
+              packageManager: "npm@10.9.2",
+            }),
+          },
+          projectRoot: ".",
+        },
+      ],
+    });
+    const receipt =
+      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+    if (receipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    await handle.workspace.executeSubmittedRuntime?.({
+      command: "command -v npm && npm --version",
+      plan,
+      toolchainReceipt: receipt,
+    });
+
+    const execution = decodedSubmittedScripts(calls)
+      .map(decodeSubmittedExecutionFromFramedScript)
+      .find((candidate) => candidate?.command.includes("command -v npm"));
+    expect(execution?.env.PATH?.split(":").slice(0, 2)).toEqual([
+      expect.stringMatching(
+        /\/toolchains\/npm-10\.9\.2-[^/]+\/[a-f0-9]+\/bin$/,
+      ),
+      `/opt/makeademo/toolchains/node/sha256/${"c".repeat(64)}/bin`,
+    ]);
+  });
+
+  it("issues algorithm-aware artifact receipts for Corepack and Bun", async () => {
+    for (const [packageManager, lockfileName, lockfile] of [
+      ["pnpm@10.26.1", "pnpm-lock.yaml", "lockfileVersion: '9.0'\n"],
+      ["bun@1.2.22", "bun.lock", "{}"],
+    ] as const) {
+      const provider = new DaytonaSdkPreparationWorkspaceProvider({
+        client: fakeCommandTimeoutClient([]),
+        submittedCodeSnapshot: "makeademo-submitted-code",
+      });
+      const handle = await provider.create();
+      const plan = resolveSubmittedCodeToolchain({
+        candidates: [
+          {
+            files: {
+              [lockfileName]: lockfile,
+              "package.json": JSON.stringify({ packageManager }),
+            },
+            projectRoot: ".",
+          },
+        ],
+      });
+
+      const receipt =
+        await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+
+      expect(receipt).toMatchObject({
+        node: {
+          archiveDigest: { algorithm: "sha256" },
+          nodeBinaryDigest: { algorithm: "sha256" },
+          signedManifestDigest: { algorithm: "sha256" },
+          version: plan.node.version,
+        },
+        packageManager: {
+          artifactDigest: {
+            algorithm: packageManager.startsWith("bun") ? "sha256" : "sha512",
+          },
+          upstreamDigest: {
+            algorithm: packageManager.startsWith("bun") ? "sha256" : "sha512",
+          },
+        },
+      });
+      expect(Object.isFrozen(receipt)).toBe(true);
+      expect(Object.isFrozen(receipt?.node)).toBe(true);
+      expect(Object.isFrozen(receipt?.node.archiveDigest)).toBe(true);
+      expect(Object.isFrozen(receipt?.packageManager)).toBe(true);
+      expect(Object.isFrozen(receipt?.packageManager.artifactDigest)).toBe(
+        true,
+      );
+      expect(() => {
+        if (receipt !== undefined) {
+          (receipt.node.archiveDigest as { value: string }).value = "0";
+        }
+      }).toThrow();
+    }
+  });
+
+  it("hydrates the signed Node runtime before acquiring a package manager", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+
+    const receipt = await handle.workspace.provisionSubmittedCodeToolchain?.(
+      resolveSubmittedCodeToolchain(supportedPnpmMetadata(".")),
+    );
+
+    const scripts = decodedSubmittedScripts(calls);
+    expect(
+      scripts.findIndex((script) =>
+        script.includes("makeademo-provision-submitted-node-runtime provision"),
+      ),
+    ).toBeLessThan(
+      scripts.findIndex((script) =>
+        script.includes("MAKEADEMO_ARTIFACT_SHA512"),
+      ),
+    );
+    expect(receipt).toMatchObject({
+      node: {
+        archiveDigest: { algorithm: "sha256", value: "c".repeat(64) },
+        nodeBinaryDigest: { algorithm: "sha256", value: "d".repeat(64) },
+        signedManifestDigest: {
+          algorithm: "sha256",
+          value: "e".repeat(64),
+        },
+        signerPrimaryFingerprint: "F".repeat(40),
+      },
+      packageManager: {
+        artifactDigest: { algorithm: "sha512" },
+        upstreamDigest: { algorithm: "sha512" },
+      },
+    });
+  });
+
+  it("does not acquire a package manager when signed Node hydration fails", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls, {
+        nodeProvisioningFailure: true,
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+
+    await expect(
+      handle.workspace.provisionSubmittedCodeToolchain?.(
+        resolveSubmittedCodeToolchain(supportedPnpmMetadata(".")),
+      ),
+    ).rejects.toThrow("Trusted Node runtime hydration failed");
+    expect(decodedSubmittedScripts(calls)).not.toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("MAKEADEMO_ARTIFACT_SHA512"),
+      ]),
+    );
+  });
+
+  it("reverifies Node and package-manager artifacts before submitted execution", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const { plan, receipt } =
+      await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+
+    await handle.workspace.executeSubmittedRuntime?.({
+      command: "pnpm --version",
+      plan,
+      toolchainReceipt: receipt,
+    });
+
+    const scripts = decodedSubmittedScripts(calls);
+    const nodeVerify = scripts.findIndex((script) =>
+      script.includes("makeademo-provision-submitted-node-runtime verify"),
+    );
+    const packageManagerVerify = scripts.findIndex((script) =>
+      script.includes("MAKEADEMO_VERIFY_TRUSTED_ARTIFACT"),
+    );
+    const runtime = scripts.length - 1;
+    expect(nodeVerify).toBeGreaterThanOrEqual(0);
+    expect(packageManagerVerify).toBeGreaterThan(nodeVerify);
+    expect(runtime).toBeGreaterThan(packageManagerVerify);
+    expect(scripts[runtime]).toContain("pnpm");
+  });
+
+  it("rejects a changed Node artifact before package-manager verification or runtime", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls, {
+        nodeVerificationFailure: true,
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const { plan, receipt } =
+      await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    calls.splice(0);
+
+    await expect(
+      handle.workspace.executeSubmittedRuntime?.({
+        command: "pnpm --version",
+        plan,
+        toolchainReceipt: receipt,
+      }),
+    ).rejects.toThrow("Trusted Node runtime verification failed");
+    expect(decodedSubmittedScripts(calls)).not.toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("MAKEADEMO_VERIFY_TRUSTED_ARTIFACT"),
+        expect.stringContaining("pnpm --version"),
+      ]),
+    );
+  });
+
+  it("rejects changed toolchain bytes before a raw product-plane command", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls, {
+        nodeVerificationFailure: true,
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    calls.splice(0);
+
+    await expect(
+      handle.workspace.executeSubmittedCode?.("node ./product-script.js"),
+    ).rejects.toThrow("Trusted Node runtime verification failed");
+    expect(decodedSubmittedScripts(calls)).not.toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("node ./product-script.js"),
+      ]),
+    );
+  });
+
+  it.skipIf(process.env.MAKEADEMO_RUN_REAL_COREPACK_TEST !== "1")(
+    "uses Corepack's actual v1 cache layout before moving it to the runtime home",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "makeademo-real-corepack-"));
+      const stagingHome = join(root, "staging-corepack");
+      const artifact = join(root, "artifact.tgz");
+      const runtimeHome = join(root, "runtime", "corepack");
+      const environment = { ...process.env, COREPACK_HOME: stagingHome };
+
+      try {
+        await mkdir(join(stagingHome, "v1", "pnpm"), { recursive: true });
+        await execFileAsync(
+          "bunx",
+          ["--bun", "corepack", "pack", "pnpm@10.27.0", "-o", artifact],
+          { cwd: root, env: environment, timeout: 60_000 },
+        );
+        await execFileAsync(
+          "bunx",
+          ["--bun", "corepack", "install", "-g", "--cache-only", artifact],
+          { cwd: root, env: environment, timeout: 60_000 },
+        );
+        await mkdir(dirname(runtimeHome), { recursive: true });
+        await rename(stagingHome, runtimeHome);
+
+        await access(join(runtimeHome, "v1", "pnpm", "10.27.0"));
+      } finally {
+        await rm(root, { force: true, recursive: true }).catch(() => {});
+      }
+    },
+    120_000,
+  );
+
+  it.skipIf(process.env.MAKEADEMO_RUN_REAL_COREPACK_TEST !== "1")(
+    "executes exact Yarn Berry generations from official cli-dist artifacts",
+    async () => {
+      for (const version of ["2.4.2", "3.8.7", "4.11.0"]) {
+        const root = await mkdtemp(join(tmpdir(), "makeademo-real-yarn-"));
+
+        try {
+          const packed = await execFileAsync(
+            "npm",
+            [
+              "pack",
+              "--silent",
+              `@yarnpkg/cli-dist@${version}`,
+              "--pack-destination",
+              root,
+            ],
+            { cwd: root, timeout: 60_000 },
+          );
+          const artifact = join(root, packed.stdout.trim());
+          await execFileAsync(
+            "tar",
+            ["-xzf", artifact, "-C", root, "package/bin/yarn.js"],
+            { cwd: root, timeout: 60_000 },
+          );
+
+          const executed = await execFileAsync(
+            "node",
+            [join(root, "package/bin/yarn.js"), "--version"],
+            { cwd: root, timeout: 60_000 },
+          );
+          expect(executed.stdout.trim()).toBe(version);
+        } finally {
+          await rm(root, { force: true, recursive: true }).catch(() => {});
+        }
+      }
+    },
+    240_000,
+  );
+
+  it("derives package-manager integrity from the fixed official npm registry", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain(supportedPnpmMetadata("."));
+
+    const receipt =
+      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+    if (receipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    await handle.workspace.executeSubmittedProject?.({
+      argv: plan.install?.argv ?? [],
+      executable: plan.install?.executable ?? "pnpm",
+      plan,
+      toolchainReceipt: receipt,
+    });
+
+    const scripts = calls
+      .filter(
+        (call): call is { decodedPtyScript: { script: string } } =>
+          typeof call === "object" &&
+          call !== null &&
+          "decodedPtyScript" in call,
+      )
+      .map((call) => call.decodedPtyScript.script)
+      .join("\n");
+    expect(scripts).toContain("https://registry.npmjs.org/pnpm/11.13.0");
+    expect(scripts).toContain("metadata.deprecated");
+    expect(scripts).toContain("MAKEADEMO_REGISTRY_RELEASE_DEPRECATED");
+    expect(scripts).toContain("MAKEADEMO_UPSTREAM_SRI=");
+    expect(scripts).toContain("$upstream_hash");
+    expect(scripts).toContain('pack "$descriptor"');
+    expect(scripts).toContain(
+      `/opt/makeademo/toolchains/node/sha256/${"c".repeat(64)}/bin/corepack`,
+    );
+    expect(scripts).not.toContain("mise");
+  });
+
+  it("rejects registry releases carrying non-empty deprecation metadata", async () => {
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient([], {
+        deprecatedPackageManagerRelease: true,
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+
+    await expect(
+      handle.workspace.provisionSubmittedCodeToolchain?.(
+        resolveSubmittedCodeToolchain(supportedPnpmMetadata(".")),
+      ),
+    ).rejects.toMatchObject({
+      code: "deprecated_release",
+      name: "TrustedPackageManagerProvisioningError",
+    });
+  });
+
+  it("provisions the revisioned Yarn 2 default from its exact cli-dist release", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "package.json": JSON.stringify({ engines: { yarn: ">=2 <3" } }),
+            "yarn.lock": "__metadata:\n  version: 4\n",
+          },
+          projectRoot: ".",
+        },
+      ],
+    });
+
+    await expect(
+      handle.workspace.provisionSubmittedCodeToolchain?.(plan),
+    ).resolves.toBeDefined();
+
+    const scripts = decodedSubmittedScripts(calls).join("\n");
+    expect(plan.packageManager?.version).toBe("2.4.2");
+    expect(scripts).toContain(
+      "https://registry.npmjs.org/@yarnpkg%2fcli-dist/2.4.2",
+    );
+    expect(scripts).toContain('const expectedVersion = "2.4.2"');
+  });
+
+  it("reports an exact missing Yarn cli-dist release without falling back", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls, {
+        unavailablePackageManagerRelease: true,
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "package.json": JSON.stringify({ packageManager: "yarn@2.4.3" }),
+            "yarn.lock": "__metadata:\n  version: 4\n",
+          },
+          projectRoot: ".",
+        },
+      ],
+    });
+
+    await expect(
+      handle.workspace.provisionSubmittedCodeToolchain?.(plan),
+    ).rejects.toMatchObject({
+      code: "package_manager_release_unavailable",
+      name: "TrustedPackageManagerProvisioningError",
+    });
+
+    const scripts = decodedSubmittedScripts(calls).join("\n");
+    expect(scripts).toContain(
+      "https://registry.npmjs.org/@yarnpkg%2fcli-dist/2.4.3",
+    );
+    expect(scripts).not.toContain(
+      "https://registry.npmjs.org/@yarnpkg%2fcli-dist/2.4.2",
+    );
+    expect(
+      scripts.indexOf('if [ "$metadata_http_status" != 200 ]'),
+    ).toBeLessThan(scripts.indexOf('"$tarball_url" -o "$artifact"'));
+    expect(calls).toContainEqual({ registryMetadataUnavailable: true });
+    expect(calls).not.toContainEqual(
+      expect.objectContaining({ submittedProjectExecution: expect.anything() }),
+    );
+  });
+
+  it("launches Yarn Berry from the exact registry-verified cli-dist artifact", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "package.json": JSON.stringify({ packageManager: "yarn@4.12.0" }),
+            "yarn.lock": "__metadata:\n  version: 6\n",
+          },
+          projectRoot: ".",
+        },
+      ],
+    });
+
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+
+    const scripts = calls
+      .filter(
+        (call): call is { decodedPtyScript: { script: string } } =>
+          typeof call === "object" &&
+          call !== null &&
+          "decodedPtyScript" in call,
+      )
+      .map((call) => call.decodedPtyScript.script)
+      .join("\n");
+    expect(scripts).toContain(
+      "https://registry.npmjs.org/@yarnpkg%2fcli-dist/4.12.0",
+    );
+    expect(scripts).toContain('"$tarball_url" -o "$artifact"');
+    expect(scripts).toContain("package/bin/yarn.js");
+    expect(scripts).toContain('"$yarn_cli"');
+    expect(scripts).toContain(
+      `/opt/makeademo/toolchains/node/sha256/${"c".repeat(64)}/bin/node`,
+    );
+    expect(scripts).not.toContain("mise");
+    expect(scripts).not.toContain("registry.npmjs.org/yarn/4.12.0");
+    expect(scripts).not.toContain("corepack pack");
+    expect(scripts).not.toContain("corepack install");
+    expect(scripts).not.toContain("corepack yarn@4.12.0");
+  });
+
+  it("verifies a declared Yarn Berry Corepack hash against the launched CLI", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const declaredCorepackHash =
+      "sha512.f45ab632439a67f8bc759bf32ead036a1f413287b9042726b7cc4818b7b49e14e9423ba49b18f9e06ea4941c1ad062385b1d8760a8d5091a1a31e5f6219afca8";
+    const plan = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "package.json": JSON.stringify({
+              packageManager: `yarn@4.12.0+${declaredCorepackHash}`,
+            }),
+            "yarn.lock": "__metadata:\n  version: 6\n",
+          },
+          projectRoot: ".",
+        },
+      ],
+    });
+
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+
+    const scripts = calls
+      .filter(
+        (call): call is { decodedPtyScript: { script: string } } =>
+          typeof call === "object" &&
+          call !== null &&
+          "decodedPtyScript" in call,
+      )
+      .map((call) => call.decodedPtyScript.script)
+      .join("\n");
+    const comparisonStart = scripts.indexOf(
+      'test "sha512.$(sha512sum "$yarn_cli"',
+    );
+    expect(comparisonStart).toBeGreaterThanOrEqual(0);
+    expect(scripts.slice(comparisonStart, comparisonStart + 512)).toContain(
+      declaredCorepackHash,
+    );
+    expect(scripts).not.toContain(
+      `test "$upstream_hash" = '${declaredCorepackHash}'`,
+    );
+    expect(scripts).not.toContain("repo.yarnpkg.com");
+    expect(scripts).toContain(
+      "https://registry.npmjs.org/@yarnpkg%2fcli-dist/4.12.0",
+    );
+  });
+
+  it("rejects a declared Yarn Berry hash that differs from the launched CLI", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls, {
+        emulatedYarnCliSha512: "0".repeat(128),
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const declaredCorepackHash =
+      "sha512.f45ab632439a67f8bc759bf32ead036a1f413287b9042726b7cc4818b7b49e14e9423ba49b18f9e06ea4941c1ad062385b1d8760a8d5091a1a31e5f6219afca8";
+    const plan = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "package.json": JSON.stringify({
+              packageManager: `yarn@4.12.0+${declaredCorepackHash}`,
+            }),
+            "yarn.lock": "__metadata:\n  version: 6\n",
+          },
+          projectRoot: ".",
+        },
+      ],
+    });
+
+    await expect(
+      handle.workspace.provisionSubmittedCodeToolchain?.(plan),
+    ).rejects.toThrow(
+      "Trusted package-manager hydration failed for yarn@4.12.0: launched Yarn CLI digest mismatch",
+    );
+  });
+
+  it("hydrates an exact Bun release from the official GitHub asset without an installer", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "bun.lock": "{}",
+            "package.json": JSON.stringify({ packageManager: "bun@1.2.22" }),
+          },
+          projectRoot: ".",
+        },
+      ],
+    });
+
+    const receipt =
+      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+    if (receipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    await handle.workspace.executeSubmittedProject?.({
+      argv: plan.install?.argv ?? [],
+      executable: plan.install?.executable ?? "bun",
+      plan,
+      toolchainReceipt: receipt,
+    });
+
+    const scripts = JSON.stringify(calls);
+    expect(scripts).toContain(
+      "https://api.github.com/repos/oven-sh/bun/releases/tags/bun-v1.2.22",
+    );
+    expect(scripts).toContain("bun-linux-x64.zip");
+    expect(scripts).toContain("asset.digest");
+    expect(scripts).toContain("release?.tag_name !== expectedTag");
+    expect(scripts).toContain("release?.prerelease !== false");
+    expect(scripts).toContain(
+      "https://github.com/oven-sh/bun/releases/download/bun-v1.2.22/bun-linux-x64.zip",
+    );
+    expect(scripts).toContain("asset.size > 134217728");
+    expect(scripts).toContain("uncompressed size");
+    expect(scripts).toContain("Number.isSafeInteger");
+    expect(scripts).toContain("268435456");
+    expect(scripts.indexOf("uncompressed size")).toBeLessThan(
+      scripts.indexOf("unzip -q"),
+    );
+    expect(scripts).toContain("sha256sum");
+    expect(scripts).toContain("MAKEADEMO_UPSTREAM_SHA256");
+    expect(scripts).toContain("MAKEADEMO_ARTIFACT_SHA256");
+    expect(scripts).toContain("$artifact_sha256/bin");
+    expect(scripts).toContain("--version");
+    expect(scripts).not.toContain("bun.sh/install");
+    expect(scripts).not.toContain("corepack pack");
+  });
+
+  it("rejects Bun releases before the GitHub digest boundary before acquisition", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const supported = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "bun.lock": "{}",
+            "package.json": JSON.stringify({ packageManager: "bun@1.2.22" }),
+          },
+          projectRoot: ".",
+        },
+      ],
+    });
+    if (supported.packageManager === undefined) {
+      throw new Error("missing supported Bun manager");
+    }
+    const unsupported = {
+      ...supported,
+      packageManager: {
+        ...supported.packageManager,
+        version: "1.2.15",
+      },
+    };
+
+    await expect(
+      handle.workspace.provisionSubmittedCodeToolchain?.(unsupported),
+    ).rejects.toThrow("Unsupported package-manager compatibility generation");
+    expect(JSON.stringify(calls)).not.toContain(
+      "api.github.com/repos/oven-sh/bun",
+    );
+  });
+
+  it("rejects Bun hydration without an authoritative GitHub digest attestation", async () => {
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient([], { commandStdout: "missing digest" }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "bun.lock": "{}",
+            "package.json": JSON.stringify({ packageManager: "bun@1.2.22" }),
+          },
+          projectRoot: ".",
+        },
+      ],
+    });
+
+    await expect(
+      handle.workspace.provisionSubmittedCodeToolchain?.(plan),
+    ).rejects.toThrow("GitHub SHA-256 attestation");
+  });
+
+  it("rebinds a changed lock plan to the same artifact without reopening acquisition", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const firstPlan = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "package.json": JSON.stringify({ packageManager: "pnpm@10.27.0" }),
+            "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+          },
+          projectRoot: ".",
+        },
+      ],
+    });
+    const repairedPlan = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "package.json": JSON.stringify({ packageManager: "pnpm@10.27.0" }),
+            "pnpm-lock.yaml":
+              "lockfileVersion: '9.0'\nsettings:\n  repaired: true\n",
+          },
+          projectRoot: ".",
+        },
+      ],
+    });
+
+    const firstReceipt =
+      await handle.workspace.provisionSubmittedCodeToolchain?.(firstPlan);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    const repairedReceipt =
+      await handle.workspace.provisionSubmittedCodeToolchain?.(repairedPlan);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+
+    expect(repairedReceipt).not.toBe(firstReceipt);
+    expect(
+      calls.filter((call) =>
+        JSON.stringify(call).includes("MAKEADEMO_ARTIFACT_SHA512"),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("reuses the same artifact across repeated synchronization and rejects a different artifact", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain(supportedPnpmMetadata("."));
+    const changedPlan = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "package.json": JSON.stringify({
+              engines: { node: "22" },
+              packageManager: "pnpm@11.13.0",
+            }),
+            "pnpm-lock.yaml":
+              "lockfileVersion: '9.0'\nsettings:\n  changed: true\n",
+          },
+          projectRoot: ".",
+        },
+      ],
+    });
+    const differentArtifactPlan = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "package.json": JSON.stringify({
+              engines: { node: "22" },
+              packageManager: "pnpm@10.26.0",
+            }),
+            "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+          },
+          projectRoot: ".",
+        },
+      ],
+    });
+
+    await expect(
+      handle.workspace.syncSubmittedCodeWorkspace?.(),
+    ).rejects.toThrow("requires a provisioned toolchain");
+
+    const receipt =
+      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+    if (receipt === undefined) throw new Error("missing receipt");
+    await expect(
+      handle.workspace.executeSubmittedProject?.({
+        argv: plan.install?.argv ?? [],
+        executable: plan.install?.executable ?? "pnpm",
+        plan,
+        toolchainReceipt: receipt,
+      }),
+    ).rejects.toThrow("requires synchronization");
+    const changedReceipt =
+      await handle.workspace.provisionSubmittedCodeToolchain?.(changedPlan);
+    expect(changedReceipt).not.toBe(receipt);
+
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    const reboundReceipt =
+      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+    if (reboundReceipt === undefined)
+      throw new Error("missing rebound receipt");
+    expect(reboundReceipt).not.toBe(changedReceipt);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    await expect(
+      handle.workspace.executeSubmittedProject?.({
+        argv: plan.install?.argv ?? [],
+        executable: plan.install?.executable ?? "pnpm",
+        plan,
+        toolchainReceipt: reboundReceipt,
+      }),
+    ).resolves.toMatchObject({ exitCode: 0 });
+    await expect(
+      handle.workspace.provisionSubmittedCodeToolchain?.(differentArtifactPlan),
+    ).rejects.toThrow("fresh submitted-code sandbox");
+  });
+
+  it("requires a fresh submitted sandbox when only the exact Node release changes", async () => {
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient([]),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const node22 = resolveSubmittedCodeToolchain(supportedPnpmMetadata("."));
+    const node24 = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "package.json": JSON.stringify({
+              engines: { node: "24" },
+              packageManager: "pnpm@11.13.0",
+            }),
+            "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+          },
+          projectRoot: ".",
+        },
+      ],
+    });
+
+    await handle.workspace.provisionSubmittedCodeToolchain?.(node22);
+    await expect(
+      handle.workspace.provisionSubmittedCodeToolchain?.(node24),
+    ).rejects.toThrow("fresh submitted-code sandbox");
+  });
+
+  it("rejects a synchronized child lockfile that differs from the provisioned plan", async () => {
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient([], {
+        submittedIntegrityFailureAttempt: 1,
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain(supportedPnpmMetadata("."));
+
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+
+    await expect(
+      handle.workspace.syncSubmittedCodeWorkspace?.(),
+    ).rejects.toThrow("lockfile integrity did not match");
+  });
+
+  it("rechecks the child lockfile before an immutable install", async () => {
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient([], {
+        submittedIntegrityFailureAttempt: 2,
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain(supportedPnpmMetadata("."));
+    const receipt =
+      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+    if (receipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+
+    await expect(
+      handle.workspace.executeSubmittedProject?.({
+        argv: plan.install?.argv ?? [],
+        executable: plan.install?.executable ?? "pnpm",
+        plan,
+        toolchainReceipt: receipt,
+      }),
+    ).rejects.toThrow("lockfile integrity did not match");
+  });
+
+  it("provisions a toolchain without changing submitted-code network policy", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+
+    await expect(
+      handle.workspace.provisionSubmittedCodeToolchain?.(
+        resolveSubmittedCodeToolchain(supportedPnpmMetadata(".")),
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it("does not depend on submitted-code network update failures during provisioning", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+
+    await expect(
+      handle.workspace.provisionSubmittedCodeToolchain?.(
+        resolveSubmittedCodeToolchain(supportedPnpmMetadata(".")),
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it("rejects an unprovisioned submitted toolchain before it executes repository code", async () => {
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient([]),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "package.json": JSON.stringify({ packageManager: "yarn@4.12.0" }),
+            "yarn.lock": "",
+          },
+          projectRoot: ".",
+        },
+      ],
+    });
+
+    await expect(
+      handle.workspace.executeSubmittedProject?.({
+        argv: plan.install?.argv ?? [],
+        executable: plan.install?.executable ?? "yarn",
+        plan,
+      }),
+    ).rejects.toThrow("has not been provisioned");
+  });
+
+  it("does not run a submitted runtime until its resolved toolchain has been provisioned", async () => {
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient([]),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain({
+      candidates: [
+        {
+          files: {
+            "package.json": JSON.stringify({ packageManager: "yarn@4.12.0" }),
+            "yarn.lock": "__metadata:\n  version: 8\n",
+          },
+          projectRoot: ".",
+        },
+      ],
+    });
+
+    await expect(
+      handle.workspace.executeSubmittedRuntime?.({
+        command: "yarn demo",
+        plan,
+      }),
+    ).rejects.toThrow("has not been provisioned");
   });
 
   it("runs submitted runtime commands with the planned Node in workspace cwd and sealed environment", async () => {
@@ -585,9 +1922,13 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     const handle = await provider.create();
     const plan = resolveSubmittedCodeToolchain(supportedPnpmMetadata("webapp"));
     const command = "pnpm run demo; printf '%s' safe";
+    const toolchainReceipt =
+      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+    if (toolchainReceipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
 
     await handle.workspace.executeSubmittedRuntime?.(
-      { command, plan },
+      { command, plan, toolchainReceipt },
       {
         env: {
           NEXT_PUBLIC_API_URL: "https://public.example.test",
@@ -601,20 +1942,14 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(calls).toContainEqual({
       createPty: {
         cwd: "/workspace",
-        envs: expect.objectContaining({
-          COREPACK_ENABLE_NETWORK: "0",
-          MISE_NO_CONFIG: "1",
-          MISE_OFFLINE: "1",
-          NEXT_PUBLIC_API_URL: "https://public.example.test",
-          NODE_ENV: "production",
-        }),
+        envs: {},
         sandbox: "submitted_sandbox",
       },
     });
     expect(calls).toContainEqual({
       decodedPtyScript: {
         sandbox: "submitted_sandbox",
-        script: expect.stringContaining("pnpm run demo"),
+        script: expect.stringContaining("runuser -u"),
       },
     });
     expect(JSON.stringify(calls)).not.toContain("22.12.0");
@@ -622,7 +1957,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(JSON.stringify(calls)).not.toContain("caller-secret");
   });
 
-  it("starts a planned runtime without requiring an install capability", async () => {
+  it("rejects a runtime plan that changed after its capability was issued", async () => {
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeCommandTimeoutClient([]),
       submittedCodeSnapshot: "makeademo-submitted-code",
@@ -634,12 +1969,16 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       install: { argv: ["install"], executable: "pnpm" },
     };
 
+    const toolchainReceipt =
+      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+    if (toolchainReceipt === undefined) throw new Error("missing receipt");
     await expect(
       handle.workspace.executeSubmittedRuntime?.({
         command: "pnpm run demo",
         plan: tampered,
+        toolchainReceipt,
       }),
-    ).resolves.toMatchObject({ exitCode: 0 });
+    ).rejects.toThrow("not the catalog install");
   });
 
   it("rejects a direct plan whose Corepack integrity suffix is malformed", async () => {
@@ -649,12 +1988,25 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
     const handle = await provider.create();
     const plan = {
-      catalogRevision: "submitted-js-2026-07-17.1" as const,
+      catalogRevision: "submitted-js-2026-07-26.1" as const,
       evidence: [],
-      install: { argv: ["i", "--frozen-lockfile"], executable: "pnpm" },
-      node: { version: "22.23.1" as const },
+      install: {
+        argv: [
+          "install",
+          "--frozen-lockfile",
+          "--child-concurrency=2",
+          "--network-concurrency=4",
+        ],
+        executable: "pnpm",
+      },
+      node: {
+        family: 22 as const,
+        lifecycle: "supported" as const,
+        version: "22.23.1" as const,
+      },
       packageManager: {
         corepackHash: "sha512.not-hex",
+        generation: "pnpm-modern" as const,
         name: "pnpm" as const,
         version: "11.13.0" as const,
       },
@@ -677,11 +2029,27 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
     const handle = await provider.create();
     const plan = {
-      catalogRevision: "submitted-js-2026-07-17.1" as const,
+      catalogRevision: "submitted-js-2026-07-26.1" as const,
       evidence: [],
-      install: { argv: ["i", "--frozen-lockfile"], executable: "pnpm" },
-      node: { version: "22.23.1" as const },
-      packageManager: { name: "pnpm" as const, version: "11.13.0" as const },
+      install: {
+        argv: [
+          "install",
+          "--frozen-lockfile",
+          "--child-concurrency=2",
+          "--network-concurrency=4",
+        ],
+        executable: "pnpm",
+      },
+      node: {
+        family: 22 as const,
+        lifecycle: "supported" as const,
+        version: "22.23.1" as const,
+      },
+      packageManager: {
+        generation: "pnpm-modern" as const,
+        name: "pnpm" as const,
+        version: "11.13.0" as const,
+      },
       projectRoot: "apps/../private",
     };
 
@@ -1259,97 +2627,6 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
   });
 
-  it("accepts the exact restricted-policy response as proof network stays blocked", async () => {
-    const calls: unknown[] = [];
-    const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeClient(calls, {
-        networkError: new Error(
-          "Network access is restricted and cannot be overridden at the sandbox level.",
-        ),
-      }),
-    });
-    const handle = await provider.create();
-
-    await expect(
-      handle.workspace.setOutboundNetworkAccess(true),
-    ).resolves.toBeUndefined();
-    await expect(
-      handle.workspace.setOutboundNetworkAccess(false),
-    ).resolves.toBeUndefined();
-
-    expect(calls.slice(1)).toEqual([
-      { updateNetworkSettings: { networkBlockAll: false } },
-      { updateNetworkSettings: { networkBlockAll: true } },
-    ]);
-  });
-
-  it("accepts the live restricted-policy response with its known docs suffix", async () => {
-    const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeClient([], {
-        networkError: new Error(
-          "Network access is restricted and cannot be overridden at the sandbox level. See https://www.daytona.io/docs/en/network-limits/#tier-based-network-restrictions",
-        ),
-      }),
-    });
-    const handle = await provider.create();
-
-    await expect(
-      handle.workspace.setOutboundNetworkAccess(false),
-    ).resolves.toBeUndefined();
-  });
-
-  it("does not suppress arbitrary suffixes on a restricted-policy-looking error", async () => {
-    const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeClient([], {
-        networkError: new Error(
-          "Network access is restricted and cannot be overridden at the sandbox level. unexpected provider state",
-        ),
-      }),
-    });
-    const handle = await provider.create();
-
-    await expect(
-      handle.workspace.setOutboundNetworkAccess(false),
-    ).rejects.toThrow("unexpected provider state");
-  });
-
-  it("propagates every non-policy network disable error", async () => {
-    const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeClient([], {
-        networkError: new Error("network update failed"),
-      }),
-    });
-    const handle = await provider.create();
-
-    await expect(
-      handle.workspace.setOutboundNetworkAccess(false),
-    ).rejects.toThrow("network update failed");
-  });
-
-  it("retries transient socket closures when updating sandbox network access", async () => {
-    const calls: unknown[] = [];
-    const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeClient(calls, { networkFailuresBeforeSuccess: 1 }),
-    });
-    const handle = await provider.create();
-
-    await expect(
-      handle.workspace.setOutboundNetworkAccess(true),
-    ).resolves.toBeUndefined();
-
-    expect(
-      calls.filter(
-        (call) =>
-          typeof call === "object" &&
-          call !== null &&
-          "updateNetworkSettings" in call,
-      ),
-    ).toEqual([
-      { updateNetworkSettings: { networkBlockAll: false } },
-      { updateNetworkSettings: { networkBlockAll: false } },
-    ]);
-  });
-
   it("creates an archivable submitted-code sandbox when configured", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
@@ -1367,14 +2644,16 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
           autoDeleteInterval: -1,
           autoStopInterval: 15,
           disk: 3,
+          networkBlockAll: false,
           snapshot: "makeademo-opencode",
         },
       },
       {
         create: {
           autoDeleteInterval: -1,
-          networkBlockAll: true,
+          networkBlockAll: false,
           snapshot: "makeademo-submitted-code-browser",
+          user: "root",
         },
       },
     ]);
@@ -1428,20 +2707,22 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
           autoDeleteInterval: -1,
           autoStopInterval: 15,
           disk: 3,
+          networkBlockAll: false,
           secrets: { OPENAI_API_KEY: "makeademo-openai" },
         },
       },
       {
         create: {
           autoDeleteInterval: -1,
-          networkBlockAll: true,
+          networkBlockAll: false,
           snapshot: "makeademo-submitted-code-browser",
+          user: "root",
         },
       },
     ]);
   });
 
-  it("routes submitted-code execution, network, and preview through the logical child sandbox", async () => {
+  it("routes submitted-code execution and preview through the logical child sandbox", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeLinkedClient(calls),
@@ -1450,7 +2731,6 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     const handle = await provider.create();
 
     const result = await handle.workspace.executeSubmittedCode?.("npm test");
-    await handle.workspace.setSubmittedCodeNetworkAccess?.(true);
     await expect(handle.workspace.getPreviewUrl(3000)).resolves.toBe(
       "https://child-preview.example.test:3000",
     );
@@ -1462,13 +2742,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         {
           decodedPtyScript: {
             sandbox: "submitted_sandbox",
-            script: expect.stringContaining("npm test"),
-          },
-        },
-        {
-          updateNetworkSettings: {
-            sandbox: "submitted_sandbox",
-            settings: { networkBlockAll: false },
+            script: expect.stringContaining("runuser -u"),
           },
         },
         {
@@ -1570,7 +2844,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(calls).toEqual(
       expect.arrayContaining([
         {
-          decodedPtyScript: expect.stringContaining("node --version"),
+          decodedPtyScript: expect.stringContaining("runuser -u"),
         },
       ]),
     );
@@ -1662,10 +2936,102 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(calls).toContainEqual({
       createPty: {
         cwd: "/workspace",
-        envs: { NODE_ENV: "test" },
+        envs: {},
         sandbox: "submitted_sandbox",
       },
     });
+  });
+
+  it("injects the trusted baked browser path into submitted-code execution", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code-browser",
+    });
+    const handle = await provider.create();
+
+    await handle.workspace.executeSubmittedCode?.("playwright-cli open", {
+      env: {
+        MAKEADEMO_PLAYWRIGHT_MODULE_ROOT:
+          "/workspace/untrusted-playwright-modules",
+        PLAYWRIGHT_BROWSERS_PATH: "/workspace/untrusted-browser-cache",
+      },
+    });
+
+    const submittedScripts = calls
+      .filter(
+        (
+          call,
+        ): call is { decodedPtyScript: { sandbox: string; script: string } } =>
+          typeof call === "object" &&
+          call !== null &&
+          "decodedPtyScript" in call,
+      )
+      .filter(
+        ({ decodedPtyScript }) =>
+          decodedPtyScript.sandbox === "submitted_sandbox",
+      )
+      .map(({ decodedPtyScript }) => decodedPtyScript.script);
+
+    expect(submittedScripts).toHaveLength(1);
+    expect(submittedScripts[0]).toContain("PLAYWRIGHT_BROWSERS_PATH=");
+    expect(submittedScripts[0]).toContain("/ms-playwright");
+    expect(submittedScripts[0]).toContain("MAKEADEMO_PLAYWRIGHT_MODULE_ROOT=");
+    expect(submittedScripts[0]).toContain(
+      "/opt/makeademo/playwright-runtime/node_modules",
+    );
+    expect(submittedScripts.join("\n")).not.toContain(
+      "/workspace/untrusted-browser-cache",
+    );
+    expect(submittedScripts.join("\n")).not.toContain(
+      "/workspace/untrusted-playwright-modules",
+    );
+  });
+
+  it("retains the trusted Playwright runtime after package-manager artifact binding", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code-browser",
+    });
+    const handle = await provider.create();
+    const { plan, receipt } =
+      await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    calls.length = 0;
+
+    await handle.workspace.executeSubmittedRuntime?.({
+      command: "node capture-script.mjs",
+      plan,
+      toolchainReceipt: receipt,
+    });
+
+    const submittedExecution = calls
+      .filter(
+        (
+          call,
+        ): call is { decodedPtyScript: { sandbox: string; script: string } } =>
+          typeof call === "object" &&
+          call !== null &&
+          "decodedPtyScript" in call,
+      )
+      .filter(
+        ({ decodedPtyScript }) =>
+          decodedPtyScript.sandbox === "submitted_sandbox",
+      )
+      .map(({ decodedPtyScript }) =>
+        decodeSubmittedExecutionFromFramedScript(decodedPtyScript.script),
+      )
+      .find((execution) => execution?.command.includes("capture-script.mjs"));
+
+    expect(submittedExecution?.env).toMatchObject({
+      MAKEADEMO_PLAYWRIGHT_MODULE_ROOT:
+        "/opt/makeademo/playwright-runtime/node_modules",
+      PLAYWRIGHT_BROWSERS_PATH: "/ms-playwright",
+    });
+    expect(JSON.stringify(submittedExecution)).not.toContain(
+      "/workspace/repository",
+    );
   });
 
   it("fails fast when non-stream submitted-code execution does not finish", async () => {
@@ -1701,6 +3067,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
     const handle = await provider.create();
 
+    await provisionToolchainForSubmittedCodeSync(handle);
     await handle.workspace.syncSubmittedCodeWorkspace?.();
 
     const archiveCommands = calls
@@ -1765,6 +3132,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
     const handle = await provider.create();
 
+    await provisionToolchainForSubmittedCodeSync(handle);
     await expect(
       handle.workspace.syncSubmittedCodeWorkspace?.(),
     ).rejects.toThrow(
@@ -1778,7 +3146,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     ).toHaveLength(0);
   });
 
-  it("restores submitted-code workspace through a POSIX shell while preserving caches and excluding MakeADemo artifacts", async () => {
+  it("restores submitted-code workspace through a POSIX shell while preserving caches and recreating runtime directories without MakeADemo artifacts", async () => {
     const root = await mkdtemp(join(tmpdir(), "makeademo-daytona-shell-"));
     const parentWorkspace = join(root, "parent");
     const submittedWorkspace = join(root, "submitted");
@@ -1848,6 +3216,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     try {
       const handle = await provider.create();
 
+      await provisionToolchainForSubmittedCodeSync(handle);
       await handle.workspace.syncSubmittedCodeWorkspace?.();
 
       await expect(
@@ -1886,7 +3255,11 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
           "utf8",
         ),
       ).resolves.toBe("remove me");
-      await expectPathMissing(join(submittedWorkspace, ".makeademo"));
+      await access(join(submittedWorkspace, ".makeademo", "tmp"));
+      await access(join(submittedWorkspace, ".makeademo", "cache"));
+      await expectPathMissing(
+        join(submittedWorkspace, ".makeademo", "capture.webm"),
+      );
       await expectPathMissing(join(submittedWorkspace, "stale.txt"));
     } finally {
       await rm(root, { force: true, recursive: true });
@@ -1903,6 +3276,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
     const handle = await provider.create();
 
+    await provisionToolchainForSubmittedCodeSync(handle);
     await expect(
       handle.workspace.syncSubmittedCodeWorkspace?.(),
     ).rejects.toThrow(
@@ -1920,6 +3294,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
     const handle = await provider.create();
 
+    await provisionToolchainForSubmittedCodeSync(handle);
     await expect(
       handle.workspace.syncSubmittedCodeWorkspace?.(),
     ).rejects.toThrow(
@@ -1939,6 +3314,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
     const handle = await provider.create();
 
+    await provisionToolchainForSubmittedCodeSync(handle);
     await expect(
       handle.workspace.syncSubmittedCodeWorkspace?.(),
     ).rejects.toThrow(
@@ -1990,7 +3366,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(calls).not.toContainEqual({ delete: "parent_sandbox" });
   });
 
-  it("reseals both sandboxes before stopping and archiving the submitted-code child and primary", async () => {
+  it("stops and archives both sandboxes without changing network policy", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeLinkedClient(calls),
@@ -2003,24 +3379,11 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(
       calls.filter(
         (call) =>
-          "updateNetworkSettings" in Object(call) ||
           "stop" in Object(call) ||
           "archive" in Object(call) ||
           "delete" in Object(call),
       ),
     ).toEqual([
-      {
-        updateNetworkSettings: {
-          sandbox: "parent_sandbox",
-          settings: { networkBlockAll: true },
-        },
-      },
-      {
-        updateNetworkSettings: {
-          sandbox: "submitted_sandbox",
-          settings: { networkBlockAll: true },
-        },
-      },
       { stop: "submitted_sandbox" },
       { archive: "submitted_sandbox" },
       { stop: "parent_sandbox" },
@@ -2028,7 +3391,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     ]);
   });
 
-  it("cancels active primary and submitted-code commands before resealing either sandbox", async () => {
+  it("cancels active primary and submitted-code commands before release", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeLinkedClient(calls, {
@@ -2061,32 +3424,15 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         ),
       ]),
     ).resolves.toMatchObject({ exitCode: 143 });
-    const firstNetworkReseal = calls.findIndex(
-      (call) => "updateNetworkSettings" in Object(call),
-    );
     expect(calls).toEqual(
       expect.arrayContaining([
         { killPty: "parent_sandbox" },
         { killPty: "submitted_sandbox" },
       ]),
     );
-    expect(
-      calls.findIndex(
-        (call) =>
-          "killPty" in Object(call) &&
-          (call as { killPty?: unknown }).killPty === "parent_sandbox",
-      ),
-    ).toBeLessThan(firstNetworkReseal);
-    expect(
-      calls.findIndex(
-        (call) =>
-          "killPty" in Object(call) &&
-          (call as { killPty?: unknown }).killPty === "submitted_sandbox",
-      ),
-    ).toBeLessThan(firstNetworkReseal);
   });
 
-  it("cancels a non-streaming primary setup command before resealing the workspace", async () => {
+  it("cancels a non-streaming primary setup command before release", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeLinkedClient(calls, {
@@ -2116,14 +3462,10 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         "killPty" in Object(call) &&
         (call as { killPty?: unknown }).killPty === "parent_sandbox",
     );
-    const networkReseal = calls.findIndex(
-      (call) => "updateNetworkSettings" in Object(call),
-    );
     expect(primaryKill).toBeGreaterThanOrEqual(0);
-    expect(primaryKill).toBeLessThan(networkReseal);
   });
 
-  it("cancels the primary agent handoff command before resealing the workspace", async () => {
+  it("cancels the primary agent handoff command before release", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeLinkedClient(calls, {
@@ -2153,37 +3495,19 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         "killPty" in Object(call) &&
         (call as { killPty?: unknown }).killPty === "parent_sandbox",
     );
-    const networkReseal = calls.findIndex(
-      (call) => "updateNetworkSettings" in Object(call),
-    );
     expect(primaryKill).toBeGreaterThanOrEqual(0);
-    expect(primaryKill).toBeLessThan(networkReseal);
   });
 
-  it("continues independent release cleanup after primary resealing fails", async () => {
+  it("releases both sandboxes without changing network policy", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeLinkedClient(calls, { failParentNetworkDisable: true }),
+      client: fakeLinkedClient(calls),
       submittedCodeSnapshot: "makeademo-submitted-code-browser",
     });
     const handle = await provider.create();
 
-    await expect(handle.release()).rejects.toThrow(
-      "primary network reseal failed",
-    );
-    expect(calls.slice(-6)).toEqual([
-      {
-        updateNetworkSettings: {
-          sandbox: "parent_sandbox",
-          settings: { networkBlockAll: true },
-        },
-      },
-      {
-        updateNetworkSettings: {
-          sandbox: "submitted_sandbox",
-          settings: { networkBlockAll: true },
-        },
-      },
+    await handle.release();
+    expect(calls.slice(-4)).toEqual([
       { stop: "submitted_sandbox" },
       { archive: "submitted_sandbox" },
       { stop: "parent_sandbox" },
@@ -2301,6 +3625,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
 function fakeLinkedClient(
   calls: unknown[],
   options: {
+    deprecatedPackageManagerRelease?: boolean;
     archiveAuthError?: string;
     archiveAuthFailuresBeforeSuccess?: number;
     commandExitCode?: number;
@@ -2310,7 +3635,6 @@ function fakeLinkedClient(
     executeCommandNeverResolves?: boolean;
     failParentArchive?: boolean;
     failArchive?: boolean;
-    failParentNetworkDisable?: boolean;
     failSubmittedRestore?: boolean;
     failSubmittedArchive?: boolean;
     failSubmittedStop?: boolean;
@@ -2349,9 +3673,28 @@ function fakeLinkedClient(
   };
 }
 
-function fakeCommandTimeoutClient(calls: unknown[]) {
-  const parentSandbox = fakeCommandTimeoutSandbox(calls, "parent_sandbox");
-  const childSandbox = fakeCommandTimeoutSandbox(calls, "submitted_sandbox");
+function fakeCommandTimeoutClient(
+  calls: unknown[],
+  options: {
+    deprecatedPackageManagerRelease?: boolean;
+    emulateLinuxRootArtifactWriteAccess?: boolean;
+    emulatedYarnCliSha512?: string;
+    nodeProvisioningFailure?: boolean;
+    nodeVerificationFailure?: boolean;
+    submittedIntegrityFailureAttempt?: number;
+    unavailablePackageManagerRelease?: boolean;
+  } = {},
+) {
+  const parentSandbox = fakeCommandTimeoutSandbox(
+    calls,
+    "parent_sandbox",
+    options,
+  );
+  const childSandbox = fakeCommandTimeoutSandbox(
+    calls,
+    "submitted_sandbox",
+    options,
+  );
 
   return {
     async create(input: unknown) {
@@ -2368,7 +3711,20 @@ function fakeCommandTimeoutClient(calls: unknown[]) {
   };
 }
 
-function fakeCommandTimeoutSandbox(calls: unknown[], id: string) {
+function fakeCommandTimeoutSandbox(
+  calls: unknown[],
+  id: string,
+  options: {
+    deprecatedPackageManagerRelease?: boolean;
+    emulateLinuxRootArtifactWriteAccess?: boolean;
+    emulatedYarnCliSha512?: string;
+    nodeProvisioningFailure?: boolean;
+    nodeVerificationFailure?: boolean;
+    submittedIntegrityFailureAttempt?: number;
+    unavailablePackageManagerRelease?: boolean;
+  },
+) {
+  let submittedIntegrityAttempt = 0;
   return {
     async archive() {
       calls.push({ archive: id });
@@ -2426,10 +3782,72 @@ function fakeCommandTimeoutSandbox(calls: unknown[], id: string) {
             }
             const script = decodeNoninteractivePtyCommand(input);
             calls.push({ decodedPtyScript: { sandbox: id, script } });
+            const verifiesSubmittedIntegrity =
+              id === "submitted_sandbox" &&
+              script.includes("MAKEADEMO_VERIFY_PROJECT_INTEGRITY");
+            if (verifiesSubmittedIntegrity) submittedIntegrityAttempt += 1;
+            const integrityFails =
+              verifiesSubmittedIntegrity &&
+              submittedIntegrityAttempt ===
+                options.submittedIntegrityFailureAttempt;
+            const rootFalselyAppearsWritable =
+              options.emulateLinuxRootArtifactWriteAccess === true &&
+              id === "submitted_sandbox" &&
+              /(?:^|&& )test ! -w "\$toolchain_home"(?: &&|$)/.test(script);
+            const yarnCliDigestMismatch =
+              options.emulatedYarnCliSha512 !== undefined &&
+              declaredYarnCliSha512(script) !== undefined &&
+              declaredYarnCliSha512(script) !== options.emulatedYarnCliSha512;
+            const nodeProvisioningFails =
+              options.nodeProvisioningFailure === true &&
+              trustedNodeProvisionAttestation(script) !== undefined;
+            const nodeVerificationFails =
+              options.nodeVerificationFailure === true &&
+              script.includes(
+                "makeademo-provision-submitted-node-runtime verify",
+              );
+            const deprecatedPackageManagerRelease =
+              options.deprecatedPackageManagerRelease === true &&
+              script.includes("MAKEADEMO_REGISTRY_RELEASE_DEPRECATED");
+            const unavailablePackageManagerRelease =
+              options.unavailablePackageManagerRelease === true &&
+              script.includes("MAKEADEMO_REGISTRY_RELEASE_UNAVAILABLE");
+            if (unavailablePackageManagerRelease) {
+              calls.push({ registryMetadataUnavailable: true });
+            }
             emitFramedCommandResponse(script, ptyOptions.onData, {
-              exitCode: 0,
-              stderr: "",
-              stdout: "ok",
+              exitCode:
+                unavailablePackageManagerRelease ||
+                deprecatedPackageManagerRelease ||
+                integrityFails ||
+                rootFalselyAppearsWritable ||
+                yarnCliDigestMismatch ||
+                nodeProvisioningFails ||
+                nodeVerificationFails
+                  ? 1
+                  : 0,
+              stderr: integrityFails
+                ? "lock mismatch"
+                : unavailablePackageManagerRelease
+                  ? "MAKEADEMO_REGISTRY_RELEASE_UNAVAILABLE"
+                  : deprecatedPackageManagerRelease
+                    ? "MAKEADEMO_REGISTRY_RELEASE_DEPRECATED"
+                    : rootFalselyAppearsWritable
+                      ? "root reports the mode-read-only artifact as writable"
+                      : yarnCliDigestMismatch
+                        ? "launched Yarn CLI digest mismatch"
+                        : nodeProvisioningFails
+                          ? "signed Node manifest rejected"
+                          : nodeVerificationFails
+                            ? "trusted Node artifact changed"
+                            : "",
+              stdout:
+                trustedNodeProvisionAttestation(script) ??
+                (script.includes("MAKEADEMO_ARTIFACT_SHA512")
+                  ? hydrationAttestationStdout()
+                  : script.includes("MAKEADEMO_ARTIFACT_SHA256")
+                    ? bunHydrationAttestationStdout()
+                    : "ok"),
             });
           },
           async wait() {
@@ -2461,8 +3879,36 @@ function fakeCommandTimeoutSandbox(calls: unknown[], id: string) {
         return { stderr: "", stdout: "" };
       },
     },
-    async updateNetworkSettings() {},
   };
+}
+
+function declaredYarnCliSha512(script: string): string | undefined {
+  const comparisonStart = script.indexOf(
+    'test "sha512.$(sha512sum "$yarn_cli"',
+  );
+  if (comparisonStart < 0) return undefined;
+  return /sha512\.([a-f0-9]{128})/.exec(
+    script.slice(comparisonStart, comparisonStart + 512),
+  )?.[1];
+}
+
+function decodedSubmittedScripts(calls: unknown[]): string[] {
+  return calls.flatMap((call) => {
+    if (
+      typeof call !== "object" ||
+      call === null ||
+      !("decodedPtyScript" in call)
+    ) {
+      return [];
+    }
+    const decoded = (call as { decodedPtyScript?: unknown }).decodedPtyScript;
+    if (typeof decoded !== "object" || decoded === null) return [];
+    const record = decoded as { sandbox?: unknown; script?: unknown };
+    return record.sandbox === "submitted_sandbox" &&
+      typeof record.script === "string"
+      ? [record.script]
+      : [];
+  });
 }
 
 function fakeLocalShellLinkedClient(
@@ -2536,8 +3982,42 @@ function fakeLocalShellSandbox(
       return { url: `https://local-shell.example.test:${port}` };
     },
     process: {
-      async createPty() {
-        throw new Error("Streaming is not exercised by local shell tests.");
+      async createPty(ptyOptions: { onData: (data: Uint8Array) => void }) {
+        let disconnected = false;
+        return {
+          async disconnect() {
+            if (disconnected) return;
+            disconnected = true;
+          },
+          async kill() {},
+          async sendInput(data: string | Uint8Array) {
+            const input = String(data);
+            const readyMarker = input.match(
+              /__MAKEADEMO_PTY_READY__:[0-9a-f-]+:/,
+            )?.[0];
+            if (readyMarker !== undefined) {
+              ptyOptions.onData(new TextEncoder().encode(`\n${readyMarker}\n`));
+              return;
+            }
+            const script = decodeNoninteractivePtyCommand(input);
+            calls.push({ decodedPtyScript: { sandbox: id, script } });
+            emitFramedCommandResponse(script, ptyOptions.onData, {
+              exitCode: 0,
+              stderr: "",
+              stdout:
+                trustedNodeProvisionAttestation(script) ??
+                (script.includes("MAKEADEMO_ARTIFACT_SHA512")
+                  ? hydrationAttestationStdout()
+                  : script.includes("MAKEADEMO_ARTIFACT_SHA256")
+                    ? bunHydrationAttestationStdout()
+                    : "ok"),
+            });
+          },
+          async wait() {
+            return { exitCode: 0 };
+          },
+          async waitForConnection() {},
+        };
       },
       async createSession() {},
       async deleteSession() {},
@@ -2555,7 +4035,6 @@ function fakeLocalShellSandbox(
         return { stderr: "", stdout: "" };
       },
     },
-    async updateNetworkSettings() {},
   };
 }
 
@@ -2640,7 +4119,6 @@ function fakeLinkedSandbox(
     executeCommandNeverResolves?: boolean;
     failParentArchive?: boolean;
     failArchive?: boolean;
-    failParentNetworkDisable?: boolean;
     failSubmittedRestore?: boolean;
     failSubmittedArchive?: boolean;
     failSubmittedStop?: boolean;
@@ -2694,9 +4172,7 @@ function fakeLinkedSandbox(
       };
     },
     process: {
-      async createPty(ptyOptions: {
-        onData: (data: Uint8Array) => void;
-      }) {
+      async createPty(ptyOptions: { onData: (data: Uint8Array) => void }) {
         calls.push({ createPty: id });
         let disconnected = false;
         let killed = false;
@@ -2738,7 +4214,14 @@ function fakeLinkedSandbox(
                 {
                   exitCode: options.commandExitCode ?? 0,
                   stderr: options.commandStderr ?? "",
-                  stdout: options.commandStdout ?? stdout,
+                  stdout:
+                    trustedNodeProvisionAttestation(script) ??
+                    options.commandStdout ??
+                    (script.includes("MAKEADEMO_ARTIFACT_SHA512")
+                      ? hydrationAttestationStdout()
+                      : script.includes("MAKEADEMO_ARTIFACT_SHA256")
+                        ? bunHydrationAttestationStdout()
+                        : stdout),
                 },
                 options.ptyUsesCrlf === true ? "\r\n" : "\n",
               );
@@ -2813,15 +4296,6 @@ function fakeLinkedSandbox(
         return { stderr: "", stdout: "" };
       },
     },
-    async updateNetworkSettings(settings: unknown) {
-      calls.push({ updateNetworkSettings: { sandbox: id, settings } });
-      if (
-        options.failParentNetworkDisable === true &&
-        id === "parent_sandbox"
-      ) {
-        throw new Error("primary network reseal failed");
-      }
-    },
   };
 }
 
@@ -2832,6 +4306,37 @@ function decodeNoninteractivePtyCommand(input: string): string {
   return encoded === undefined
     ? input
     : Buffer.from(encoded, "base64").toString("utf8");
+}
+
+function decodeSubmittedExecutionFromFramedScript(
+  script: string,
+): { command: string; env: Record<string, string> } | undefined {
+  const framed =
+    /\/bin\/sh -c '([\s\S]*?)' > '\/tmp\/makeademo\/command-[^']+\.stdout'/.exec(
+      script,
+    )?.[1];
+  if (framed === undefined) return undefined;
+  const wrapper = framed.replaceAll("'\\''", "'");
+  const encoded = /^printf %s '([A-Za-z0-9+/=]+)' \| base64 --decode/.exec(
+    wrapper,
+  )?.[1];
+  const environment = wrapper
+    .split(" -- env -i ")[1]
+    ?.split(" /bin/bash --noprofile --norc")[0];
+  if (encoded === undefined || environment === undefined) return undefined;
+  const env = Object.fromEntries(
+    [...environment.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)='([^']*)'/g)].map(
+      (match) => [match[1], match[2]],
+    ),
+  );
+  return {
+    command: Buffer.from(encoded, "base64").toString("utf8"),
+    env,
+  };
+}
+
+function testShellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function emitFramedCommandResponse(
@@ -2888,8 +4393,6 @@ function fakeClient(
     failWorkspaceLogWrite?: boolean;
     failSubmittedCodeNetworkDisable?: boolean;
     missingSubmittedCodeImage?: boolean;
-    networkError?: Error;
-    networkFailuresBeforeSuccess?: number;
     onWorkspaceLogWriteStarted?: () => void;
     previewNeverResolves?: boolean;
     ptyConnectionFailuresBeforeSuccess?: number;
@@ -2903,7 +4406,6 @@ function fakeClient(
   } = {},
 ) {
   let submittedCodeInitializationFailures = 0;
-  let networkFailures = 0;
   let ptyConnectionFailures = 0;
   const stalePtyIds = new Set<string>();
   const sandbox = {
@@ -3178,16 +4680,6 @@ function fakeClient(
 
         return { stderr: "streamed stderr", stdout: "streamed stdout" };
       },
-    },
-    async updateNetworkSettings(settings: unknown) {
-      calls.push({ updateNetworkSettings: settings });
-      if (networkFailures < (options.networkFailuresBeforeSuccess ?? 0)) {
-        networkFailures += 1;
-        throw new Error("The socket connection was closed unexpectedly");
-      }
-      if (options.networkError !== undefined) {
-        throw options.networkError;
-      }
     },
   };
 

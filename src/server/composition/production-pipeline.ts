@@ -6,6 +6,7 @@ import { AgenticRepoPreparation } from "../pipeline/03-repo-preparation/agent-ta
 import type { RepoPreparationAgent } from "../pipeline/03-repo-preparation/repo-preparation-agent.interface";
 import type { RepoPreparationPreflightResult } from "../pipeline/03-repo-preparation/repo-preparation-preflight.interface";
 import { prepareRepo } from "../pipeline/03-repo-preparation/repo-preparer";
+import type { SubmittedCodeNodeReleaseCatalog } from "../pipeline/03-repo-preparation/submitted-code-node-release-catalog.interface";
 import { AgenticScriptGenerator } from "../pipeline/04-script-generation/agent-task/agentic-script-generator";
 import type { ScriptGenerationAgent } from "../pipeline/04-script-generation/script-generation-agent.interface";
 import { generateDemoScript } from "../pipeline/04-script-generation/script-generation-orchestrator";
@@ -24,6 +25,7 @@ import { AgenticDraftCompositeReviewer } from "../pipeline/07-compositing/agent-
 import { PlaywrightBrowserValidator } from "../shared/integrations/browser/playwright-browser-validator";
 import { DaytonaRepoSecurityInputLoader } from "../shared/integrations/daytona/daytona-repo-security-input-loader";
 import { DaytonaSdkPreparationWorkspaceProvider } from "../shared/integrations/daytona/daytona-sdk-preparation-workspace-provider";
+import { OfficialNodejsReleaseCatalog } from "../shared/integrations/nodejs/official-nodejs-release-catalog";
 import {
   DaytonaSandboxRunner,
   restartPreparedDemoForFreshCapture,
@@ -41,6 +43,7 @@ import {
 export type ProductionPipelineDependencyOptions = {
   browserValidator?: BrowserValidator;
   capturePathRepairer?: CapturePathRepairer;
+  nodeReleaseCatalog: SubmittedCodeNodeReleaseCatalog;
   repoPreparationAgent: RepoPreparationAgent;
   sandboxRunner: SandboxRunner;
   sceneValidator?: CapturePathSceneValidator;
@@ -86,6 +89,7 @@ export function createProductionPipelineDependencies(
         runRuntimePreflight(projectInput) {
           return runDemoRuntimePreflight(projectInput, {
             browserValidator,
+            nodeReleaseCatalog: options.nodeReleaseCatalog,
             sandboxRunner: options.sandboxRunner,
           });
         },
@@ -103,6 +107,7 @@ type RestartPreparedDemoForFreshCapture =
 
 /** Provides Footage Capture with a fresh deterministic Daytona runtime. */
 export function createDaytonaFreshCaptureStatePreparer(
+  nodeReleaseCatalog: SubmittedCodeNodeReleaseCatalog,
   restart: RestartPreparedDemoForFreshCapture = restartPreparedDemoForFreshCapture,
 ): FreshCaptureStatePreparer {
   return async ({ preparedDemo }) => {
@@ -113,6 +118,7 @@ export function createDaytonaFreshCaptureStatePreparer(
     }
 
     return await restart({
+      nodeReleaseCatalog,
       preparationManifest: preparedDemo.preparationManifest,
       preparationWorkspace: preparedDemo.preparationWorkspace,
     });
@@ -161,6 +167,7 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
   }
 
   const sandboxLogSinks = configuredSandboxLogSinks ?? [];
+  const nodeReleaseCatalog = new OfficialNodejsReleaseCatalog();
   const repoSecurityInputLoader = new DaytonaRepoSecurityInputLoader({
     apiKey: daytonaApiKey,
     ...(repoSecurityLogger === undefined ? {} : { logger: repoSecurityLogger }),
@@ -198,6 +205,7 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
           },
         }),
     ...(logger === undefined ? {} : { logger }),
+    nodeReleaseCatalog,
     provider: repoPreparationWorkspaceProvider,
     runner: agentHarness.agentTaskRunners.repoPreparation,
     ...(repoPreparationTimeoutMs === undefined
@@ -209,7 +217,9 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
           { preparationManifest: manifest, preparationWorkspace: workspace },
           {
             browserValidator: new PlaywrightBrowserValidator(),
+            nodeReleaseCatalog,
             sandboxRunner: new DaytonaSandboxRunner({
+              nodeReleaseCatalog,
               releaseWorkspaceOnCleanup: false,
             }),
           },
@@ -251,11 +261,13 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
     disposeAgentSessions: agentHarness.disposeAgentSessions,
     pipelineDependencies: createProductionPipelineDependencies({
       capturePathRepairer,
+      nodeReleaseCatalog,
       repoPreparationAgent,
-      sandboxRunner: new DaytonaSandboxRunner(),
+      sandboxRunner: new DaytonaSandboxRunner({ nodeReleaseCatalog }),
       scriptGenerationAgent,
     }),
-    prepareFreshCaptureState: createDaytonaFreshCaptureStatePreparer(),
+    prepareFreshCaptureState:
+      createDaytonaFreshCaptureStatePreparer(nodeReleaseCatalog),
     repoSecurityInputLoader,
     reviewDraftComposite: draftCompositeReviewer.review.bind(
       draftCompositeReviewer,

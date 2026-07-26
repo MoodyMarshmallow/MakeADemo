@@ -18,21 +18,21 @@ describe("Repo Preparation tool protocol", () => {
   it.each([
     {
       call: {
-        input: { command: "bun install" },
+        input: {},
         name: "makeademo_dependency_request_install",
       },
       handoff: {
-        input: { command: "bun install" },
+        input: {},
         toolName: "makeademo_dependency_request_install",
       },
     },
     {
       call: {
-        input: { command: "npm ci" },
+        input: {},
         name: "makeademo_install_dependencies",
       },
       handoff: {
-        input: { command: "npm ci" },
+        input: {},
         toolName: "makeademo_install_dependencies",
       },
     },
@@ -58,8 +58,11 @@ describe("Repo Preparation tool protocol", () => {
 
   it.each([
     [
-      { input: {}, name: "makeademo_dependency_request_install" },
-      "input.command",
+      {
+        input: { command: "npm ci --ignore-scripts" },
+        name: "makeademo_dependency_request_install",
+      },
+      "does not accept command arguments",
     ],
     [
       { input: {}, name: "makeademo_validate_preparation" },
@@ -67,7 +70,7 @@ describe("Repo Preparation tool protocol", () => {
     ],
     [
       { input: { command: 42 }, name: "makeademo_install_dependencies" },
-      "input.command",
+      "does not accept command arguments",
     ],
   ] satisfies [AgentToolCall, string][])(
     "rejects malformed %s calls",

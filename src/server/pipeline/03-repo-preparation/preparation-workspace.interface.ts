@@ -1,3 +1,5 @@
+import type { SubmittedCodeToolchainArtifactProvider } from "./submitted-code-toolchain-artifact.interface";
+import type { SubmittedCodeToolchainArtifactReceipt } from "./submitted-code-toolchain-artifact.interface";
 import type { SubmittedCodeToolchainPlan } from "./submitted-code-toolchain.schema";
 
 export type PreparationWorkspaceCommandResult = {
@@ -46,7 +48,7 @@ export type PreparationWorkspaceLogEntry = Record<string, unknown> & {
 };
 
 /**
- * A project-owned command paired with its pre-network resolved toolchain plan.
+ * A project-owned command paired with its resolved toolchain plan.
  * Implementations must ignore repository-provided executable paths and map the
  * plan only to catalog-owned PATH entries and the validated project cwd.
  */
@@ -55,7 +57,11 @@ export type SubmittedProjectExecutionRequest = {
   executable: string;
   /** Catalog-owned argv; implementations must preserve argument boundaries. */
   argv: readonly string[];
+  /** Backend-owned execution policy; callers cannot supply arbitrary install environment. */
+  installProfile?: "bounded";
   plan: SubmittedCodeToolchainPlan;
+  /** Opaque provisioning capability bound to this exact resolved plan. */
+  toolchainReceipt?: SubmittedCodeToolchainArtifactReceipt;
 };
 
 /** A backend-validated demo runtime command paired with its catalog plan. */
@@ -63,10 +69,12 @@ export type SubmittedProjectRuntimeRequest = {
   /** Complete backend wrapper command; provider implementations must shell-quote it. */
   command: string;
   plan: SubmittedCodeToolchainPlan;
+  /** Opaque provisioning capability bound to this exact resolved plan. */
+  toolchainReceipt?: SubmittedCodeToolchainArtifactReceipt;
 };
 
 /**
- * Executes commands and network-policy changes inside a Repo Preparation workspace.
+ * Executes commands inside a Repo Preparation workspace.
  * Implementations must scope destructive work to the ephemeral workspace copy and
  * must not expose agent-only secrets to submitted app build or runtime commands.
  */
@@ -97,7 +105,7 @@ export interface PreparationWorkspace {
   /**
    * Executes submitted repo code inside the submitted-code runtime boundary.
    * Implementations must not run these commands in the agent workspace and must
-   * apply submitted-code environment and network policy before execution.
+   * apply the submitted-code environment before execution.
    */
   executeSubmittedCode?(
     command: string,
@@ -126,14 +134,17 @@ export interface PreparationWorkspace {
    */
   prepareForAgent?(): Promise<void>;
   /**
+   * Hydrates the exact resolved package-manager artifact before submitted repo
+   * files are copied into the runtime sandbox. Implementations must leave an
+   * integrity-attested receipt and reject execution until that receipt exists.
+   */
+  provisionSubmittedCodeToolchain?: SubmittedCodeToolchainArtifactProvider["provisionSubmittedCodeToolchain"];
+  /**
    * Emits structured audit logs inside the sandbox. Implementations must keep a
    * durable copy available from workspace storage and may additionally relay the
    * entry through provider-specific process logs when that route is available.
    */
   writeSandboxLog?(entry: PreparationWorkspaceLogEntry): Promise<void>;
-  setOutboundNetworkAccess(enabled: boolean): Promise<void>;
-  /** Controls outbound network for submitted-code execution only. */
-  setSubmittedCodeNetworkAccess?(enabled: boolean): Promise<void>;
   /**
    * Replaces the submitted-code workspace contents with the prepared parent
    * workspace snapshot before validation or capture commands run. Implementations

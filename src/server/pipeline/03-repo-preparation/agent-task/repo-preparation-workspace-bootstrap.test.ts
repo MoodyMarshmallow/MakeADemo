@@ -71,14 +71,7 @@ describe("bootstrapRepoPreparationWorkspace", () => {
       "apps/web/.env.production",
       "package.json",
     ]);
-    expect(events).toEqual([
-      "parent-network:true",
-      "parent-clone",
-      "parent-network:false",
-      "submitted-network:true",
-      "submitted-clone",
-      "submitted-network:false",
-    ]);
+    expect(events).toEqual(["parent-clone", "submitted-clone"]);
     expect(await readFile(join(parent, ".env"), "utf8")).toContain(sentinel);
     expect(await readFile(join(submitted, ".env"), "utf8")).toContain(sentinel);
     expect(await readAllGitText(parent)).toContain(sentinel);
@@ -108,12 +101,6 @@ function createLocalBootstrapWorkspace(input: {
     ),
     async getPreviewUrl() {
       throw new Error("getPreviewUrl should not be called");
-    },
-    async setOutboundNetworkAccess(enabled) {
-      input.events.push(`parent-network:${enabled}`);
-    },
-    async setSubmittedCodeNetworkAccess(enabled) {
-      input.events.push(`submitted-network:${enabled}`);
     },
     async uploadFiles() {
       throw new Error("uploadFiles should not be called");

@@ -5,6 +5,8 @@ import type {
   SubmittedProjectExecutionRequest,
   SubmittedProjectRuntimeRequest,
 } from "./preparation-workspace.interface";
+import type { SubmittedCodeToolchainArtifactReceipt } from "./submitted-code-toolchain-artifact.interface";
+import type { SubmittedCodeToolchainPlan } from "./submitted-code-toolchain.schema";
 
 /**
  * Raised when MakeADemo cannot copy the prepared workspace into the
@@ -68,17 +70,17 @@ export async function executeSubmittedRuntime(
   return await workspace.executeSubmittedRuntime(request, options);
 }
 
-export async function setSubmittedCodeNetworkAccess(
+/** Hydrates an integrity-attested package-manager artifact before execution. */
+export async function provisionSubmittedCodeToolchain(
   workspace: PreparationWorkspace,
-  enabled: boolean,
-): Promise<void> {
-  if (workspace.setSubmittedCodeNetworkAccess === undefined) {
+  plan: SubmittedCodeToolchainPlan,
+): Promise<SubmittedCodeToolchainArtifactReceipt> {
+  if (workspace.provisionSubmittedCodeToolchain === undefined) {
     throw new Error(
-      "Preparation workspace cannot control submitted-code network access.",
+      "Preparation workspace cannot provision submitted-code toolchains.",
     );
   }
-
-  await workspace.setSubmittedCodeNetworkAccess(enabled);
+  return await workspace.provisionSubmittedCodeToolchain(plan);
 }
 
 export async function syncSubmittedCodeWorkspace(

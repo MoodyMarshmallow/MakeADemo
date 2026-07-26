@@ -1,14 +1,15 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { resolveCommand } from "package-manager-detector/commands";
+import { satisfies as semverSatisfies } from "semver";
 
 import { Daytona } from "@daytona/sdk";
 
+import { createBoundedInstallEnvironment } from "../../../pipeline/03-repo-preparation/planned-dependency-install";
 import type {
   PreparationWorkspaceHandle,
   PreparationWorkspaceProvider,
@@ -25,13 +26,33 @@ import type {
   SubmittedProjectExecutionRequest,
   SubmittedProjectRuntimeRequest,
 } from "../../../pipeline/03-repo-preparation/preparation-workspace.interface";
-import { submittedCodeToolchainCatalog } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
+import type { SubmittedCodeToolchainArtifactReceipt } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain-artifact.interface";
+import {
+  type SubmittedCodeToolchainPlan,
+  submittedCodeToolchainCatalog,
+} from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
 import { resolveSubmittedProjectCwd } from "../../../pipeline/03-repo-preparation/submitted-project-root";
 import {
   type PipelineEventLogger,
   type PipelineLogSink,
   createPipelineEventLogger,
 } from "../../logging/pipeline-event-logger";
+import {
+  type TrustedSubmittedNodeRuntimeArtifact,
+  createTrustedSubmittedNodeProvisionCommand,
+  createTrustedSubmittedNodeVerificationCommand,
+  readTrustedSubmittedNodeAttestation,
+} from "./trusted-submitted-node-runtime";
+
+class TrustedPackageManagerProvisioningError extends Error {
+  constructor(
+    readonly code: "deprecated_release" | "package_manager_release_unavailable",
+    message: string,
+  ) {
+    super(message);
+    this.name = "TrustedPackageManagerProvisioningError";
+  }
+}
 
 type DaytonaSdkClient = {
   create(
@@ -127,7 +148,6 @@ type DaytonaSdkSandbox = {
       onStderr: (chunk: string) => void,
     ): Promise<{ stderr?: string; stdout?: string } | undefined>;
   };
-  updateNetworkSettings(settings: { networkBlockAll: boolean }): Promise<void>;
 };
 
 type DaytonaSdkPty = Awaited<
@@ -160,7 +180,6 @@ const defaultPtyConnectionTimeoutMs = 30_000;
 const ptyTerminationTimeoutMs = 1_000;
 const defaultSandboxCreateTimeoutSeconds = 300;
 const sandboxCreateConnectionRetryLimit = 2;
-const networkSettingsConnectionRetryLimit = 2;
 const ptyStartupRetryLimit = 2;
 const submittedCodeSyncMaxAttempts = 2;
 const makeADemoArtifactDirectory = "/tmp/makeademo";
@@ -172,6 +191,11 @@ const agentWorkspaceHome = "/workspace/.makeademo/agent-home";
 const agentWorkspaceTemp = "/workspace/.makeademo/tmp";
 const agentWorkspacePath =
   "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+const submittedSystemUtilitiesPath =
+  "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin";
+const submittedCodePlaywrightModuleRoot =
+  "/opt/makeademo/playwright-runtime/node_modules";
+const submittedCodePlaywrightBrowsersPath = "/ms-playwright";
 const parentSubmittedRuntimePaths = [
   "/usr/local/bin/node",
   "/usr/local/bin/npm",
@@ -285,6 +309,7 @@ export class DaytonaSdkPreparationWorkspaceProvider
                 autoDeleteInterval: -1,
                 networkBlockAll: false,
                 snapshot: this.submittedCodeSnapshot,
+                user: "root",
               },
               createOptions,
             );
@@ -410,6 +435,13 @@ function createPreparationWorkspaceHandle(input: {
 
 class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
   private readonly activePtys = new Set<ManagedPty>();
+  private readonly hydratedToolchainArtifacts = new Map<
+    string,
+    HydratedSubmittedCodeToolchainArtifact
+  >();
+  private submittedToolchainLifecycle: SubmittedToolchainLifecycle = {
+    state: "unprovisioned",
+  };
   private readonly sandboxLogger: PipelineEventLogger;
 
   constructor(
@@ -591,17 +623,33 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
       throw new Error("Submitted-code Daytona sandbox is not configured.");
     }
 
+    const lifecycle = this.submittedToolchainLifecycle;
+    if (lifecycle.state !== "unprovisioned") {
+      await this.verifyTrustedToolchainArtifact(lifecycle.artifact);
+    }
+    const submittedExecution =
+      lifecycle.state === "unprovisioned"
+        ? { command, env: createSubmittedRuntimeEnv(options.env) }
+        : createArtifactBoundSubmittedExecution(
+            command,
+            lifecycle.artifact,
+            options.env,
+          );
+    const execution = createUnprivilegedSubmittedCodeExecution(
+      submittedExecution.command,
+      submittedExecution.env,
+    );
     if (options.onStdout !== undefined || options.onStderr !== undefined) {
       return this.executeStreamingInSandbox(
         this.submittedCodeSandbox,
-        command,
-        options,
+        execution.command,
+        { ...options, env: {} },
       );
     }
     return this.executeCancellableCommandInSandbox(
       this.submittedCodeSandbox,
-      command,
-      options,
+      execution.command,
+      { ...options, env: {} },
     );
   }
 
@@ -612,22 +660,41 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     if (this.submittedCodeSandbox === undefined) {
       throw new Error("Submitted-code Daytona sandbox is not configured.");
     }
-    const execution = createSubmittedProjectExecution(request);
+    const provisioned = this.requireBoundSubmittedToolchain(
+      request.plan,
+      request.toolchainReceipt,
+    );
+    await this.verifySubmittedProjectIntegrity(
+      this.submittedToolchainLifecycle.state === "synchronized"
+        ? this.submittedToolchainLifecycle.projectIntegrity
+        : undefined,
+      provisioned.nodeRuntime,
+    );
+    await this.verifyTrustedToolchainArtifact(provisioned);
+    const execution = createSubmittedProjectExecution(
+      request,
+      provisioned,
+      options.env,
+    );
     const projectOptions = {
       ...options,
-      env: execution.env,
+      env: {},
     };
+    const command = createUnprivilegedSubmittedCodeExecution(
+      execution.command,
+      execution.env,
+    ).command;
     if (options.onStdout !== undefined || options.onStderr !== undefined) {
       return this.executeStreamingInSandbox(
         this.submittedCodeSandbox,
-        execution.command,
+        command,
         projectOptions,
         execution.cwd,
       );
     }
     return this.executeCancellableCommandInSandbox(
       this.submittedCodeSandbox,
-      execution.command,
+      command,
       projectOptions,
       execution.cwd,
     );
@@ -640,42 +707,204 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     if (this.submittedCodeSandbox === undefined) {
       throw new Error("Submitted-code Daytona sandbox is not configured.");
     }
-    const execution = createSubmittedRuntimeExecution(request);
+    const provisioned = this.requireBoundSubmittedToolchain(
+      request.plan,
+      request.toolchainReceipt,
+    );
+    await this.verifyTrustedToolchainArtifact(provisioned);
+    const execution = createSubmittedRuntimeExecution(request, provisioned);
     const runtimeOptions = {
       ...options,
-      env: createSubmittedRuntimeEnv(options.env),
+      env: {},
     };
+    const command = createUnprivilegedSubmittedCodeExecution(
+      execution.command,
+      execution.env,
+    ).command;
     if (options.onStdout !== undefined || options.onStderr !== undefined) {
       return this.executeStreamingInSandbox(
         this.submittedCodeSandbox,
-        execution.command,
+        command,
         runtimeOptions,
         execution.cwd,
       );
     }
     return this.executeCancellableCommandInSandbox(
       this.submittedCodeSandbox,
-      execution.command,
+      command,
       runtimeOptions,
       execution.cwd,
     );
   }
 
-  async setOutboundNetworkAccess(enabled: boolean): Promise<void> {
-    await this.setSandboxNetworkAccess(this.sandbox, enabled);
-  }
-
-  async setSubmittedCodeNetworkAccess(enabled: boolean): Promise<void> {
+  async provisionSubmittedCodeToolchain(
+    plan: SubmittedProjectExecutionRequest["plan"],
+  ): Promise<SubmittedCodeToolchainArtifactReceipt> {
     if (this.submittedCodeSandbox === undefined) {
       throw new Error("Submitted-code Daytona sandbox is not configured.");
     }
+    const { manager } = validateSubmittedToolchainPlan(plan);
+    const planIdentity = submittedToolchainPlanIdentity(plan, manager);
+    const projectIntegrity = readSubmittedProjectIntegrityRequirement(
+      plan,
+      manager,
+    );
+    const artifactIdentity = submittedToolchainArtifactIdentity(
+      plan.node.version,
+      manager,
+    );
+    const existing = this.submittedToolchainLifecycle;
+    if (existing.state !== "unprovisioned") {
+      if (existing.artifact.artifactIdentity !== artifactIdentity) {
+        throw freshSubmittedCodeSandboxRequired();
+      }
+      if (existing.planIdentity === planIdentity) {
+        if (existing.state === "synchronized") {
+          this.submittedToolchainLifecycle = {
+            ...existing,
+            state: "provisioned",
+          };
+        }
+        return existing.receipt;
+      }
+      const receipt = createSubmittedToolchainArtifactReceipt(
+        existing.artifact,
+      );
+      this.submittedToolchainLifecycle = {
+        artifact: existing.artifact,
+        planIdentity,
+        projectIntegrity,
+        receipt,
+        state: "provisioned",
+      };
+      return receipt;
+    }
 
-    await this.setSandboxNetworkAccess(this.submittedCodeSandbox, enabled);
+    let artifact = this.hydratedToolchainArtifacts.get(artifactIdentity);
+    if (artifact === undefined) {
+      artifact = await (async () => {
+        const nodeResult = await this.executeCancellableCommandInSandbox(
+          this.submittedCodeSandbox as DaytonaSdkSandbox,
+          createTrustedSubmittedNodeProvisionCommand(plan.node.version),
+          { env: createTrustedToolchainProvisioningEnv() },
+          "/",
+        );
+        if (nodeResult.exitCode !== 0) {
+          throw new Error(
+            `Trusted Node runtime hydration failed for Node ${plan.node.version}: ${nodeResult.stderr || nodeResult.stdout}`,
+          );
+        }
+        const nodeRuntime = readTrustedSubmittedNodeAttestation(
+          nodeResult.stdout,
+          plan.node.version,
+        );
+        const toolchainRoot = trustedToolchainRootForArtifact(
+          manager,
+          artifactIdentity,
+        );
+        const result = await this.executeCancellableCommandInSandbox(
+          this.submittedCodeSandbox as DaytonaSdkSandbox,
+          manager.name === "bun"
+            ? createTrustedBunHydrationCommand(
+                nodeRuntime,
+                manager.version,
+                toolchainRoot,
+              )
+            : manager.name === "yarn" && manager.generation === "yarn-berry"
+              ? createTrustedYarnBerryHydrationCommand(
+                  nodeRuntime,
+                  manager,
+                  toolchainRoot,
+                )
+              : createTrustedToolchainHydrationCommand(
+                  nodeRuntime,
+                  manager,
+                  toolchainRoot,
+                ),
+          { env: createTrustedToolchainProvisioningEnv() },
+          "/",
+        );
+        if (result.exitCode !== 0) {
+          if (
+            result.stderr.includes("MAKEADEMO_REGISTRY_RELEASE_UNAVAILABLE")
+          ) {
+            throw new TrustedPackageManagerProvisioningError(
+              "package_manager_release_unavailable",
+              `The exact trusted package-manager release ${manager.name}@${manager.version} is unavailable.`,
+            );
+          }
+          if (result.stderr.includes("MAKEADEMO_REGISTRY_RELEASE_DEPRECATED")) {
+            throw new TrustedPackageManagerProvisioningError(
+              "deprecated_release",
+              `Trusted registry metadata marks ${manager.name}@${manager.version} as deprecated.`,
+            );
+          }
+          throw new Error(
+            `Trusted package-manager hydration failed for ${manager.name}@${manager.version}: ${result.stderr || result.stdout}`,
+          );
+        }
+        const attestation =
+          manager.name === "bun"
+            ? readBunArtifactAttestation(result.stdout)
+            : readHydratedArtifactAttestation(result.stdout);
+        const hydrated: HydratedSubmittedCodeToolchainArtifact = {
+          artifactDigest: attestation.artifactDigest,
+          artifactIdentity,
+          binPath: `${toolchainRoot}/${attestation.artifactDigest.slice(
+            manager.name === "bun" ? "sha256:".length : "sha512:".length,
+          )}/bin`,
+          ...(manager.name === "bun" || manager.generation === "yarn-berry"
+            ? {}
+            : {
+                corepackHash: (
+                  attestation as ReturnType<
+                    typeof readHydratedArtifactAttestation
+                  >
+                ).corepackHash,
+              }),
+          generation: manager.generation,
+          nodeVersion: plan.node.version,
+          nodeRuntime,
+          packageManager: manager.name,
+          toolchainHome:
+            manager.name === "bun"
+              ? `${toolchainRoot}/${attestation.artifactDigest.slice("sha256:".length)}/bin`
+              : manager.name === "yarn" && manager.generation === "yarn-berry"
+                ? `${toolchainRoot}/${attestation.artifactDigest.slice("sha512:".length)}/cli`
+                : trustedToolchainHomeForArtifact(
+                    manager,
+                    artifactIdentity,
+                    attestation.artifactDigest.slice("sha512:".length),
+                  ),
+          upstreamIntegrity: attestation.upstreamIntegrity,
+          version: manager.version,
+        };
+        this.hydratedToolchainArtifacts.set(artifactIdentity, hydrated);
+        return hydrated;
+      })();
+    }
+    const receipt = createSubmittedToolchainArtifactReceipt(artifact);
+    this.submittedToolchainLifecycle = {
+      artifact,
+      planIdentity,
+      projectIntegrity,
+      receipt,
+      state: "provisioned",
+    };
+    return receipt;
   }
 
   async syncSubmittedCodeWorkspace(): Promise<void> {
     if (this.submittedCodeSandbox === undefined) {
       throw new Error("Submitted-code Daytona sandbox is not configured.");
+    }
+    if (this.submittedToolchainLifecycle.state === "unprovisioned") {
+      throw new Error(
+        "Submitted-code workspace synchronization requires a provisioned toolchain.",
+      );
+    }
+    if (this.submittedToolchainLifecycle.state === "synchronized") {
+      throw freshSubmittedCodeSandboxRequired();
     }
 
     await this.sandboxLogger.info({
@@ -689,11 +918,23 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     ) {
       try {
         await this.syncSubmittedCodeWorkspaceAttempt(attempt);
+        await this.verifySubmittedProjectIntegrity(
+          this.submittedToolchainLifecycle.state === "provisioned"
+            ? this.submittedToolchainLifecycle.projectIntegrity
+            : undefined,
+          this.submittedToolchainLifecycle.state === "provisioned"
+            ? this.submittedToolchainLifecycle.artifact.nodeRuntime
+            : undefined,
+        );
         await this.sandboxLogger.info({
           event: "daytona.sync-submitted-code-workspace.succeeded",
           attempt,
           maxAttempts: submittedCodeSyncMaxAttempts,
         });
+        this.submittedToolchainLifecycle = {
+          ...this.submittedToolchainLifecycle,
+          state: "synchronized",
+        };
         return;
       } catch (error) {
         if (
@@ -710,6 +951,94 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
         });
         await wait(250);
       }
+    }
+  }
+
+  private async verifySubmittedProjectIntegrity(
+    requirement: SubmittedProjectIntegrityRequirement | undefined,
+    nodeRuntime: TrustedSubmittedNodeRuntimeArtifact | undefined,
+  ): Promise<void> {
+    if (
+      this.submittedCodeSandbox === undefined ||
+      requirement === undefined ||
+      nodeRuntime === undefined
+    ) {
+      throw new Error(
+        "Submitted project lockfile integrity requirement is unavailable.",
+      );
+    }
+    const result = await this.executeCancellableCommandInSandbox(
+      this.submittedCodeSandbox,
+      createSubmittedProjectIntegrityVerificationCommand(
+        requirement,
+        nodeRuntime,
+      ),
+      { env: createTrustedToolchainProvisioningEnv() },
+      "/",
+    );
+    if (result.exitCode !== 0) {
+      throw new Error(
+        "Submitted project lockfile integrity did not match the provisioned plan.",
+      );
+    }
+  }
+
+  private requireBoundSubmittedToolchain(
+    plan: SubmittedCodeToolchainPlan,
+    receipt: SubmittedCodeToolchainArtifactReceipt | undefined,
+  ): HydratedSubmittedCodeToolchainArtifact {
+    const { manager } = validateSubmittedToolchainPlan(plan);
+    const lifecycle = this.submittedToolchainLifecycle;
+    if (lifecycle.state === "unprovisioned") {
+      throw new Error(
+        `Submitted toolchain ${manager.name}@${manager.version} has not been provisioned and synchronized.`,
+      );
+    }
+    if (
+      lifecycle.state !== "synchronized" ||
+      lifecycle.receipt !== receipt ||
+      lifecycle.planIdentity !== submittedToolchainPlanIdentity(plan, manager)
+    ) {
+      throw new Error(
+        `Submitted toolchain ${manager.name}@${manager.version} requires synchronization after provisioning.`,
+      );
+    }
+    return lifecycle.artifact;
+  }
+
+  private async verifyTrustedToolchainArtifact(
+    artifact: HydratedSubmittedCodeToolchainArtifact,
+  ): Promise<void> {
+    const submittedCodeSandbox = this.submittedCodeSandbox;
+    if (submittedCodeSandbox === undefined) {
+      throw new Error("Submitted-code Daytona sandbox is not configured.");
+    }
+    const nodeResult = await this.executeCancellableCommandInSandbox(
+      submittedCodeSandbox,
+      createTrustedSubmittedNodeVerificationCommand(artifact.nodeRuntime),
+      { env: createTrustedToolchainProvisioningEnv() },
+      "/",
+    );
+    if (nodeResult.exitCode !== 0) {
+      const diagnostics =
+        (nodeResult.stderr || nodeResult.stdout).trim() ||
+        "no diagnostics returned";
+      throw new Error(
+        `Trusted Node runtime verification failed for Node ${artifact.nodeVersion}: ${diagnostics}`,
+      );
+    }
+    const result = await this.executeCancellableCommandInSandbox(
+      submittedCodeSandbox,
+      createTrustedToolchainArtifactVerificationCommand(artifact),
+      { env: createTrustedToolchainProvisioningEnv() },
+      "/",
+    );
+    if (result.exitCode !== 0) {
+      const diagnostics =
+        (result.stderr || result.stdout).trim() || "no diagnostics returned";
+      throw new Error(
+        `Trusted package-manager artifact verification failed for ${artifact.packageManager}@${artifact.version}: ${diagnostics}`,
+      );
     }
   }
 
@@ -826,37 +1155,6 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
         ),
         rm(localDirectory, { force: true, recursive: true }),
       ]);
-    }
-  }
-
-  private async setSandboxNetworkAccess(
-    sandbox: DaytonaSdkSandbox,
-    enabled: boolean,
-  ): Promise<void> {
-    for (
-      let attempt = 0;
-      attempt <= networkSettingsConnectionRetryLimit;
-      attempt += 1
-    ) {
-      try {
-        await sandbox.updateNetworkSettings({ networkBlockAll: !enabled });
-        return;
-      } catch (error) {
-        if (isRestrictedNetworkPolicyError(error)) {
-          // This exact tier-policy response means sandbox overrides are
-          // impossible, so provider-enforced blocking remains authoritative
-          // whether the caller attempted to open or reseal the network.
-          return;
-        }
-        if (
-          attempt === networkSettingsConnectionRetryLimit ||
-          !isDaytonaConnectionError(error)
-        ) {
-          throw error;
-        }
-
-        await wait(250 * (attempt + 1));
-      }
     }
   }
 
@@ -1315,55 +1613,113 @@ function findLastFramingMarker(
 
 function createSubmittedProjectExecution(
   request: SubmittedProjectExecutionRequest,
+  provisioned: HydratedSubmittedCodeToolchainArtifact,
+  requestedEnvironment: Record<string, string> | undefined = undefined,
 ): { command: string; cwd: string; env: Record<string, string> } {
   const { plan } = request;
   const { cwd, manager } = validateSubmittedToolchainPlan(plan);
-  const install = resolveCommand(manager.name, "frozen", []);
+  const install = immutableInstallCommand(manager);
+  const expectedArgv = install?.argv;
   if (
     install === null ||
-    request.executable !== install.command ||
-    !sameArgv(request.argv, install.args)
+    expectedArgv === undefined ||
+    request.executable !== install.executable ||
+    !sameArgv(request.argv, expectedArgv)
   ) {
     throw new Error("Submitted project execution is not the catalog install.");
   }
-  const corepackDescriptor = createCorepackDescriptor(manager);
+  if (
+    manager.name !== "bun" &&
+    manager.generation !== "yarn-berry" &&
+    provisioned.corepackHash === undefined
+  ) {
+    throw new Error("Verified Corepack integrity is unavailable.");
+  }
   return {
-    command: [
-      "mise",
-      "--no-config",
-      "exec",
-      `node@${plan.node.version}`,
-      "--",
-      "corepack",
-      corepackDescriptor,
-      ...request.argv,
-    ]
-      .map(shellQuote)
-      .join(" "),
+    ...createArtifactBoundSubmittedExecution(
+      [request.executable, ...request.argv].map(shellQuote).join(" "),
+      provisioned,
+      requestedEnvironment,
+      request.installProfile === "bounded"
+        ? createBoundedInstallEnvironment(request.plan)
+        : undefined,
+    ),
     cwd,
-    env: createSubmittedRuntimeEnv(),
   };
 }
 
+type HydratedSubmittedCodeToolchainArtifact = {
+  artifactDigest: `sha256:${string}` | `sha512:${string}`;
+  artifactIdentity: string;
+  binPath: string;
+  corepackHash?: `sha512.${string}`;
+  generation: NonNullable<
+    SubmittedCodeToolchainPlan["packageManager"]
+  >["generation"];
+  nodeVersion: string;
+  nodeRuntime: TrustedSubmittedNodeRuntimeArtifact;
+  packageManager: NonNullable<
+    SubmittedCodeToolchainPlan["packageManager"]
+  >["name"];
+  toolchainHome: string;
+  upstreamIntegrity: `sha256:${string}` | `sha512:${string}`;
+  version: string;
+};
+
+type SubmittedProjectIntegrityRequirement = {
+  expected: `sha256:${string}`;
+  filename: string;
+  projectDirectory: string;
+};
+
+type SubmittedToolchainLifecycle =
+  | { state: "unprovisioned" }
+  | {
+      artifact: HydratedSubmittedCodeToolchainArtifact;
+      planIdentity: string;
+      projectIntegrity: SubmittedProjectIntegrityRequirement;
+      receipt: SubmittedCodeToolchainArtifactReceipt;
+      state: "provisioned" | "synchronized";
+    };
+
 function createSubmittedRuntimeExecution(
   request: SubmittedProjectRuntimeRequest,
+  provisioned: HydratedSubmittedCodeToolchainArtifact,
 ): { command: string; cwd: string; env: Record<string, string> } {
   validateSubmittedRuntimePlan(request.plan);
   return {
-    command: [
-      "mise",
-      "--no-config",
-      "exec",
-      `node@${request.plan.node.version}`,
-      "--",
-      "sh",
-      "-lc",
-      request.command,
-    ]
-      .map(shellQuote)
-      .join(" "),
+    ...createArtifactBoundSubmittedExecution(request.command, provisioned),
     cwd: "/workspace",
-    env: createSubmittedRuntimeEnv(),
+  };
+}
+
+function createArtifactBoundSubmittedExecution(
+  command: string,
+  artifact: HydratedSubmittedCodeToolchainArtifact,
+  requested: Record<string, string> | undefined = undefined,
+  backendOwned: Record<string, string> | undefined = undefined,
+): { command: string; env: Record<string, string> } {
+  return {
+    command,
+    env: createArtifactRuntimeEnv(artifact, requested, backendOwned),
+  };
+}
+
+function createArtifactRuntimeEnv(
+  artifact: HydratedSubmittedCodeToolchainArtifact,
+  requested: Record<string, string> | undefined = undefined,
+  backendOwned: Record<string, string> | undefined = undefined,
+): Record<string, string> {
+  return {
+    ...createSubmittedRuntimeEnv({
+      ...requested,
+      ...(artifact.packageManager === "bun" ||
+      artifact.generation === "yarn-berry"
+        ? {}
+        : { COREPACK_HOME: artifact.toolchainHome }),
+    }),
+    ...backendOwned,
+    PATH: `${artifact.binPath}:${artifact.nodeRuntime.root}/bin:${submittedSystemUtilitiesPath}`,
   };
 }
 
@@ -1381,8 +1737,12 @@ function validateSubmittedToolchainPlan(
     );
   }
   if (
-    !(submittedCodeToolchainCatalog.node as readonly string[]).includes(
+    submittedCodeToolchainCatalog.node[plan.node.family].lifecycle !==
+      plan.node.lifecycle ||
+    !semverSatisfies(
       plan.node.version,
+      `>=${submittedCodeToolchainCatalog.node[plan.node.family].compatibilityMinimum} <${plan.node.family + 1}`,
+      { includePrerelease: false, loose: false },
     )
   ) {
     throw new Error(`Unsupported catalog Node version: ${plan.node.version}`);
@@ -1394,22 +1754,16 @@ function validateSubmittedToolchainPlan(
       "Submitted toolchain plan has no catalog install capability.",
     );
   }
-  if (manager.name === "pnpm") {
-    assertCatalogManagerVersion(manager.version);
-  } else {
-    throw new Error(
-      `Unsupported catalog package manager: ${manager.name}@${manager.version}`,
-    );
-  }
-  const install = resolveCommand(manager.name, "frozen", []);
+  assertCompatibleManager(manager);
+  const install = immutableInstallCommand(manager);
   if (
     install === null ||
-    plan.install.executable !== install.command ||
-    !sameArgv(plan.install.argv, install.args)
+    plan.install.executable !== install.executable ||
+    !sameArgv(plan.install.argv, install.argv)
   ) {
     throw new Error("Submitted toolchain plan is not the catalog install.");
   }
-  createCorepackDescriptor(manager);
+  if (manager.name !== "bun") createCorepackDescriptor(manager);
   return { cwd, manager };
 }
 
@@ -1422,8 +1776,12 @@ function validateSubmittedRuntimePlan(
     );
   }
   if (
-    !(submittedCodeToolchainCatalog.node as readonly string[]).includes(
+    submittedCodeToolchainCatalog.node[plan.node.family].lifecycle !==
+      plan.node.lifecycle ||
+    !semverSatisfies(
       plan.node.version,
+      `>=${submittedCodeToolchainCatalog.node[plan.node.family].compatibilityMinimum} <${plan.node.family + 1}`,
+      { includePrerelease: false, loose: false },
     )
   ) {
     throw new Error(`Unsupported catalog Node version: ${plan.node.version}`);
@@ -1437,6 +1795,7 @@ function createSubmittedRuntimeEnv(
   const allowed = Object.fromEntries(
     Object.entries(requested ?? {}).filter(
       ([key]) =>
+        key === "COREPACK_HOME" ||
         key === "NODE_ENV" ||
         key.startsWith("PUBLIC_") ||
         key.startsWith("VITE_") ||
@@ -1448,18 +1807,14 @@ function createSubmittedRuntimeEnv(
     COREPACK_ENABLE_AUTO_PIN: "0",
     COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
     COREPACK_ENABLE_NETWORK: "0",
-    COREPACK_ENABLE_PROJECT_SPEC: "1",
+    COREPACK_ENABLE_PROJECT_SPEC: "0",
     COREPACK_ENABLE_STRICT: "1",
     COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: "0",
     COREPACK_ENV_FILE: "0",
-    MISE_LOCKED: "1",
-    MISE_NO_CONFIG: "1",
-    MISE_NO_ENV: "1",
-    MISE_NO_HOOKS: "1",
-    MISE_NOT_FOUND_AUTO_INSTALL: "0",
-    MISE_OFFLINE: "1",
-    MISE_PARANOID: "1",
+    YARN_IGNORE_PATH: "1",
     ...allowed,
+    MAKEADEMO_PLAYWRIGHT_MODULE_ROOT: submittedCodePlaywrightModuleRoot,
+    PLAYWRIGHT_BROWSERS_PATH: submittedCodePlaywrightBrowsersPath,
   };
 }
 
@@ -1484,12 +1839,622 @@ function sameArgv(left: readonly string[], right: readonly string[]): boolean {
   );
 }
 
-function assertCatalogManagerVersion(version: string): void {
-  if (
-    !(submittedCodeToolchainCatalog.pnpm as readonly string[]).includes(version)
-  ) {
-    throw new Error(`Unsupported catalog package manager: pnpm@${version}`);
+function immutableInstallCommand(
+  manager: NonNullable<
+    SubmittedProjectExecutionRequest["plan"]["packageManager"]
+  >,
+): {
+  argv: readonly string[];
+  executable: string;
+} {
+  if (manager.name === "npm") {
+    return { argv: ["ci", "--maxsockets=4"], executable: "npm" };
   }
+  if (manager.name === "pnpm") {
+    return {
+      argv: [
+        "install",
+        "--frozen-lockfile",
+        "--child-concurrency=2",
+        "--network-concurrency=4",
+      ],
+      executable: "pnpm",
+    };
+  }
+  if (manager.name === "bun") {
+    return { argv: ["install", "--frozen-lockfile"], executable: "bun" };
+  }
+  return {
+    argv:
+      manager.generation === "yarn-classic"
+        ? ["install", "--frozen-lockfile", "--network-concurrency", "4"]
+        : ["install", "--immutable"],
+    executable: "yarn",
+  };
+}
+
+function assertCompatibleManager(
+  manager: NonNullable<
+    SubmittedProjectExecutionRequest["plan"]["packageManager"]
+  >,
+): void {
+  const ranges: Record<typeof manager.name, string> = {
+    bun: ">=1.2.16 <2",
+    npm: ">=8 <12",
+    pnpm: ">=8 <12",
+    yarn: ">=1 <5",
+  };
+  if (
+    !/^\d+\.\d+\.\d+$/.test(manager.version) ||
+    !semverSatisfies(manager.version, ranges[manager.name])
+  ) {
+    throw new Error(
+      `Unsupported package-manager compatibility generation: ${manager.name}@${manager.version}`,
+    );
+  }
+  const expectedGeneration =
+    manager.name === "yarn"
+      ? manager.version.startsWith("1.")
+        ? "yarn-classic"
+        : "yarn-berry"
+      : manager.name === "bun"
+        ? "bun-1"
+        : manager.name === "npm"
+          ? "npm-modern"
+          : "pnpm-modern";
+  if (manager.generation !== expectedGeneration) {
+    throw new Error(
+      `Package-manager generation does not match ${manager.name}@${manager.version}.`,
+    );
+  }
+}
+
+function submittedToolchainPlanIdentity(
+  plan: SubmittedCodeToolchainPlan,
+  manager: NonNullable<SubmittedCodeToolchainPlan["packageManager"]>,
+): string {
+  return JSON.stringify({
+    catalogRevision: plan.catalogRevision,
+    generation: manager.generation,
+    install: plan.install,
+    nodeVersion: plan.node.version,
+    packageManager: manager.name,
+    projectRoot: plan.projectRoot,
+    projectIntegrity: manager.projectIntegrity ?? null,
+    upstreamIntegrity: manager.corepackHash ?? null,
+    version: manager.version,
+  });
+}
+
+function readSubmittedProjectIntegrityRequirement(
+  plan: SubmittedCodeToolchainPlan,
+  manager: NonNullable<SubmittedCodeToolchainPlan["packageManager"]>,
+): SubmittedProjectIntegrityRequirement {
+  const expected = manager.projectIntegrity;
+  const lockEvidence = plan.evidence.filter(
+    (entry) => entry.kind === "lockfile" && entry.value === manager.name,
+  );
+  const filename = lockEvidence[0]?.source;
+  if (
+    expected === undefined ||
+    !/^sha256:[a-f0-9]{64}$/.test(expected) ||
+    lockEvidence.length !== 1 ||
+    filename === undefined ||
+    !/^[A-Za-z0-9._-]+$/.test(filename)
+  ) {
+    throw new Error(
+      "Submitted toolchain plan has no canonical lockfile integrity requirement.",
+    );
+  }
+  return {
+    expected,
+    filename,
+    projectDirectory: resolveSubmittedProjectCwd(plan.projectRoot),
+  };
+}
+
+function submittedToolchainArtifactIdentity(
+  nodeVersion: string,
+  manager: NonNullable<SubmittedCodeToolchainPlan["packageManager"]>,
+): string {
+  return JSON.stringify({
+    generation: manager.generation,
+    nodeVersion,
+    packageManager: manager.name,
+    upstreamIntegrity: manager.corepackHash ?? null,
+    version: manager.version,
+  });
+}
+
+function createSubmittedToolchainArtifactReceipt(
+  artifact: HydratedSubmittedCodeToolchainArtifact,
+): SubmittedCodeToolchainArtifactReceipt {
+  return Object.freeze({
+    node: Object.freeze({
+      archiveDigest: Object.freeze({ ...artifact.nodeRuntime.archiveDigest }),
+      nodeBinaryDigest: Object.freeze({
+        ...artifact.nodeRuntime.nodeBinaryDigest,
+      }),
+      signedManifestDigest: Object.freeze({
+        ...artifact.nodeRuntime.signedManifestDigest,
+      }),
+      signerPrimaryFingerprint: artifact.nodeRuntime.signerPrimaryFingerprint,
+      version: artifact.nodeRuntime.version,
+    }),
+    packageManager: Object.freeze({
+      artifactDigest: readAlgorithmAwareDigest(artifact.artifactDigest),
+      upstreamDigest: readAlgorithmAwareDigest(artifact.upstreamIntegrity),
+    }),
+  });
+}
+
+function readAlgorithmAwareDigest(
+  digest: `sha256:${string}` | `sha512:${string}`,
+): SubmittedCodeToolchainArtifactReceipt["packageManager"]["artifactDigest"] {
+  const separator = digest.indexOf(":");
+  const algorithm = digest.slice(0, separator);
+  const value = digest.slice(separator + 1);
+  if (
+    (algorithm !== "sha256" && algorithm !== "sha512") ||
+    !new RegExp(`^[a-f0-9]{${algorithm === "sha256" ? 64 : 128}}$`).test(value)
+  ) {
+    throw new Error("Trusted toolchain returned an invalid content digest.");
+  }
+  return Object.freeze({ algorithm, value });
+}
+
+function freshSubmittedCodeSandboxRequired(): Error {
+  return new Error(
+    "Submitted-code toolchain state is bound to synchronized workspace contents; use a fresh submitted-code sandbox for another plan.",
+  );
+}
+
+function trustedToolchainRootForArtifact(
+  input: {
+    name: string;
+    version: string;
+  },
+  artifactIdentity: string,
+): string {
+  const identityDigest = createHash("sha256")
+    .update(artifactIdentity)
+    .digest("hex")
+    .slice(0, 24);
+  return `/opt/makeademo/toolchains/${input.name}-${input.version}-${identityDigest}`;
+}
+
+function trustedToolchainHomeForArtifact(
+  input: { name: string; version: string },
+  artifactIdentity: string,
+  digest: string,
+): string {
+  return `${trustedToolchainRootForArtifact(input, artifactIdentity)}/${digest}/corepack`;
+}
+
+function createTrustedToolchainProvisioningEnv(): Record<string, string> {
+  return {
+    COREPACK_DEFAULT_TO_LATEST: "0",
+    COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
+    COREPACK_ENABLE_NETWORK: "1",
+    COREPACK_ENABLE_PROJECT_SPEC: "0",
+    COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: "0",
+    COREPACK_ENV_FILE: "0",
+    COREPACK_NPM_REGISTRY: "https://registry.npmjs.org",
+    HOME: "/var/empty",
+  };
+}
+
+function createTrustedToolchainHydrationCommand(
+  nodeRuntime: TrustedSubmittedNodeRuntimeArtifact,
+  manager: NonNullable<
+    SubmittedProjectExecutionRequest["plan"]["packageManager"]
+  >,
+  toolchainRoot: string,
+): string {
+  const artifactPath = `${toolchainRoot}/artifact.tgz`;
+  const stagingCorepackHome = `${toolchainRoot}/staging-corepack`;
+  const registryMetadata = createOfficialRegistryMetadataCommand(
+    nodeRuntime,
+    manager,
+  );
+  const launcherScript = createCorepackLauncherScript();
+  const nodeExecutable = trustedNodeExecutable(nodeRuntime);
+  const corepackCli = trustedCorepackCli(nodeRuntime);
+  const corepackCommand = `${shellQuote(nodeExecutable)} ${shellQuote(corepackCli)}`;
+  return [
+    "set -eu",
+    `artifact=${shellQuote(artifactPath)}`,
+    `toolchain_root=${shellQuote(toolchainRoot)}`,
+    'rm -rf "$toolchain_root"',
+    'mkdir -p "$toolchain_root"',
+    `mkdir -p ${shellQuote(`${stagingCorepackHome}/v1/${manager.name}`)}`,
+    registryMetadata,
+    ...(manager.corepackHash === undefined
+      ? []
+      : [`test \"$upstream_hash\" = ${shellQuote(manager.corepackHash)}`]),
+    `descriptor="${manager.name}@${manager.version}+$upstream_hash"`,
+    `COREPACK_HOME=${shellQuote(stagingCorepackHome)} COREPACK_NPM_REGISTRY=${shellQuote("https://registry.npmjs.org")} ${corepackCommand} pack \"$descriptor\" -o \"$artifact\"`,
+    "digest=$(sha512sum \"$artifact\" | awk '{print $1}')",
+    `COREPACK_HOME=${shellQuote(stagingCorepackHome)} ${corepackCommand} install -g --cache-only \"$artifact\"`,
+    'target="$toolchain_root/$digest"',
+    'mkdir -p "$target/bin"',
+    'mv "$toolchain_root/staging-corepack" "$target/corepack"',
+    `launcher="$target/bin/${manager.name}"`,
+    `printf %s ${shellQuote(launcherScript)} > "$launcher"`,
+    `printf '%s\n' "exec ${shellQuote(nodeExecutable)} ${shellQuote(corepackCli)} ${manager.name}@${manager.version}+$upstream_hash \\\"\\$@\\\"" >> "$launcher"`,
+    'chmod 0555 "$launcher"',
+    'rm -f "$artifact"',
+    'chown -R root:root "$target"',
+    'chmod -R a-w "$target"',
+    "printf 'MAKEADEMO_UPSTREAM_SRI=%s\\n' \"$upstream_sri\"",
+    "printf 'MAKEADEMO_ARTIFACT_SHA512=%s\\n' \"$digest\"",
+  ].join(" && ");
+}
+
+function createTrustedYarnBerryHydrationCommand(
+  nodeRuntime: TrustedSubmittedNodeRuntimeArtifact,
+  manager: NonNullable<
+    SubmittedProjectExecutionRequest["plan"]["packageManager"]
+  >,
+  toolchainRoot: string,
+): string {
+  const artifactPath = `${toolchainRoot}/artifact.tgz`;
+  const registryMetadata = createOfficialRegistryMetadataCommand(
+    nodeRuntime,
+    manager,
+  );
+  const launcherScript = [
+    "#!/bin/sh",
+    "set -eu",
+    'launcher_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
+    'yarn_cli="$(dirname "$launcher_dir")/cli/yarn.js"',
+    `exec ${shellQuote(trustedNodeExecutable(nodeRuntime))} "$yarn_cli" "$@"`,
+    "",
+  ].join("\n");
+  return [
+    "set -eu",
+    `artifact=${shellQuote(artifactPath)}`,
+    `toolchain_root=${shellQuote(toolchainRoot)}`,
+    'rm -rf "$toolchain_root"',
+    'mkdir -p "$toolchain_root/staging/cli"',
+    registryMetadata,
+    `curl --fail --silent --show-error --location --max-filesize 67108864 --proto '=https' --tlsv1.2 "$tarball_url" -o "$artifact"`,
+    'test "$(sha512sum "$artifact" | awk \'{print $1}\')" = "${upstream_hash#sha512.}"',
+    `test "$(tar -tzf "$artifact" | grep -Fxc ${shellQuote("package/bin/yarn.js")})" = 1`,
+    'yarn_cli="$toolchain_root/staging/cli/yarn.js"',
+    `tar -xOzf "$artifact" ${shellQuote("package/bin/yarn.js")} | head -c 67108865 > "$yarn_cli"`,
+    'yarn_cli_size=$(wc -c < "$yarn_cli" | tr -d " ")',
+    'test "$yarn_cli_size" -gt 0',
+    'test "$yarn_cli_size" -le 67108864',
+    ...createDeclaredYarnBerryHashVerificationCommands(manager),
+    "digest=$(sha512sum \"$yarn_cli\" | awk '{print $1}')",
+    'target="$toolchain_root/$digest"',
+    'mkdir -p "$target/bin"',
+    'mv "$toolchain_root/staging/cli" "$target/cli"',
+    'launcher="$target/bin/yarn"',
+    `printf %s ${shellQuote(launcherScript)} > "$launcher"`,
+    'chmod 0555 "$launcher"',
+    'rm -rf "$toolchain_root/staging"',
+    'rm -f "$artifact"',
+    'chown -R root:root "$target"',
+    'chmod -R a-w "$target"',
+    "printf 'MAKEADEMO_UPSTREAM_SRI=%s\\n' \"$upstream_sri\"",
+    "printf 'MAKEADEMO_ARTIFACT_SHA512=%s\\n' \"$digest\"",
+  ].join(" && ");
+}
+
+function createDeclaredYarnBerryHashVerificationCommands(
+  manager: NonNullable<
+    SubmittedProjectExecutionRequest["plan"]["packageManager"]
+  >,
+): string[] {
+  if (manager.corepackHash === undefined) return [];
+  const match = /^sha(224|256|384|512)\.([A-Fa-f0-9]+)$/.exec(
+    manager.corepackHash,
+  );
+  const algorithmBits = match?.[1];
+  const digest = match?.[2];
+  if (
+    algorithmBits === undefined ||
+    digest === undefined ||
+    digest.length !== Number(algorithmBits) / 4
+  ) {
+    throw new Error("Invalid Corepack package-manager integrity suffix.");
+  }
+  return [
+    `test "sha${algorithmBits}.$(sha${algorithmBits}sum "$yarn_cli" | awk '{print $1}')" = ${shellQuote(`sha${algorithmBits}.${digest.toLowerCase()}`)}`,
+  ];
+}
+
+function createCorepackLauncherScript(): string {
+  return [
+    "#!/bin/sh",
+    "set -eu",
+    'launcher_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
+    'export COREPACK_HOME="$(dirname "$launcher_dir")/corepack"',
+    "export COREPACK_DEFAULT_TO_LATEST=0",
+    "export COREPACK_ENABLE_AUTO_PIN=0",
+    "export COREPACK_ENABLE_DOWNLOAD_PROMPT=0",
+    "export COREPACK_ENABLE_NETWORK=0",
+    "export COREPACK_ENABLE_PROJECT_SPEC=0",
+    "export COREPACK_ENABLE_STRICT=1",
+    "export COREPACK_ENABLE_UNSAFE_CUSTOM_URLS=0",
+    "export COREPACK_ENV_FILE=0",
+    "",
+  ].join("\n");
+}
+
+function createTrustedBunHydrationCommand(
+  nodeRuntime: TrustedSubmittedNodeRuntimeArtifact,
+  version: string,
+  toolchainRoot: string,
+): string {
+  const tag = `bun-v${version}`;
+  const assetName = "bun-linux-x64.zip";
+  const apiUrl = `https://api.github.com/repos/oven-sh/bun/releases/tags/${tag}`;
+  const assetUrl = `https://github.com/oven-sh/bun/releases/download/${tag}/${assetName}`;
+  const metadataParser = [
+    "const fs = require('node:fs');",
+    "const release = JSON.parse(fs.readFileSync(0, 'utf8'));",
+    `const expectedTag = ${JSON.stringify(tag)};`,
+    `const expectedName = ${JSON.stringify(assetName)};`,
+    `const expectedUrl = ${JSON.stringify(assetUrl)};`,
+    "if (release?.tag_name !== expectedTag || release?.draft !== false || release?.prerelease !== false) process.exit(1);",
+    "const assets = Array.isArray(release?.assets) ? release.assets.filter((asset) => asset?.name === expectedName) : [];",
+    "if (assets.length !== 1) process.exit(1);",
+    "const asset = assets[0];",
+    "if (asset?.browser_download_url !== expectedUrl || typeof asset?.size !== 'number' || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > 134217728) process.exit(1);",
+    "if (typeof asset.digest !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(asset.digest)) process.exit(1);",
+    "process.stdout.write(`${asset.digest.slice('sha256:'.length)} ${asset.size}`);",
+  ].join(" ");
+  const memberMetadataParser = [
+    "const fs = require('node:fs');",
+    "const metadata = fs.readFileSync(0, 'utf8');",
+    "const matches = [...metadata.matchAll(/uncompressed size:\\s+([0-9]+) bytes/g)];",
+    "if (matches.length !== 1) process.exit(1);",
+    "const uncompressedSize = Number(matches[0][1]);",
+    "if (!Number.isSafeInteger(uncompressedSize) || uncompressedSize <= 0 || uncompressedSize > 268435456) process.exit(1);",
+    "process.stdout.write(String(uncompressedSize));",
+  ].join(" ");
+  return [
+    "set -eu",
+    `toolchain_root=${shellQuote(toolchainRoot)}`,
+    'rm -rf "$toolchain_root"',
+    'mkdir -p "$toolchain_root/staging"',
+    `metadata=$(curl --fail --silent --show-error --location --max-filesize 2097152 --proto '=https' --tlsv1.2 -H ${shellQuote("Accept: application/vnd.github+json")} -H ${shellQuote("X-GitHub-Api-Version: 2022-11-28")} ${shellQuote(apiUrl)})`,
+    `authority=$(printf '%s' "$metadata" | ${createTrustedNodeCommand(nodeRuntime, metadataParser)})`,
+    "upstream_sha256=${authority%% *}",
+    "asset_size=${authority##* }",
+    `asset="$toolchain_root/${assetName}"`,
+    `curl --fail --silent --show-error --location --max-filesize 134217728 --proto '=https' --tlsv1.2 ${shellQuote(assetUrl)} -o "$asset"`,
+    'test "$(wc -c < "$asset" | tr -d " ")" = "$asset_size"',
+    'test "$(sha256sum "$asset" | awk \'{print $1}\')" = "$upstream_sha256"',
+    `test "$(unzip -Z1 "$asset" | grep -Fxc ${shellQuote("bun-linux-x64/bun")})" = 1`,
+    `member_size=$(unzip -Z -v "$asset" ${shellQuote("bun-linux-x64/bun")} | ${createTrustedNodeCommand(nodeRuntime, memberMetadataParser)})`,
+    'test "$member_size" -gt 0',
+    'test "$member_size" -le 268435456',
+    `unzip -q "$asset" ${shellQuote("bun-linux-x64/bun")} -d "$toolchain_root/staging"`,
+    'binary="$toolchain_root/staging/bun-linux-x64/bun"',
+    'test -f "$binary"',
+    "artifact_sha256=$(sha256sum \"$binary\" | awk '{print $1}')",
+    'target="$toolchain_root/$artifact_sha256/bin"',
+    'mkdir -p "$target"',
+    'mv "$binary" "$target/bun"',
+    'rm -rf "$toolchain_root/staging"',
+    'rm -f "$asset"',
+    'chown -R root:root "$toolchain_root/$artifact_sha256"',
+    'chmod -R a-w "$toolchain_root/$artifact_sha256"',
+    'chmod a+x "$target/bun"',
+    `test "$("$target/bun" --version)" = ${shellQuote(version)}`,
+    "printf 'MAKEADEMO_UPSTREAM_SHA256=%s\\n' \"$upstream_sha256\"",
+    "printf 'MAKEADEMO_ARTIFACT_SHA256=%s\\n' \"$artifact_sha256\"",
+  ].join(" && ");
+}
+
+function createTrustedToolchainArtifactVerificationCommand(
+  artifact: HydratedSubmittedCodeToolchainArtifact,
+): string {
+  const launcher = `${artifact.binPath}/${artifact.packageManager}`;
+  const layoutVerification =
+    artifact.packageManager === "bun"
+      ? 'test -x "$toolchain_home/bun" || fail "bun-binary"'
+      : artifact.generation === "yarn-berry"
+        ? 'test -f "$toolchain_home/yarn.js" || fail "yarn-berry-cli"'
+        : `test -d "$toolchain_home/v1/${artifact.packageManager}/${artifact.version}" || fail "corepack-release"`;
+  return [
+    "set -eu",
+    ": MAKEADEMO_VERIFY_TRUSTED_ARTIFACT",
+    `toolchain_home=${shellQuote(artifact.toolchainHome)}`,
+    `bin_path=${shellQuote(artifact.binPath)}`,
+    'artifact_root=$(dirname "$toolchain_home")',
+    'artifact_parent=$(dirname "$artifact_root")',
+    `launcher=${shellQuote(launcher)}`,
+    "fail() { printf 'Trusted artifact invariant failed: %s\\n' \"$1\" >&2; exit 1; }",
+    'test -d "$artifact_root" || fail "artifact-root-directory"',
+    'test -d "$toolchain_home" || fail "toolchain-home-directory"',
+    'test -d "$bin_path" || fail "launcher-directory"',
+    'test "$(stat -c %u "$artifact_parent")" = 0 || fail "artifact-parent-owner"',
+    'test "$(stat -c %u "$artifact_root")" = 0 || fail "artifact-root-owner"',
+    'test -z "$(find "$artifact_root" -xdev ! -user root -print -quit)" || fail "artifact-tree-owner"',
+    'test -z "$(find "$artifact_root" -xdev -perm /222 -print -quit)" || fail "artifact-tree-mode"',
+    `runuser -u ${shellQuote(agentWorkspaceUser)} -- test ! -w "$artifact_parent" || fail "artifact-parent-pwuser-write"`,
+    `runuser -u ${shellQuote(agentWorkspaceUser)} -- test ! -w "$artifact_root" || fail "artifact-root-pwuser-write"`,
+    `runuser -u ${shellQuote(agentWorkspaceUser)} -- test ! -w "$toolchain_home" || fail "toolchain-home-pwuser-write"`,
+    `runuser -u ${shellQuote(agentWorkspaceUser)} -- test ! -w "$bin_path" || fail "launcher-directory-pwuser-write"`,
+    layoutVerification,
+    'test -x "$launcher" || fail "launcher-executable"',
+    `runuser -u ${shellQuote(agentWorkspaceUser)} -- test -x "$launcher" || fail "launcher-pwuser-executable"`,
+    'actual_version=$("$launcher" --version) || fail "launcher-version-command"',
+    `test "$actual_version" = ${shellQuote(artifact.version)} || fail "launcher-version"`,
+  ].join("\n");
+}
+
+function createOfficialRegistryMetadataCommand(
+  nodeRuntime: TrustedSubmittedNodeRuntimeArtifact,
+  manager: NonNullable<
+    SubmittedProjectExecutionRequest["plan"]["packageManager"]
+  >,
+): string {
+  const authority =
+    manager.name === "yarn" && manager.generation === "yarn-berry"
+      ? {
+          metadataName: "@yarnpkg%2fcli-dist",
+          tarballPath: "/@yarnpkg/cli-dist/-/",
+        }
+      : {
+          metadataName: manager.name,
+          tarballPath: `/${manager.name}/-/`,
+        };
+  const registryUrl = `https://registry.npmjs.org/${authority.metadataName}/${manager.version}`;
+  const expectedMetadataName =
+    manager.name === "yarn" && manager.generation === "yarn-berry"
+      ? "@yarnpkg/cli-dist"
+      : manager.name;
+  const parser = [
+    "const fs = require('node:fs');",
+    "const metadata = JSON.parse(fs.readFileSync(0, 'utf8'));",
+    `const expectedName = ${JSON.stringify(expectedMetadataName)};`,
+    `const expectedVersion = ${JSON.stringify(manager.version)};`,
+    "if (metadata?.name !== expectedName || metadata?.version !== expectedVersion) { process.stderr.write('MAKEADEMO_REGISTRY_RELEASE_UNAVAILABLE\\n'); process.exit(42); }",
+    "if (Object.hasOwn(metadata, 'deprecated') && metadata.deprecated != null && String(metadata.deprecated).trim() !== '') { process.stderr.write('MAKEADEMO_REGISTRY_RELEASE_DEPRECATED\\n'); process.exit(42); }",
+    "const integrity = metadata?.dist?.integrity;",
+    "const tarball = metadata?.dist?.tarball;",
+    "if (typeof integrity !== 'string' || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(integrity)) process.exit(1);",
+    "const digest = Buffer.from(integrity.slice('sha512-'.length), 'base64');",
+    "if (digest.length !== 64) process.exit(1);",
+    "const url = new URL(tarball);",
+    `if (url.protocol !== 'https:' || url.hostname !== 'registry.npmjs.org' || !url.pathname.startsWith(${JSON.stringify(authority.tarballPath)})) process.exit(1);`,
+    "process.stdout.write(`${integrity}\\n${url.toString()}`);",
+  ].join(" ");
+  const hashConverter = [
+    "const fs = require('node:fs');",
+    "const integrity = fs.readFileSync(0, 'utf8').trim();",
+    "const digest = Buffer.from(integrity.slice('sha512-'.length), 'base64');",
+    "if (!/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(integrity) || digest.length !== 64) process.exit(1);",
+    "process.stdout.write(`sha512.${digest.toString('hex')}`);",
+  ].join(" ");
+  return [
+    "registry_metadata_file=$(mktemp)",
+    `metadata_http_status=$(curl --silent --show-error --location --max-filesize 1048576 --proto '=https' --tlsv1.2 --output "$registry_metadata_file" --write-out '%{http_code}' ${shellQuote(registryUrl)}) || { metadata_curl_status=$?; rm -f "$registry_metadata_file"; exit "$metadata_curl_status"; }`,
+    'if [ "$metadata_http_status" != 200 ]; then rm -f "$registry_metadata_file"; if [ "$metadata_http_status" = 404 ]; then printf \'MAKEADEMO_REGISTRY_RELEASE_UNAVAILABLE\\n\' >&2; exit 42; fi; exit 1; fi',
+    'metadata=$(cat "$registry_metadata_file")',
+    'rm -f "$registry_metadata_file"',
+    `registry_authority=$(printf '%s' "$metadata" | ${createTrustedNodeCommand(nodeRuntime, parser)})`,
+    `upstream_sri=$(printf '%s\n' "$registry_authority" | head -n 1)`,
+    `tarball_url=$(printf '%s\n' "$registry_authority" | tail -n 1)`,
+    'test -n "$upstream_sri"',
+    'test -n "$tarball_url"',
+    `upstream_hash=$(printf '%s' "$upstream_sri" | ${createTrustedNodeCommand(nodeRuntime, hashConverter)})`,
+  ].join(" && ");
+}
+
+function createSubmittedProjectIntegrityVerificationCommand(
+  requirement: SubmittedProjectIntegrityRequirement,
+  nodeRuntime: TrustedSubmittedNodeRuntimeArtifact,
+): string {
+  const verifier = [
+    "const { createHash } = require('node:crypto');",
+    "const fs = require('node:fs');",
+    "const path = require('node:path');",
+    `const projectDirectory = ${JSON.stringify(requirement.projectDirectory)};`,
+    `const filename = ${JSON.stringify(requirement.filename)};`,
+    `const expected = ${JSON.stringify(requirement.expected)};`,
+    "const workspace = '/workspace';",
+    "const lockfile = path.join(projectDirectory, filename);",
+    "const relative = path.relative(workspace, lockfile);",
+    "if (relative.startsWith('..') || path.isAbsolute(relative)) process.exit(1);",
+    "let current = workspace;",
+    "const segments = relative.split(path.sep).filter(Boolean);",
+    "for (const [index, segment] of segments.entries()) {",
+    "  current = path.join(current, segment);",
+    "  const stat = fs.lstatSync(current);",
+    "  if (stat.isSymbolicLink()) process.exit(1);",
+    "  if (index === segments.length - 1 ? !stat.isFile() : !stat.isDirectory()) process.exit(1);",
+    "}",
+    "const descriptor = fs.openSync(lockfile, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);",
+    "try {",
+    "  if (!fs.fstatSync(descriptor).isFile()) process.exit(1);",
+    "  const digest = `sha256:${createHash('sha256').update(fs.readFileSync(descriptor)).digest('hex')}`;",
+    "  if (digest !== expected) process.exit(1);",
+    "} finally { fs.closeSync(descriptor); }",
+  ].join(" ");
+  return [
+    ": MAKEADEMO_VERIFY_PROJECT_INTEGRITY",
+    createTrustedNodeCommand(nodeRuntime, verifier),
+  ].join(" && ");
+}
+
+function createTrustedNodeCommand(
+  nodeRuntime: TrustedSubmittedNodeRuntimeArtifact,
+  script: string,
+): string {
+  return [trustedNodeExecutable(nodeRuntime), "-e", script]
+    .map(shellQuote)
+    .join(" ");
+}
+
+function trustedNodeExecutable(
+  nodeRuntime: TrustedSubmittedNodeRuntimeArtifact,
+): string {
+  return `${nodeRuntime.root}/bin/node`;
+}
+
+function trustedCorepackCli(
+  nodeRuntime: TrustedSubmittedNodeRuntimeArtifact,
+): string {
+  return `${nodeRuntime.root}/bin/corepack`;
+}
+
+function readHydratedArtifactAttestation(stdout: string): {
+  artifactDigest: `sha512:${string}`;
+  corepackHash: `sha512.${string}`;
+  upstreamIntegrity: `sha512:${string}`;
+} {
+  const artifactDigest = /MAKEADEMO_ARTIFACT_SHA512=([a-f0-9]{128})/.exec(
+    stdout,
+  )?.[1];
+  const upstreamIntegrity =
+    /MAKEADEMO_UPSTREAM_SRI=(sha512-[A-Za-z0-9+/]+={0,2})/.exec(stdout)?.[1];
+  if (artifactDigest === undefined || upstreamIntegrity === undefined) {
+    throw new Error(
+      "Trusted package-manager hydration did not return its registry integrity attestation.",
+    );
+  }
+  const digest = Buffer.from(
+    upstreamIntegrity.slice("sha512-".length),
+    "base64",
+  );
+  if (digest.length !== 64) {
+    throw new Error(
+      "Trusted package-manager hydration returned an invalid SHA-512 SRI.",
+    );
+  }
+  return {
+    artifactDigest: `sha512:${artifactDigest}`,
+    corepackHash: `sha512.${digest.toString("hex")}`,
+    upstreamIntegrity: `sha512:${digest.toString("hex")}`,
+  };
+}
+
+function readBunArtifactAttestation(stdout: string): {
+  artifactDigest: `sha256:${string}`;
+  upstreamIntegrity: `sha256:${string}`;
+} {
+  const artifactDigest = /MAKEADEMO_ARTIFACT_SHA256=([a-f0-9]{64})/.exec(
+    stdout,
+  )?.[1];
+  const upstreamDigest = /MAKEADEMO_UPSTREAM_SHA256=([a-f0-9]{64})/.exec(
+    stdout,
+  )?.[1];
+  if (artifactDigest === undefined || upstreamDigest === undefined) {
+    throw new Error(
+      "Trusted Bun hydration did not return its authoritative GitHub SHA-256 attestation.",
+    );
+  }
+  return {
+    artifactDigest: `sha256:${artifactDigest}`,
+    upstreamIntegrity: `sha256:${upstreamDigest}`,
+  };
 }
 
 class ManagedPty {
@@ -1711,6 +2676,24 @@ function createUnprivilegedAgentCommand(command: string): string {
   return `printf %s ${shellQuote(encoded)} | base64 --decode | runuser -u ${shellQuote(agentWorkspaceUser)} -- env -i HOME=${shellQuote(agentWorkspaceHome)} TMPDIR=${shellQuote(agentWorkspaceTemp)} PATH=${shellQuote(agentWorkspacePath)} /bin/bash --noprofile --norc`;
 }
 
+function createUnprivilegedSubmittedCodeExecution(
+  command: string,
+  env: Readonly<Record<string, string>>,
+): { command: string } {
+  const encoded = Buffer.from(command, "utf8").toString("base64");
+  const environment = Object.entries({
+    HOME: agentWorkspaceHome,
+    PATH: agentWorkspacePath,
+    TMPDIR: agentWorkspaceTemp,
+    ...env,
+  })
+    .map(([key, value]) => `${key}=${shellQuote(value)}`)
+    .join(" ");
+  return {
+    command: `printf %s ${shellQuote(encoded)} | base64 --decode | runuser -u ${shellQuote(agentWorkspaceUser)} -- env -i ${environment} /bin/bash --noprofile --norc`,
+  };
+}
+
 function createPreparedWorkspaceArchiveCommand(archivePath: string): string {
   const excludedArchivePaths = [
     "./.git",
@@ -1794,6 +2777,8 @@ function createSubmittedCodeWorkspaceExtractCommand(
       "rm -rf -- /workspace/* /workspace/.[!.]* /workspace/..?*",
       '{ cp -a "$preserved"/. /workspace/ 2>/dev/null || true; }',
       `tar -xzf ${shellQuote(archivePath)} -C /workspace`,
+      `mkdir -p ${shellQuote(agentWorkspaceHome)} ${shellQuote(agentWorkspaceTemp)} ${shellQuote(`${workspaceMakeADemoDirectory}/cache`)}`,
+      `if id -u ${shellQuote(agentWorkspaceUser)} >/dev/null 2>&1; then find /workspace -xdev -exec chown -h ${shellQuote(`${agentWorkspaceUser}:${agentWorkspaceUser}`)} {} +; fi`,
     ].join(" && "),
   )}`;
 }
@@ -1812,18 +2797,4 @@ function formatCommandFailure(
   const stdout = result.stdout ?? result.result ?? "";
 
   return `${message} (exit code ${exitCode}). stderr: ${stderr} stdout: ${stdout}`;
-}
-
-function isRestrictedNetworkPolicyError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const message = error.message.trim();
-  const restriction =
-    "Network access is restricted and cannot be overridden at the sandbox level";
-  const documentedRestriction = `${restriction}. See https://www.daytona.io/docs/en/network-limits/#tier-based-network-restrictions`;
-  return [
-    restriction,
-    `${restriction}.`,
-    documentedRestriction,
-    `${documentedRestriction}.`,
-  ].includes(message);
 }

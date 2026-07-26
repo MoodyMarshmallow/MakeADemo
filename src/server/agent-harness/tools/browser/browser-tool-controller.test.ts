@@ -70,8 +70,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });
@@ -129,8 +127,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });
@@ -163,8 +159,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });
@@ -199,8 +193,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });
@@ -246,8 +238,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });
@@ -295,8 +285,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });
@@ -350,8 +338,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });
@@ -391,8 +377,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });
@@ -429,8 +413,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });
@@ -510,8 +492,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });
@@ -543,8 +523,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });
@@ -593,8 +571,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });
@@ -621,7 +597,7 @@ describe("BrowserToolController", () => {
     );
   });
 
-  it("reseals submitted-code network before navigating through its retained CLI session", async () => {
+  it("navigates through its retained CLI session without sandbox network changes", async () => {
     const events: string[] = [];
     const controller = createBrowserToolController({
       deadlineAt: Date.now() + 5_000,
@@ -652,10 +628,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess(enabled) {
-          events.push(`network:${enabled}`);
-        },
         async uploadFiles() {},
       },
     });
@@ -667,19 +639,10 @@ describe("BrowserToolController", () => {
       url: "http://127.0.0.1:3000/settings?tab=profile",
     });
 
-    expect(events.filter((event) => event === "network:false")).toHaveLength(4);
-    expect(
-      events.map((event) =>
-        event === "network:false" ? event : readCliAction(event),
-      ),
-    ).toEqual([
-      "network:false",
+    expect(events.map(readCliAction)).toEqual([
       "open 'http://127.0.0.1:3000/demo'",
-      "network:false",
       "eval '() => location.origin'",
-      "network:false",
       "goto 'http://127.0.0.1:3000/settings?tab=profile'",
-      "network:false",
       "eval '() => location.origin'",
     ]);
   });
@@ -711,8 +674,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });
@@ -755,8 +716,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });
@@ -807,8 +766,6 @@ describe("BrowserToolController", () => {
       async getPreviewUrl() {
         return "https://preview.example.test";
       },
-      async setOutboundNetworkAccess() {},
-      async setSubmittedCodeNetworkAccess() {},
       async uploadFiles(
         files: Array<{ destinationPath: string; sourcePath: string }>,
       ) {
@@ -880,8 +837,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });
@@ -928,8 +883,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });
@@ -965,8 +918,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });
@@ -1027,8 +978,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });
@@ -1074,8 +1023,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });
@@ -1113,8 +1060,6 @@ describe("BrowserToolController", () => {
         async getPreviewUrl() {
           return "https://preview.example.test";
         },
-        async setOutboundNetworkAccess() {},
-        async setSubmittedCodeNetworkAccess() {},
         async uploadFiles() {},
       },
     });

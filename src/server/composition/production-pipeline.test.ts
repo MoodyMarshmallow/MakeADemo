@@ -4,6 +4,7 @@ import type { AgentSessionRunner } from "../agent-harness/agent-session-runner.i
 import { runPipelineJob } from "../pipeline/00-orchestration/job/pipeline-orchestrator";
 import type { PreparationWorkspaceHandle } from "../pipeline/03-repo-preparation/preparation-workspace-runner";
 import type { RepoPreparationAgent } from "../pipeline/03-repo-preparation/repo-preparation-agent.interface";
+import { submittedCodeKnownGoodNodeReleaseCatalog } from "../pipeline/03-repo-preparation/submitted-code-node-release-catalog.interface";
 import { parseDemoScript } from "../pipeline/04-script-generation/demo-script/demo-script.schema";
 import type { ScriptGenerationAgent } from "../pipeline/04-script-generation/script-generation-agent.interface";
 import type { CapturePathRepairer } from "../pipeline/05-capture-path-validation/capture-path-repairer.interface";
@@ -112,6 +113,7 @@ describe("production Pipeline assembly", () => {
       },
       createProductionPipelineDependencies({
         browserValidator,
+        nodeReleaseCatalog: submittedCodeKnownGoodNodeReleaseCatalog,
         repoPreparationAgent,
         sandboxRunner,
         sceneValidator: {
@@ -145,6 +147,7 @@ describe("production Pipeline assembly", () => {
   it("supplies a fresh deterministic state before Footage Capture", async () => {
     const preparationWorkspace = preparationWorkspaceHandle();
     const prepareFreshCaptureState = createDaytonaFreshCaptureStatePreparer(
+      submittedCodeKnownGoodNodeReleaseCatalog,
       async ({
         preparationManifest: manifest,
         preparationWorkspace: workspace,
@@ -180,6 +183,7 @@ describe("production Pipeline assembly", () => {
     };
 
     const dependencies = createProductionPipelineDependencies({
+      nodeReleaseCatalog: submittedCodeKnownGoodNodeReleaseCatalog,
       repoPreparationAgent: {
         async prepare() {
           throw new Error("not used");
@@ -269,7 +273,6 @@ function preparationWorkspaceHandle(): PreparationWorkspaceHandle {
       async getPreviewUrl() {
         return "https://preview.example.test";
       },
-      async setOutboundNetworkAccess() {},
       async uploadFiles() {},
     },
   };

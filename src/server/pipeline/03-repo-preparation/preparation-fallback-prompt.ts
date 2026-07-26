@@ -10,7 +10,7 @@ export function createPreparationFallbackPrompt(
 ): string {
   return [
     `Prepare ${input.repoUrl} for MakeADemo.`,
-    "Make the repo expose a deterministic browser-accessible demo that runs without secrets, hosted services, OAuth, external APIs, or runtime network access after setup.",
+    "Make the repo expose a deterministic browser-accessible demo that runs without secrets, hosted services, OAuth, or external APIs after setup.",
     section("Blockers", input.blockers),
     section("Assumptions", input.assumptions),
     section("Suggested changes", input.suggestedChanges),

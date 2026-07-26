@@ -11,7 +11,7 @@ type RepoPreparationToolName = (typeof repoPreparationToolNames)[number];
 /** Opaque configuration key selected by composition, not by a provider adapter. */
 export type RepoPreparationToolHandoff =
   | {
-      input: { command: string };
+      input: Record<string, never>;
       toolName:
         | "makeademo_dependency_request_install"
         | "makeademo_install_dependencies";
@@ -34,10 +34,17 @@ export function decodeRepoPreparationToolCall(
         }
       : { handoff: { input: { manifestPath }, toolName: call.name } };
   }
-  const command = readStringField(call.input, "command");
-  return command === undefined
-    ? { error: `${call.name} payload is missing required field input.command` }
-    : { handoff: { input: { command }, toolName: call.name } };
+  if (
+    typeof call.input !== "object" ||
+    call.input === null ||
+    Array.isArray(call.input) ||
+    Object.keys(call.input).length > 0
+  ) {
+    return {
+      error: `${call.name} does not accept command arguments; the backend selects the immutable install`,
+    };
+  }
+  return { handoff: { input: {}, toolName: call.name } };
 }
 
 export const repoPreparationToolProtocol: AgentToolProtocol<RepoPreparationToolHandoff> =

@@ -31,14 +31,6 @@ export type RepoPreparationStageTool = AgentToolDefinition & {
 export function createRepoPreparationStageTools(
   state: RepoPreparationControlState,
 ): readonly RepoPreparationStageTool[] {
-  const dependencyArgs = {
-    command: {
-      description:
-        repoPreparationToolDefinitions.dependencyRequestInstall
-          .argumentDescription ?? "Dependency install command.",
-      type: "string" as const,
-    },
-  };
   const validationArgs = {
     manifestPath: {
       description:
@@ -72,13 +64,11 @@ export function createRepoPreparationStageTools(
 
   return [
     createDependencyInstallTool({
-      args: dependencyArgs,
       definition: repoPreparationToolDefinitions.dependencyRequestInstall,
       name: repoPreparationToolNames[0],
       state,
     }),
     createDependencyInstallTool({
-      args: dependencyArgs,
       definition: repoPreparationToolDefinitions.dependencyInstallAlias,
       name: repoPreparationToolNames[1],
       state,
@@ -133,7 +123,6 @@ export function createRepoPreparationStageTools(
 }
 
 function createDependencyInstallTool(input: {
-  args: Readonly<Record<string, RepoPreparationStageToolArgument>>;
   definition:
     | (typeof repoPreparationToolDefinitions)["dependencyRequestInstall"]
     | (typeof repoPreparationToolDefinitions)["dependencyInstallAlias"];
@@ -142,12 +131,16 @@ function createDependencyInstallTool(input: {
 }): RepoPreparationStageTool {
   return {
     acceptance: input.definition.acceptance,
-    args: input.args,
+    args: {},
     description: input.definition.description,
     async execute(args) {
-      const command = stringArg(args, "command");
-      await input.state.requestDependencyInstall({ command });
-      return `Requested backend dependency install: ${command}`;
+      if (Object.keys(args).length > 0) {
+        throw new Error(
+          "Dependency install requests do not accept command arguments; the backend selects the immutable install.",
+        );
+      }
+      await input.state.requestDependencyInstall({});
+      return "Requested the backend-selected immutable dependency install.";
     },
     name: input.name,
     precondition: input.definition.precondition,

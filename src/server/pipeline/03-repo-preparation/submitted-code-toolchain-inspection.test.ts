@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vitest";
 
 import type { PreparationWorkspace } from "./preparation-workspace.interface";
-import { inspectSubmittedCodeToolchain } from "./submitted-code-toolchain-inspection";
+import {
+  type SubmittedCodeNodeReleaseCatalog,
+  SubmittedCodeNodeReleaseCatalogError,
+  submittedCodeKnownGoodNodeReleaseCatalog,
+} from "./submitted-code-node-release-catalog.interface";
+import { inspectSubmittedCodeToolchain as inspectAgainstNodeCatalog } from "./submitted-code-toolchain-inspection";
+
+function inspectSubmittedCodeToolchain(
+  workspace: PreparationWorkspace,
+  nodeReleaseCatalog: SubmittedCodeNodeReleaseCatalog = submittedCodeKnownGoodNodeReleaseCatalog,
+) {
+  return inspectAgainstNodeCatalog(workspace, nodeReleaseCatalog);
+}
 
 describe("inspectSubmittedCodeToolchain", () => {
   it("returns a catalog plan for supported submitted metadata", async () => {
@@ -31,14 +43,14 @@ describe("inspectSubmittedCodeToolchain", () => {
     });
   });
 
-  it("returns an explicit unsupported-toolchain result for a catalog capability miss", async () => {
+  it("resolves against the supplied per-job Node release catalog", async () => {
     const result = await inspectSubmittedCodeToolchain(
       fakeWorkspace({
         candidates: [
           {
             files: {
               "package.json": JSON.stringify({
-                engines: { node: "20" },
+                engines: { node: "24" },
                 packageManager: "npm@10.8.2",
               }),
               "package-lock.json": "",
@@ -47,13 +59,39 @@ describe("inspectSubmittedCodeToolchain", () => {
           },
         ],
       }),
+      {
+        async load() {
+          return {
+            releases: [{ family: 24, version: "24.3.2" }],
+            source: "test-fixture",
+          };
+        },
+      },
     );
 
     expect(result).toMatchObject({
-      code: "unsupported_node_version",
-      mode: "unsupported",
+      mode: "catalog",
+      plan: { node: { family: 24, version: "24.3.2" } },
     });
   });
+
+  it.each(["fetch_failed", "timed_out"] as const)(
+    "preserves the Node catalog %s infrastructure attribution",
+    async (code) => {
+      const failure = new SubmittedCodeNodeReleaseCatalogError(
+        code,
+        `catalog ${code}`,
+      );
+
+      await expect(
+        inspectSubmittedCodeToolchain(fakeWorkspace({ candidates: [] }), {
+          async load() {
+            throw failure;
+          },
+        }),
+      ).rejects.toBe(failure);
+    },
+  );
 
   it("fails closed when trusted inspector output is malformed", async () => {
     await expect(
@@ -63,7 +101,7 @@ describe("inspectSubmittedCodeToolchain", () => {
     );
   });
 
-  it("fails closed on malformed submitted version metadata", async () => {
+  it("returns a bounded typed outcome for malformed submitted version metadata", async () => {
     await expect(
       inspectSubmittedCodeToolchain(
         fakeWorkspace({
@@ -81,7 +119,10 @@ describe("inspectSubmittedCodeToolchain", () => {
           ],
         }),
       ),
-    ).rejects.toThrow("Submitted toolchain metadata could not be resolved");
+    ).resolves.toMatchObject({
+      code: "invalid_node_constraint",
+      mode: "unsupported",
+    });
   });
 
   it("does not expose submitted metadata secrets in malformed toolchain diagnostics", async () => {
@@ -101,7 +142,11 @@ describe("inspectSubmittedCodeToolchain", () => {
           ],
         }),
       ),
-    ).rejects.toThrow("Submitted toolchain metadata could not be resolved");
+    ).resolves.toMatchObject({
+      code: "invalid_node_constraint",
+      mode: "unsupported",
+      reason: expect.not.stringContaining(secret),
+    });
   });
 
   it("fails closed when the trusted inspector rejects submitted metadata", async () => {
@@ -143,7 +188,6 @@ function fakeWorkspaceOutput(
     async getPreviewUrl() {
       return "https://preview.example.test";
     },
-    async setOutboundNetworkAccess() {},
     async uploadFiles() {},
   };
 }

@@ -15,6 +15,7 @@ RUN mkdir -p /etc/openshell-tls \
 RUN mkdir -p /opt/makeademo
 
 COPY submitted-code-node-browser.Dockerfile /opt/makeademo/submitted-code-node-browser.Dockerfile
+COPY provision-submitted-node-runtime.mjs /opt/makeademo/provision-submitted-node-runtime.mjs
 COPY preload-submitted-code-image.sh /usr/local/bin/makeademo-preload-submitted-code-image
 COPY inspect-submitted-code-toolchain.mjs /usr/local/bin/makeademo-inspect-submitted-code-toolchain
 RUN chmod 0750 /usr/local/bin/makeademo-preload-submitted-code-image /usr/local/bin/makeademo-inspect-submitted-code-toolchain

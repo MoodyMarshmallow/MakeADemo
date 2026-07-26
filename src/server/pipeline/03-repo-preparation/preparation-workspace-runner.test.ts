@@ -24,7 +24,7 @@ describe("runInPreparationWorkspace", () => {
     expect(events).toEqual(["create", "run:workspace_123", "release"]);
   });
 
-  it("blocks network and releases the workspace when the agent run times out", async () => {
+  it("releases the workspace when the agent run times out", async () => {
     const events: string[] = [];
     const provider = fakeProvider(events);
     const result = await runInPreparationWorkspace({
@@ -37,7 +37,7 @@ describe("runInPreparationWorkspace", () => {
       reason: "Repo Preparation agent timed out after 0ms.",
       status: "timed-out",
     });
-    expect(events).toEqual(["create", "network:blocked", "release"]);
+    expect(events).toEqual(["create", "release"]);
   });
 });
 
@@ -64,9 +64,6 @@ function fakeWorkspace(events: string[]): PreparationWorkspace {
     },
     async getPreviewUrl(port) {
       return `https://preview.example.test:${port}`;
-    },
-    async setOutboundNetworkAccess(enabled) {
-      events.push(enabled ? "network:unblocked" : "network:blocked");
     },
     async uploadFiles() {},
   };
