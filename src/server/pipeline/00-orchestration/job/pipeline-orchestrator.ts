@@ -429,21 +429,33 @@ export async function runCapturePathValidationAndRepair(
       reason: readCapturePathRetryReason(capturePathValidation),
     });
     repairAttempt += 1;
-    const repair = await input.dependencies.repairCapturePathFailure({
-      attempt: repairAttempt,
-      ...(input.deadlineAt === undefined
-        ? {}
-        : { deadlineAt: input.deadlineAt }),
-      failure: capturePathValidation,
-      ...(input.agentSession === undefined
-        ? {}
-        : { agentSession: input.agentSession }),
-      preparationManifest,
-      preparationWorkspace: input.preparationWorkspace,
-      repoUrl: input.repoUrl,
-      ...(input.signal === undefined ? {} : { signal: input.signal }),
-      demoScript,
-    });
+    let repair: Awaited<
+      ReturnType<CapturePathRepairer["repairCapturePathFailure"]>
+    >;
+    try {
+      repair = await input.dependencies.repairCapturePathFailure({
+        attempt: repairAttempt,
+        ...(input.deadlineAt === undefined
+          ? {}
+          : { deadlineAt: input.deadlineAt }),
+        failure: capturePathValidation,
+        ...(input.agentSession === undefined
+          ? {}
+          : { agentSession: input.agentSession }),
+        preparationManifest,
+        preparationWorkspace: input.preparationWorkspace,
+        repoUrl: input.repoUrl,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+        demoScript,
+      });
+    } catch (error) {
+      if (isPipelineCancellationError(error)) throw error;
+      throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
+      return {
+        capturePathValidation,
+        status: "failed",
+      };
+    }
     throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
     preparationManifest = repair.preparationManifest;
     demoScript = repair.demoScript;

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createAgentSession } from "../../../test-support/create-agent-session";
 import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
+import { PipelineCancellationError } from "./pipeline-cancellation";
 import { createRecordingPipelineObserver } from "./pipeline-observer";
 import { runPipelineJob } from "./pipeline-orchestrator";
 
@@ -704,6 +705,60 @@ describe("runPipelineJob", () => {
     }
   });
 
+  it("preserves the failed validation result when Capture Path repair throws", async () => {
+    const result = await runPipelineJob(
+      pipelineJobInput(),
+      capturePathFailureDependencies({
+        async repairCapturePathFailure() {
+          throw new Error("Capture Path repair produced invalid artifacts.");
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      capturePathValidation: {
+        blockedNetworkAttempts: [],
+        browserUrl: "https://preview.example.test/",
+        failedSceneId: "scene_validation",
+        failureReason: "Generated selector did not match.",
+        logs: ["selector failed"],
+        status: "failed",
+        warnings: ["Retry with a stable selector."],
+      },
+      status: "capture-path-validation-failed",
+    });
+  });
+
+  it("propagates Pipeline deadline cancellation from Capture Path repair", async () => {
+    await expect(
+      runPipelineJob(
+        pipelineJobInput(),
+        capturePathFailureDependencies({
+          async repairCapturePathFailure() {
+            throw new PipelineCancellationError("deadline-exceeded");
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({ reason: "deadline-exceeded" });
+  });
+
+  it("propagates Pipeline signal cancellation when Capture Path repair stops with another error", async () => {
+    const controller = new AbortController();
+
+    await expect(
+      runPipelineJob(
+        pipelineJobInput(),
+        capturePathFailureDependencies({
+          async repairCapturePathFailure() {
+            controller.abort();
+            throw new Error("Capture Path repair stopped after abort.");
+          },
+        }),
+        { signal: controller.signal },
+      ),
+    ).rejects.toMatchObject({ reason: "signal" });
+  });
+
   it("returns a fallback prompt and stops when Repo Preparation fails", async () => {
     const result = await runPipelineJob(
       {
@@ -762,6 +817,53 @@ function manifest() {
     status: "created-new-demo" as const,
     url: "http://localhost:3000",
     workspaceId: "workspace_123",
+  };
+}
+
+function pipelineJobInput() {
+  return {
+    demoBrief: { keyProductFeatures: ["validation"] },
+    normalizedSupportingDocuments: [],
+    repoSecurity: {
+      files: [{ path: "package.json", text: "{}" }],
+      repoStats: { fileCount: 1, sizeBytes: 1_000 },
+    },
+    repoUrl: "https://github.com/example/app",
+    workspaceId: "workspace_123",
+  };
+}
+
+function capturePathFailureDependencies(input: {
+  repairCapturePathFailure: NonNullable<
+    Parameters<typeof runPipelineJob>[1]["repairCapturePathFailure"]
+  >;
+}): Parameters<typeof runPipelineJob>[1] {
+  return {
+    async generateDemoScript() {
+      return demoScript({ scriptId: "script_invalid" });
+    },
+    async prepareRepo() {
+      return {
+        manifest: manifest(),
+        status: "succeeded",
+        workspace: fakeWorkspaceHandle(),
+      };
+    },
+    repairCapturePathFailure: input.repairCapturePathFailure,
+    screenRepoSecurity() {
+      return { rejections: [], status: "passed", warnings: [] };
+    },
+    async validateCapturePath() {
+      return {
+        blockedNetworkAttempts: [],
+        browserUrl: "https://preview.example.test/",
+        failedSceneId: "scene_validation",
+        failureReason: "Generated selector did not match.",
+        logs: ["selector failed"],
+        status: "failed",
+        warnings: ["Retry with a stable selector."],
+      };
+    },
   };
 }
 
