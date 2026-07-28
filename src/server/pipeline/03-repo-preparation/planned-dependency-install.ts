@@ -12,7 +12,9 @@ export type PlannedDependencyInstallInput = {
 
 const commonBoundedInstallEnvironment = {
   CHILD_CONCURRENCY: "2",
+  CI: "true",
   CMAKE_BUILD_PARALLEL_LEVEL: "2",
+  HUSKY: "0",
   MAKEFLAGS: "-j2",
   TURBO_CONCURRENCY: "2",
 } as const;

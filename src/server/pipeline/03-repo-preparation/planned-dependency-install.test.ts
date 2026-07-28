@@ -69,7 +69,9 @@ describe("runPlannedDependencyInstall", () => {
         ],
         env: {
           CHILD_CONCURRENCY: "2",
+          CI: "true",
           CMAKE_BUILD_PARALLEL_LEVEL: "2",
+          HUSKY: "0",
           MAKEFLAGS: "-j2",
           TURBO_CONCURRENCY: "2",
         },
@@ -126,7 +128,9 @@ describe("runPlannedDependencyInstall", () => {
         executable: "yarn",
         env: {
           CHILD_CONCURRENCY: "2",
+          CI: "true",
           CMAKE_BUILD_PARALLEL_LEVEL: "2",
+          HUSKY: "0",
           MAKEFLAGS: "-j2",
           TURBO_CONCURRENCY: "2",
           YARN_NETWORK_CONCURRENCY: "4",
@@ -158,7 +162,9 @@ describe("runPlannedDependencyInstall", () => {
 
       expect(createBoundedInstallEnvironment(plan)).toEqual({
         CHILD_CONCURRENCY: "2",
+        CI: "true",
         CMAKE_BUILD_PARALLEL_LEVEL: "2",
+        HUSKY: "0",
         MAKEFLAGS: "-j2",
         TURBO_CONCURRENCY: "2",
         YARN_NETWORK_CONCURRENCY: "4",
@@ -209,7 +215,9 @@ describe("runPlannedDependencyInstall", () => {
       expect(plan.install?.argv).toEqual(testCase.expected);
       expect(createBoundedInstallEnvironment(plan)).toEqual({
         CHILD_CONCURRENCY: "2",
+        CI: "true",
         CMAKE_BUILD_PARALLEL_LEVEL: "2",
+        HUSKY: "0",
         MAKEFLAGS: "-j2",
         TURBO_CONCURRENCY: "2",
       });
@@ -234,7 +242,9 @@ describe("runPlannedDependencyInstall", () => {
 
     expect(createBoundedInstallEnvironment(plan)).toEqual({
       CHILD_CONCURRENCY: "2",
+      CI: "true",
       CMAKE_BUILD_PARALLEL_LEVEL: "2",
+      HUSKY: "0",
       MAKEFLAGS: "-j2",
       TURBO_CONCURRENCY: "2",
     });
