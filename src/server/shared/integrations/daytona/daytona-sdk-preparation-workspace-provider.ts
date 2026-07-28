@@ -26,7 +26,6 @@ import type {
   SubmittedProjectExecutionRequest,
   SubmittedProjectRuntimeRequest,
 } from "../../../pipeline/03-repo-preparation/preparation-workspace.interface";
-import type { SubmittedCodeToolchainArtifactReceipt } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain-artifact.interface";
 import {
   type SubmittedCodeToolchainPlan,
   submittedCodeToolchainCatalog,
@@ -40,7 +39,6 @@ import {
 import {
   type TrustedSubmittedNodeRuntimeArtifact,
   createTrustedSubmittedNodeProvisionCommand,
-  createTrustedSubmittedNodeVerificationCommand,
   readTrustedSubmittedNodeAttestation,
 } from "./trusted-submitted-node-runtime";
 
@@ -435,10 +433,6 @@ function createPreparationWorkspaceHandle(input: {
 
 class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
   private readonly activePtys = new Set<ManagedPty>();
-  private readonly hydratedToolchainArtifacts = new Map<
-    string,
-    HydratedSubmittedCodeToolchainArtifact
-  >();
   private submittedToolchainLifecycle: SubmittedToolchainLifecycle = {
     state: "unprovisioned",
   };
@@ -624,8 +618,8 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     }
 
     const lifecycle = this.submittedToolchainLifecycle;
-    if (lifecycle.state !== "unprovisioned") {
-      await this.verifyTrustedToolchainArtifact(lifecycle.artifact);
+    if (lifecycle.state === "failed") {
+      throw failedSubmittedCodeToolchainProvisioningRequiresFreshSandbox();
     }
     const submittedExecution =
       lifecycle.state === "unprovisioned"
@@ -660,17 +654,13 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     if (this.submittedCodeSandbox === undefined) {
       throw new Error("Submitted-code Daytona sandbox is not configured.");
     }
-    const provisioned = this.requireBoundSubmittedToolchain(
-      request.plan,
-      request.toolchainReceipt,
-    );
+    const provisioned = this.requireBoundSubmittedToolchain(request.plan);
     await this.verifySubmittedProjectIntegrity(
       this.submittedToolchainLifecycle.state === "synchronized"
         ? this.submittedToolchainLifecycle.projectIntegrity
         : undefined,
       provisioned.nodeRuntime,
     );
-    await this.verifyTrustedToolchainArtifact(provisioned);
     const execution = createSubmittedProjectExecution(
       request,
       provisioned,
@@ -707,11 +697,7 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     if (this.submittedCodeSandbox === undefined) {
       throw new Error("Submitted-code Daytona sandbox is not configured.");
     }
-    const provisioned = this.requireBoundSubmittedToolchain(
-      request.plan,
-      request.toolchainReceipt,
-    );
-    await this.verifyTrustedToolchainArtifact(provisioned);
+    const provisioned = this.requireBoundSubmittedToolchain(request.plan);
     const execution = createSubmittedRuntimeExecution(request, provisioned);
     const runtimeOptions = {
       ...options,
@@ -739,9 +725,12 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
 
   async provisionSubmittedCodeToolchain(
     plan: SubmittedProjectExecutionRequest["plan"],
-  ): Promise<SubmittedCodeToolchainArtifactReceipt> {
+  ): Promise<void> {
     if (this.submittedCodeSandbox === undefined) {
       throw new Error("Submitted-code Daytona sandbox is not configured.");
+    }
+    if (this.submittedToolchainLifecycle.state === "failed") {
+      throw failedSubmittedCodeToolchainProvisioningRequiresFreshSandbox();
     }
     const { manager } = validateSubmittedToolchainPlan(plan);
     const planIdentity = submittedToolchainPlanIdentity(plan, manager);
@@ -759,29 +748,19 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
         throw freshSubmittedCodeSandboxRequired();
       }
       if (existing.planIdentity === planIdentity) {
-        if (existing.state === "synchronized") {
-          this.submittedToolchainLifecycle = {
-            ...existing,
-            state: "provisioned",
-          };
-        }
-        return existing.receipt;
+        return;
       }
-      const receipt = createSubmittedToolchainArtifactReceipt(
-        existing.artifact,
-      );
       this.submittedToolchainLifecycle = {
         artifact: existing.artifact,
         planIdentity,
         projectIntegrity,
-        receipt,
         state: "provisioned",
       };
-      return receipt;
+      return;
     }
 
-    let artifact = this.hydratedToolchainArtifacts.get(artifactIdentity);
-    if (artifact === undefined) {
+    let artifact: HydratedSubmittedCodeToolchainArtifact;
+    try {
       artifact = await (async () => {
         const nodeResult = await this.executeCancellableCommandInSandbox(
           this.submittedCodeSandbox as DaytonaSdkSandbox,
@@ -848,7 +827,6 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
             ? readBunArtifactAttestation(result.stdout)
             : readHydratedArtifactAttestation(result.stdout);
         const hydrated: HydratedSubmittedCodeToolchainArtifact = {
-          artifactDigest: attestation.artifactDigest,
           artifactIdentity,
           binPath: `${toolchainRoot}/${attestation.artifactDigest.slice(
             manager.name === "bun" ? "sha256:".length : "sha512:".length,
@@ -863,7 +841,6 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
                 ).corepackHash,
               }),
           generation: manager.generation,
-          nodeVersion: plan.node.version,
           nodeRuntime,
           packageManager: manager.name,
           toolchainHome:
@@ -876,35 +853,35 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
                     artifactIdentity,
                     attestation.artifactDigest.slice("sha512:".length),
                   ),
-          upstreamIntegrity: attestation.upstreamIntegrity,
           version: manager.version,
         };
-        this.hydratedToolchainArtifacts.set(artifactIdentity, hydrated);
         return hydrated;
       })();
+      await this.verifyTrustedToolchainArtifact(artifact);
+    } catch (error) {
+      this.submittedToolchainLifecycle = { state: "failed" };
+      throw error;
     }
-    const receipt = createSubmittedToolchainArtifactReceipt(artifact);
     this.submittedToolchainLifecycle = {
       artifact,
       planIdentity,
       projectIntegrity,
-      receipt,
       state: "provisioned",
     };
-    return receipt;
   }
 
   async syncSubmittedCodeWorkspace(): Promise<void> {
     if (this.submittedCodeSandbox === undefined) {
       throw new Error("Submitted-code Daytona sandbox is not configured.");
     }
-    if (this.submittedToolchainLifecycle.state === "unprovisioned") {
+    const lifecycle = this.submittedToolchainLifecycle;
+    if (lifecycle.state === "unprovisioned") {
       throw new Error(
         "Submitted-code workspace synchronization requires a provisioned toolchain.",
       );
     }
-    if (this.submittedToolchainLifecycle.state === "synchronized") {
-      throw freshSubmittedCodeSandboxRequired();
+    if (lifecycle.state === "failed") {
+      throw failedSubmittedCodeToolchainProvisioningRequiresFreshSandbox();
     }
 
     await this.sandboxLogger.info({
@@ -919,12 +896,8 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
       try {
         await this.syncSubmittedCodeWorkspaceAttempt(attempt);
         await this.verifySubmittedProjectIntegrity(
-          this.submittedToolchainLifecycle.state === "provisioned"
-            ? this.submittedToolchainLifecycle.projectIntegrity
-            : undefined,
-          this.submittedToolchainLifecycle.state === "provisioned"
-            ? this.submittedToolchainLifecycle.artifact.nodeRuntime
-            : undefined,
+          lifecycle.projectIntegrity,
+          lifecycle.artifact.nodeRuntime,
         );
         await this.sandboxLogger.info({
           event: "daytona.sync-submitted-code-workspace.succeeded",
@@ -932,7 +905,7 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
           maxAttempts: submittedCodeSyncMaxAttempts,
         });
         this.submittedToolchainLifecycle = {
-          ...this.submittedToolchainLifecycle,
+          ...lifecycle,
           state: "synchronized",
         };
         return;
@@ -985,10 +958,12 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
 
   private requireBoundSubmittedToolchain(
     plan: SubmittedCodeToolchainPlan,
-    receipt: SubmittedCodeToolchainArtifactReceipt | undefined,
   ): HydratedSubmittedCodeToolchainArtifact {
-    const { manager } = validateSubmittedToolchainPlan(plan);
     const lifecycle = this.submittedToolchainLifecycle;
+    if (lifecycle.state === "failed") {
+      throw failedSubmittedCodeToolchainProvisioningRequiresFreshSandbox();
+    }
+    const { manager } = validateSubmittedToolchainPlan(plan);
     if (lifecycle.state === "unprovisioned") {
       throw new Error(
         `Submitted toolchain ${manager.name}@${manager.version} has not been provisioned and synchronized.`,
@@ -996,7 +971,6 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     }
     if (
       lifecycle.state !== "synchronized" ||
-      lifecycle.receipt !== receipt ||
       lifecycle.planIdentity !== submittedToolchainPlanIdentity(plan, manager)
     ) {
       throw new Error(
@@ -1012,20 +986,6 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     const submittedCodeSandbox = this.submittedCodeSandbox;
     if (submittedCodeSandbox === undefined) {
       throw new Error("Submitted-code Daytona sandbox is not configured.");
-    }
-    const nodeResult = await this.executeCancellableCommandInSandbox(
-      submittedCodeSandbox,
-      createTrustedSubmittedNodeVerificationCommand(artifact.nodeRuntime),
-      { env: createTrustedToolchainProvisioningEnv() },
-      "/",
-    );
-    if (nodeResult.exitCode !== 0) {
-      const diagnostics =
-        (nodeResult.stderr || nodeResult.stdout).trim() ||
-        "no diagnostics returned";
-      throw new Error(
-        `Trusted Node runtime verification failed for Node ${artifact.nodeVersion}: ${diagnostics}`,
-      );
     }
     const result = await this.executeCancellableCommandInSandbox(
       submittedCodeSandbox,
@@ -1649,20 +1609,17 @@ function createSubmittedProjectExecution(
 }
 
 type HydratedSubmittedCodeToolchainArtifact = {
-  artifactDigest: `sha256:${string}` | `sha512:${string}`;
   artifactIdentity: string;
   binPath: string;
   corepackHash?: `sha512.${string}`;
   generation: NonNullable<
     SubmittedCodeToolchainPlan["packageManager"]
   >["generation"];
-  nodeVersion: string;
   nodeRuntime: TrustedSubmittedNodeRuntimeArtifact;
   packageManager: NonNullable<
     SubmittedCodeToolchainPlan["packageManager"]
   >["name"];
   toolchainHome: string;
-  upstreamIntegrity: `sha256:${string}` | `sha512:${string}`;
   version: string;
 };
 
@@ -1674,11 +1631,11 @@ type SubmittedProjectIntegrityRequirement = {
 
 type SubmittedToolchainLifecycle =
   | { state: "unprovisioned" }
+  | { state: "failed" }
   | {
       artifact: HydratedSubmittedCodeToolchainArtifact;
       planIdentity: string;
       projectIntegrity: SubmittedProjectIntegrityRequirement;
-      receipt: SubmittedCodeToolchainArtifactReceipt;
       state: "provisioned" | "synchronized";
     };
 
@@ -1966,46 +1923,15 @@ function submittedToolchainArtifactIdentity(
   });
 }
 
-function createSubmittedToolchainArtifactReceipt(
-  artifact: HydratedSubmittedCodeToolchainArtifact,
-): SubmittedCodeToolchainArtifactReceipt {
-  return Object.freeze({
-    node: Object.freeze({
-      archiveDigest: Object.freeze({ ...artifact.nodeRuntime.archiveDigest }),
-      nodeBinaryDigest: Object.freeze({
-        ...artifact.nodeRuntime.nodeBinaryDigest,
-      }),
-      signedManifestDigest: Object.freeze({
-        ...artifact.nodeRuntime.signedManifestDigest,
-      }),
-      signerPrimaryFingerprint: artifact.nodeRuntime.signerPrimaryFingerprint,
-      version: artifact.nodeRuntime.version,
-    }),
-    packageManager: Object.freeze({
-      artifactDigest: readAlgorithmAwareDigest(artifact.artifactDigest),
-      upstreamDigest: readAlgorithmAwareDigest(artifact.upstreamIntegrity),
-    }),
-  });
-}
-
-function readAlgorithmAwareDigest(
-  digest: `sha256:${string}` | `sha512:${string}`,
-): SubmittedCodeToolchainArtifactReceipt["packageManager"]["artifactDigest"] {
-  const separator = digest.indexOf(":");
-  const algorithm = digest.slice(0, separator);
-  const value = digest.slice(separator + 1);
-  if (
-    (algorithm !== "sha256" && algorithm !== "sha512") ||
-    !new RegExp(`^[a-f0-9]{${algorithm === "sha256" ? 64 : 128}}$`).test(value)
-  ) {
-    throw new Error("Trusted toolchain returned an invalid content digest.");
-  }
-  return Object.freeze({ algorithm, value });
-}
-
 function freshSubmittedCodeSandboxRequired(): Error {
   return new Error(
-    "Submitted-code toolchain state is bound to synchronized workspace contents; use a fresh submitted-code sandbox for another plan.",
+    "Submitted-code sandbox is bound to a different exact runtime; use a fresh submitted-code sandbox for the changed runtime.",
+  );
+}
+
+function failedSubmittedCodeToolchainProvisioningRequiresFreshSandbox(): Error {
+  return new Error(
+    "Submitted-code toolchain provisioning failed in this child; use a fresh submitted-code sandbox before retrying.",
   );
 }
 
@@ -2408,7 +2334,6 @@ function trustedCorepackCli(
 function readHydratedArtifactAttestation(stdout: string): {
   artifactDigest: `sha512:${string}`;
   corepackHash: `sha512.${string}`;
-  upstreamIntegrity: `sha512:${string}`;
 } {
   const artifactDigest = /MAKEADEMO_ARTIFACT_SHA512=([a-f0-9]{128})/.exec(
     stdout,
@@ -2432,13 +2357,11 @@ function readHydratedArtifactAttestation(stdout: string): {
   return {
     artifactDigest: `sha512:${artifactDigest}`,
     corepackHash: `sha512.${digest.toString("hex")}`,
-    upstreamIntegrity: `sha512:${digest.toString("hex")}`,
   };
 }
 
 function readBunArtifactAttestation(stdout: string): {
   artifactDigest: `sha256:${string}`;
-  upstreamIntegrity: `sha256:${string}`;
 } {
   const artifactDigest = /MAKEADEMO_ARTIFACT_SHA256=([a-f0-9]{64})/.exec(
     stdout,
@@ -2453,7 +2376,6 @@ function readBunArtifactAttestation(stdout: string): {
   }
   return {
     artifactDigest: `sha256:${artifactDigest}`,
-    upstreamIntegrity: `sha256:${upstreamDigest}`,
   };
 }
 

@@ -106,7 +106,7 @@ export type SubmittedCodeToolchainPlan = {
     corepackHash?: string;
     generation: SubmittedCodePackageManagerGeneration;
     name: SubmittedCodePackageManager;
-    /** Hash of the selected canonical lockfile, bound to the provisioned capability. */
+    /** Hash of the canonical lockfile in the provider-private plan/runtime binding. */
     projectIntegrity?: `sha256:${string}`;
     version: string;
   };

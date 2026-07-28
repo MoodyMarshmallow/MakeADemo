@@ -51,6 +51,7 @@ import {
   createContinueRepoPreparationPrompt,
   createDaytonaRepoPreparationPrompt,
   createDependencyInstallFailurePrompt,
+  createToolchainRepairPrompt,
   createValidationFeedbackPrompt,
 } from "./repo-preparation-prompt-policy";
 import {
@@ -295,41 +296,41 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
       this.nodeReleaseCatalog,
     );
     throwIfPipelineCancelled(input.signal);
+    let toolchainAdvisory: { code: string; reason: string } | undefined;
     if (toolchain.mode === "unsupported") {
       await this.writeSandboxLog(handle.workspace, {
         code: toolchain.code,
         event: "submitted-code-toolchain.unsupported",
+        level: "warn",
         reason: toolchain.reason,
       });
-      return {
-        result: {
-          assumptions: [],
-          blockers: [
-            `Submitted code toolchain is unsupported (${toolchain.code}): ${toolchain.reason}`,
-          ],
-          status: "failed" as const,
-          suggestedChanges: [
-            "Use a supported submitted-code toolchain with an immutable lockfile, then retry Repo Preparation.",
-          ],
-        },
-        status: "result",
+      toolchainAdvisory = {
+        code: toolchain.code,
+        reason: toolchain.reason,
       };
+    } else {
+      handle.toolchainPlan = toolchain.plan;
+      if (toolchain.plan.installBlocker !== undefined) {
+        toolchainAdvisory = {
+          code: toolchain.plan.installBlocker.code,
+          reason: toolchain.plan.installBlocker.reason,
+        };
+      }
+      await this.writeSandboxLog(handle.workspace, {
+        catalogRevision: toolchain.plan.catalogRevision,
+        event: "submitted-code-toolchain.catalog-selected",
+        ...(toolchain.plan.installBlocker === undefined
+          ? {}
+          : { installBlockerCode: toolchain.plan.installBlocker.code }),
+        nodeVersion: toolchain.plan.node.version,
+        ...(toolchain.plan.packageManager === undefined
+          ? {}
+          : {
+              packageManager: `${toolchain.plan.packageManager.name}@${toolchain.plan.packageManager.version}`,
+            }),
+        projectRoot: toolchain.plan.projectRoot,
+      });
     }
-    handle.toolchainPlan = toolchain.plan;
-    await this.writeSandboxLog(handle.workspace, {
-      catalogRevision: toolchain.plan.catalogRevision,
-      event: "submitted-code-toolchain.catalog-selected",
-      ...(toolchain.plan.installBlocker === undefined
-        ? {}
-        : { installBlockerCode: toolchain.plan.installBlocker.code }),
-      nodeVersion: toolchain.plan.node.version,
-      ...(toolchain.plan.packageManager === undefined
-        ? {}
-        : {
-            packageManager: `${toolchain.plan.packageManager.name}@${toolchain.plan.packageManager.version}`,
-          }),
-      projectRoot: toolchain.plan.projectRoot,
-    });
 
     if (handle.workspace.prepareForAgent === undefined) {
       throw new Error(
@@ -340,9 +341,10 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     throwIfPipelineCancelled(input.signal);
 
     return {
-      baselineSourceControlledPaths:
-        bootstrap.baselineSourceControlledPaths ?? [],
-      prompt: createDaytonaRepoPreparationPrompt(input),
+      baselineSourceControlledPaths: bootstrap.baselineSourceControlledPaths,
+      prompt: createDaytonaRepoPreparationPrompt(input, {
+        ...(toolchainAdvisory === undefined ? {} : { toolchainAdvisory }),
+      }),
       status: "ready",
     };
   }
@@ -359,6 +361,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     let agentSession: AgentSession | undefined;
     let validationRepairAttempts = 0;
     const controlState = createRepoPreparationControlState({
+      baselineSourceControlledPaths,
       readManifest: () =>
         readPreparationManifestFile(handle.workspace, preparationManifestPath),
     });
@@ -545,17 +548,23 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
             );
             throwIfDependencyOperationCancelled();
             if (refreshedToolchain.mode === "unsupported") {
-              throw new Error(
-                `Submitted code toolchain is unsupported (${refreshedToolchain.code}): ${refreshedToolchain.reason}`,
-              );
+              return {
+                code: refreshedToolchain.code,
+                reason: refreshedToolchain.reason,
+                status: "repair" as const,
+              };
             }
             handle.toolchainPlan = refreshedToolchain.plan;
             const plannedInstall = handle.toolchainPlan;
             if (plannedInstall.install === undefined) {
               const blocker = plannedInstall.installBlocker;
-              throw new Error(
-                `Submitted code toolchain cannot install dependencies (${blocker?.code ?? "missing_immutable_install"}): ${blocker?.reason ?? "No catalog-owned immutable install is available."}`,
-              );
+              return {
+                code: blocker?.code ?? "missing_immutable_install",
+                reason:
+                  blocker?.reason ??
+                  "No catalog-owned immutable install is available.",
+                status: "repair" as const,
+              };
             }
             await this.writeSandboxLog(handle.workspace, {
               event: "dependency-install-catalog-command-selected",
@@ -564,18 +573,20 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
               installProfile: "bounded",
             });
             throwIfDependencyOperationCancelled();
-            handle.toolchainReceipt = await provisionSubmittedCodeToolchain(
+            await provisionSubmittedCodeToolchain(
               handle.workspace,
               plannedInstall,
             );
             throwIfDependencyOperationCancelled();
             await syncSubmittedCodeWorkspace(handle.workspace);
             throwIfDependencyOperationCancelled();
-            return await runPlannedDependencyInstall({
-              toolchainPlan: plannedInstall,
-              toolchainReceipt: handle.toolchainReceipt,
-              workspace: handle.workspace,
-            });
+            return {
+              result: await runPlannedDependencyInstall({
+                toolchainPlan: plannedInstall,
+                workspace: handle.workspace,
+              }),
+              status: "installed" as const,
+            };
           })(),
           onCancel: () => {
             dependencyOperationCancelled = true;
@@ -597,7 +608,29 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
             this.timeoutMetadataForDeadline(hardDeadlineAt),
           );
         }
-        const installResult = installRun.value;
+        if (installRun.value.status === "repair") {
+          await this.writeSandboxLog(handle.workspace, {
+            code: installRun.value.code,
+            event: "dependency-install-toolchain-repair-required",
+            level: "warn",
+            reason: installRun.value.reason,
+          });
+          if (attempt + 1 >= maximumAgentTaskTurns) {
+            return {
+              assumptions: [],
+              blockers: [
+                `Submitted code toolchain still requires repair (${installRun.value.code}): ${installRun.value.reason}`,
+              ],
+              status: "failed" as const,
+              suggestedChanges: [
+                "Repair the submitted toolchain metadata, then retry Repo Preparation.",
+              ],
+            };
+          }
+          prompt = createToolchainRepairPrompt(input, installRun.value);
+          continue;
+        }
+        const installResult = installRun.value.result;
         const installedToolchainPlan = handle.toolchainPlan;
         if (installedToolchainPlan === undefined) {
           throw new Error(
@@ -703,6 +736,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
           return {
             ...preparationResult,
             ...(agentSession === undefined ? {} : { agentSession }),
+            baselineSourceControlledPaths,
             runtimePreflight,
             workspace: handle,
           };
@@ -803,16 +837,6 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     try {
       const validationRun = await runSettledPreparationOperation({
         operation: (async () => {
-          const refreshedToolchain = await inspectSubmittedCodeToolchain(
-            input.handle.workspace,
-            this.nodeReleaseCatalog,
-          );
-          if (refreshedToolchain.mode === "unsupported") {
-            throw new Error(
-              `Submitted code toolchain is unsupported (${refreshedToolchain.code}): ${refreshedToolchain.reason}`,
-            );
-          }
-          input.handle.toolchainPlan = refreshedToolchain.plan;
           manifest = await readPreparationManifestFile(
             input.handle.workspace,
             input.validationRequest.manifestPath,
@@ -879,6 +903,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
       });
       return {
         result: {
+          baselineSourceControlledPaths: input.baselineSourceControlledPaths,
           manifest,
           ...(input.agentSession === undefined
             ? {}
@@ -1253,7 +1278,12 @@ function runtimePreflightRepairExhaustedFailure(
 function readNonRetryablePreflightFailure(
   runtimePreflight: RepoPreparationPreflightResult,
 ): string | undefined {
-  if (runtimePreflight.failureKind !== "submitted-code-workspace-sync-failed") {
+  if (
+    runtimePreflight.failureKind !== "submitted-code-workspace-sync-failed" &&
+    runtimePreflight.failureKind !== "submitted-toolchain-inspection-failed" &&
+    runtimePreflight.failureKind !==
+      "submitted-code-toolchain-provisioning-failed"
+  ) {
     return undefined;
   }
 

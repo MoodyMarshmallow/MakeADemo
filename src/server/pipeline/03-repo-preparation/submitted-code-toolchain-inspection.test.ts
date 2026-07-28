@@ -125,6 +125,54 @@ describe("inspectSubmittedCodeToolchain", () => {
     });
   });
 
+  it.each([
+    {
+      metadata: {
+        candidates: [
+          {
+            files: {
+              "package-lock.json": "",
+              "package.json": JSON.stringify({ packageManager: "npm@10.8.2" }),
+            },
+            projectRoot: "frontend",
+          },
+          {
+            files: {
+              "package-lock.json": "",
+              "package.json": JSON.stringify({ packageManager: "npm@10.8.2" }),
+            },
+            projectRoot: "webapp",
+          },
+        ],
+      },
+      title: "ambiguous project roots",
+    },
+    {
+      metadata: {
+        candidates: [
+          {
+            files: {
+              "package.json": "{}",
+              "pnpm-lock.yaml": "",
+              "yarn.lock": "",
+            },
+            projectRoot: ".",
+          },
+        ],
+      },
+      title: "conflicting lockfiles",
+    },
+  ])("returns bounded repairable metadata for $title", async ({ metadata }) => {
+    await expect(
+      inspectSubmittedCodeToolchain(fakeWorkspace(metadata)),
+    ).resolves.toEqual({
+      code: "invalid_project_metadata",
+      mode: "unsupported",
+      reason:
+        "The submitted JavaScript project metadata is incomplete, malformed, ambiguous, or conflicting.",
+    });
+  });
+
   it("does not expose submitted metadata secrets in malformed toolchain diagnostics", async () => {
     const secret = "token=supersecret";
     await expect(

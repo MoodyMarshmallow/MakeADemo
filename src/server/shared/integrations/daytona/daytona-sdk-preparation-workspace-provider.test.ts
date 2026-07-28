@@ -56,15 +56,13 @@ async function provisionToolchainForSubmittedCodeSync(
   handle: PreparationWorkspaceHandle,
 ): Promise<{
   plan: ReturnType<typeof resolveSubmittedCodeToolchain>;
-  receipt: NonNullable<PreparationWorkspaceHandle["toolchainReceipt"]>;
 }> {
   const plan = resolveSubmittedCodeToolchain(supportedPnpmMetadata("."));
-  const receipt =
-    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
-  if (receipt === undefined) {
+  if (handle.workspace.provisionSubmittedCodeToolchain === undefined) {
     throw new Error("submitted-code toolchain provisioning is unavailable");
   }
-  return { plan, receipt };
+  await handle.workspace.provisionSubmittedCodeToolchain(plan);
+  return { plan };
 }
 
 function hydrationAttestationStdout(): string {
@@ -91,7 +89,6 @@ function nodeRuntimeAttestationStdout(version: string): string {
     nodeBinarySha256: "d".repeat(64),
     signedManifestSha256: "e".repeat(64),
     signerPrimaryFingerprint: "F".repeat(40),
-    cacheStatus: "miss",
   });
 }
 
@@ -606,9 +603,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       ],
     });
 
-    const toolchainReceipt =
-      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
-    if (toolchainReceipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
     await handle.workspace.syncSubmittedCodeWorkspace?.();
 
     await handle.workspace.executeSubmittedProject?.(
@@ -622,7 +617,6 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         executable: "pnpm",
         installProfile: "bounded",
         plan,
-        toolchainReceipt,
       },
       {
         env: {
@@ -713,9 +707,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         },
       ],
     });
-    const receipt =
-      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
-    if (receipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
     await handle.workspace.syncSubmittedCodeWorkspace?.();
 
     await handle.workspace.executeSubmittedProject?.(
@@ -724,7 +716,6 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         executable: "yarn",
         installProfile: "bounded",
         plan,
-        toolchainReceipt: receipt,
       },
       {
         env: {
@@ -760,7 +751,6 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         executable: "yarn",
         installProfile: "bounded",
         plan,
-        toolchainReceipt: receipt,
       }),
     ).rejects.toThrow("not the catalog install");
   });
@@ -784,15 +774,12 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       ],
     });
 
-    const receipt =
-      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
-    if (receipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
     await handle.workspace.syncSubmittedCodeWorkspace?.();
     await handle.workspace.executeSubmittedProject?.({
       argv: plan.install?.argv ?? [],
       executable: plan.install?.executable ?? "pnpm",
       plan,
-      toolchainReceipt: receipt,
     });
 
     expect(calls).toContainEqual({
@@ -835,9 +822,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
     const handle = await provider.create();
     const plan = resolveSubmittedCodeToolchain(supportedPnpmMetadata("."));
-    const receipt =
-      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
-    if (receipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
     await handle.workspace.syncSubmittedCodeWorkspace?.();
 
     await expect(
@@ -845,7 +830,6 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         argv: plan.install?.argv ?? [],
         executable: plan.install?.executable ?? "pnpm",
         plan,
-        toolchainReceipt: receipt,
       }),
     ).resolves.toMatchObject({ exitCode: 0 });
 
@@ -885,20 +869,16 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         },
       ],
     });
-    const receipt =
-      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
-    if (receipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
     await handle.workspace.syncSubmittedCodeWorkspace?.();
     await handle.workspace.executeSubmittedProject?.({
       argv: plan.install?.argv ?? [],
       executable: "pnpm",
       plan,
-      toolchainReceipt: receipt,
     });
     await handle.workspace.executeSubmittedRuntime?.({
       command: "command -v pnpm && pnpm --version",
       plan,
-      toolchainReceipt: receipt,
     });
     await handle.workspace.executeSubmittedCode?.("pnpm --version", {
       env: { PATH: "/submitted/caller/bin" },
@@ -966,14 +946,11 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         },
       ],
     });
-    const receipt =
-      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
-    if (receipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
     await handle.workspace.syncSubmittedCodeWorkspace?.();
     await handle.workspace.executeSubmittedRuntime?.({
       command: "command -v npm && npm --version",
       plan,
-      toolchainReceipt: receipt,
     });
 
     const execution = decodedSubmittedScripts(calls)
@@ -987,62 +964,6 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     ]);
   });
 
-  it("issues algorithm-aware artifact receipts for Corepack and Bun", async () => {
-    for (const [packageManager, lockfileName, lockfile] of [
-      ["pnpm@10.26.1", "pnpm-lock.yaml", "lockfileVersion: '9.0'\n"],
-      ["bun@1.2.22", "bun.lock", "{}"],
-    ] as const) {
-      const provider = new DaytonaSdkPreparationWorkspaceProvider({
-        client: fakeCommandTimeoutClient([]),
-        submittedCodeSnapshot: "makeademo-submitted-code",
-      });
-      const handle = await provider.create();
-      const plan = resolveSubmittedCodeToolchain({
-        candidates: [
-          {
-            files: {
-              [lockfileName]: lockfile,
-              "package.json": JSON.stringify({ packageManager }),
-            },
-            projectRoot: ".",
-          },
-        ],
-      });
-
-      const receipt =
-        await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
-
-      expect(receipt).toMatchObject({
-        node: {
-          archiveDigest: { algorithm: "sha256" },
-          nodeBinaryDigest: { algorithm: "sha256" },
-          signedManifestDigest: { algorithm: "sha256" },
-          version: plan.node.version,
-        },
-        packageManager: {
-          artifactDigest: {
-            algorithm: packageManager.startsWith("bun") ? "sha256" : "sha512",
-          },
-          upstreamDigest: {
-            algorithm: packageManager.startsWith("bun") ? "sha256" : "sha512",
-          },
-        },
-      });
-      expect(Object.isFrozen(receipt)).toBe(true);
-      expect(Object.isFrozen(receipt?.node)).toBe(true);
-      expect(Object.isFrozen(receipt?.node.archiveDigest)).toBe(true);
-      expect(Object.isFrozen(receipt?.packageManager)).toBe(true);
-      expect(Object.isFrozen(receipt?.packageManager.artifactDigest)).toBe(
-        true,
-      );
-      expect(() => {
-        if (receipt !== undefined) {
-          (receipt.node.archiveDigest as { value: string }).value = "0";
-        }
-      }).toThrow();
-    }
-  });
-
   it("hydrates the signed Node runtime before acquiring a package manager", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
@@ -1051,7 +972,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
     const handle = await provider.create();
 
-    const receipt = await handle.workspace.provisionSubmittedCodeToolchain?.(
+    await handle.workspace.provisionSubmittedCodeToolchain?.(
       resolveSubmittedCodeToolchain(supportedPnpmMetadata(".")),
     );
 
@@ -1065,21 +986,6 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         script.includes("MAKEADEMO_ARTIFACT_SHA512"),
       ),
     );
-    expect(receipt).toMatchObject({
-      node: {
-        archiveDigest: { algorithm: "sha256", value: "c".repeat(64) },
-        nodeBinaryDigest: { algorithm: "sha256", value: "d".repeat(64) },
-        signedManifestDigest: {
-          algorithm: "sha256",
-          value: "e".repeat(64),
-        },
-        signerPrimaryFingerprint: "F".repeat(40),
-      },
-      packageManager: {
-        artifactDigest: { algorithm: "sha512" },
-        upstreamDigest: { algorithm: "sha512" },
-      },
-    });
   });
 
   it("does not acquire a package manager when signed Node hydration fails", async () => {
@@ -1104,87 +1010,99 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     );
   });
 
-  it("reverifies Node and package-manager artifacts before submitted execution", async () => {
+  it("verifies Node and package-manager artifacts once during first provisioning", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeCommandTimeoutClient(calls),
       submittedCodeSnapshot: "makeademo-submitted-code",
     });
     const handle = await provider.create();
-    const { plan, receipt } =
-      await provisionToolchainForSubmittedCodeSync(handle);
+    const { plan } = await provisionToolchainForSubmittedCodeSync(handle);
+    const provisioningScripts = decodedSubmittedScripts(calls);
+    expect(
+      provisioningScripts.filter((script) =>
+        script.includes("makeademo-provision-submitted-node-runtime provision"),
+      ),
+    ).toHaveLength(1);
+    expect(
+      provisioningScripts.filter((script) =>
+        script.includes("MAKEADEMO_VERIFY_TRUSTED_ARTIFACT"),
+      ),
+    ).toHaveLength(1);
     await handle.workspace.syncSubmittedCodeWorkspace?.();
+    calls.splice(0);
 
     await handle.workspace.executeSubmittedRuntime?.({
       command: "pnpm --version",
       plan,
-      toolchainReceipt: receipt,
     });
 
-    const scripts = decodedSubmittedScripts(calls);
-    const nodeVerify = scripts.findIndex((script) =>
-      script.includes("makeademo-provision-submitted-node-runtime verify"),
+    const runtimeScripts = decodedSubmittedScripts(calls);
+    expect(runtimeScripts).not.toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          "makeademo-provision-submitted-node-runtime provision",
+        ),
+        expect.stringContaining("MAKEADEMO_VERIFY_TRUSTED_ARTIFACT"),
+      ]),
     );
-    const packageManagerVerify = scripts.findIndex((script) =>
-      script.includes("MAKEADEMO_VERIFY_TRUSTED_ARTIFACT"),
-    );
-    const runtime = scripts.length - 1;
-    expect(nodeVerify).toBeGreaterThanOrEqual(0);
-    expect(packageManagerVerify).toBeGreaterThan(nodeVerify);
-    expect(runtime).toBeGreaterThan(packageManagerVerify);
-    expect(scripts[runtime]).toContain("pnpm");
+    expect(runtimeScripts.at(-1)).toContain("pnpm");
   });
 
-  it("rejects a changed Node artifact before package-manager verification or runtime", async () => {
+  it("poisons the submitted child after package-manager verification fails", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeCommandTimeoutClient(calls, {
-        nodeVerificationFailure: true,
+        packageManagerVerificationFailure: true,
       }),
       submittedCodeSnapshot: "makeademo-submitted-code",
     });
     const handle = await provider.create();
-    const { plan, receipt } =
-      await provisionToolchainForSubmittedCodeSync(handle);
-    await handle.workspace.syncSubmittedCodeWorkspace?.();
-    calls.splice(0);
+    const plan = resolveSubmittedCodeToolchain(supportedPnpmMetadata("."));
 
+    await expect(
+      handle.workspace.provisionSubmittedCodeToolchain?.(plan),
+    ).rejects.toThrow("Trusted package-manager artifact verification failed");
+    const commandCountAfterFailure = calls.length;
+    await expect(
+      handle.workspace.provisionSubmittedCodeToolchain?.(plan),
+    ).rejects.toThrow("fresh submitted-code sandbox");
+    await expect(
+      handle.workspace.syncSubmittedCodeWorkspace?.(),
+    ).rejects.toThrow("fresh submitted-code sandbox");
+    await expect(
+      handle.workspace.executeSubmittedCode?.("true"),
+    ).rejects.toThrow("fresh submitted-code sandbox");
+    await expect(
+      handle.workspace.executeSubmittedProject?.({
+        argv: plan.install?.argv ?? [],
+        executable: plan.install?.executable ?? "pnpm",
+        plan,
+      }),
+    ).rejects.toThrow("fresh submitted-code sandbox");
     await expect(
       handle.workspace.executeSubmittedRuntime?.({
         command: "pnpm --version",
         plan,
-        toolchainReceipt: receipt,
       }),
-    ).rejects.toThrow("Trusted Node runtime verification failed");
-    expect(decodedSubmittedScripts(calls)).not.toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("MAKEADEMO_VERIFY_TRUSTED_ARTIFACT"),
-        expect.stringContaining("pnpm --version"),
-      ]),
-    );
-  });
+    ).rejects.toThrow("fresh submitted-code sandbox");
 
-  it("rejects changed toolchain bytes before a raw product-plane command", async () => {
-    const calls: unknown[] = [];
-    const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeCommandTimeoutClient(calls, {
-        nodeVerificationFailure: true,
-      }),
-      submittedCodeSnapshot: "makeademo-submitted-code",
-    });
-    const handle = await provider.create();
-    await provisionToolchainForSubmittedCodeSync(handle);
-    await handle.workspace.syncSubmittedCodeWorkspace?.();
-    calls.splice(0);
-
-    await expect(
-      handle.workspace.executeSubmittedCode?.("node ./product-script.js"),
-    ).rejects.toThrow("Trusted Node runtime verification failed");
-    expect(decodedSubmittedScripts(calls)).not.toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("node ./product-script.js"),
-      ]),
-    );
+    expect(calls).toHaveLength(commandCountAfterFailure);
+    expect(
+      decodedSubmittedScripts(calls).filter((script) =>
+        script.includes("makeademo-provision-submitted-node-runtime provision"),
+      ),
+    ).toHaveLength(1);
+    expect(
+      decodedSubmittedScripts(calls).filter((script) =>
+        script.includes('pack "$descriptor"'),
+      ),
+    ).toHaveLength(1);
+    expect(
+      decodedSubmittedScripts(calls).filter((script) =>
+        script.includes("MAKEADEMO_VERIFY_TRUSTED_ARTIFACT"),
+      ),
+    ).toHaveLength(1);
   });
 
   it.skipIf(process.env.MAKEADEMO_RUN_REAL_COREPACK_TEST !== "1")(
@@ -1267,15 +1185,12 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     const handle = await provider.create();
     const plan = resolveSubmittedCodeToolchain(supportedPnpmMetadata("."));
 
-    const receipt =
-      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
-    if (receipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
     await handle.workspace.syncSubmittedCodeWorkspace?.();
     await handle.workspace.executeSubmittedProject?.({
       argv: plan.install?.argv ?? [],
       executable: plan.install?.executable ?? "pnpm",
       plan,
-      toolchainReceipt: receipt,
     });
 
     const scripts = calls
@@ -1339,7 +1254,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
 
     await expect(
       handle.workspace.provisionSubmittedCodeToolchain?.(plan),
-    ).resolves.toBeDefined();
+    ).resolves.toBeUndefined();
 
     const scripts = decodedSubmittedScripts(calls).join("\n");
     expect(plan.packageManager?.version).toBe("2.4.2");
@@ -1540,15 +1455,12 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       ],
     });
 
-    const receipt =
-      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
-    if (receipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
     await handle.workspace.syncSubmittedCodeWorkspace?.();
     await handle.workspace.executeSubmittedProject?.({
       argv: plan.install?.argv ?? [],
       executable: plan.install?.executable ?? "bun",
       plan,
-      toolchainReceipt: receipt,
     });
 
     const scripts = JSON.stringify(calls);
@@ -1669,14 +1581,11 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       ],
     });
 
-    const firstReceipt =
-      await handle.workspace.provisionSubmittedCodeToolchain?.(firstPlan);
+    await handle.workspace.provisionSubmittedCodeToolchain?.(firstPlan);
     await handle.workspace.syncSubmittedCodeWorkspace?.();
-    const repairedReceipt =
-      await handle.workspace.provisionSubmittedCodeToolchain?.(repairedPlan);
+    await handle.workspace.provisionSubmittedCodeToolchain?.(repairedPlan);
     await handle.workspace.syncSubmittedCodeWorkspace?.();
 
-    expect(repairedReceipt).not.toBe(firstReceipt);
     expect(
       calls.filter((call) =>
         JSON.stringify(call).includes("MAKEADEMO_ARTIFACT_SHA512"),
@@ -1726,39 +1635,46 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       handle.workspace.syncSubmittedCodeWorkspace?.(),
     ).rejects.toThrow("requires a provisioned toolchain");
 
-    const receipt =
-      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
-    if (receipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
     await expect(
       handle.workspace.executeSubmittedProject?.({
         argv: plan.install?.argv ?? [],
         executable: plan.install?.executable ?? "pnpm",
         plan,
-        toolchainReceipt: receipt,
       }),
     ).rejects.toThrow("requires synchronization");
-    const changedReceipt =
-      await handle.workspace.provisionSubmittedCodeToolchain?.(changedPlan);
-    expect(changedReceipt).not.toBe(receipt);
+    await handle.workspace.provisionSubmittedCodeToolchain?.(changedPlan);
 
     await handle.workspace.syncSubmittedCodeWorkspace?.();
-    const reboundReceipt =
-      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
-    if (reboundReceipt === undefined)
-      throw new Error("missing rebound receipt");
-    expect(reboundReceipt).not.toBe(changedReceipt);
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
     await handle.workspace.syncSubmittedCodeWorkspace?.();
     await expect(
       handle.workspace.executeSubmittedProject?.({
         argv: plan.install?.argv ?? [],
         executable: plan.install?.executable ?? "pnpm",
         plan,
-        toolchainReceipt: reboundReceipt,
       }),
     ).resolves.toMatchObject({ exitCode: 0 });
     await expect(
       handle.workspace.provisionSubmittedCodeToolchain?.(differentArtifactPlan),
     ).rejects.toThrow("fresh submitted-code sandbox");
+  });
+
+  it("allows the same bound plan to resynchronize a repaired workspace", async () => {
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient([]),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain(supportedPnpmMetadata("."));
+
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+
+    await expect(
+      handle.workspace.syncSubmittedCodeWorkspace?.(),
+    ).resolves.toBeUndefined();
   });
 
   it("requires a fresh submitted sandbox when only the exact Node release changes", async () => {
@@ -1815,9 +1731,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
     const handle = await provider.create();
     const plan = resolveSubmittedCodeToolchain(supportedPnpmMetadata("."));
-    const receipt =
-      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
-    if (receipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
     await handle.workspace.syncSubmittedCodeWorkspace?.();
 
     await expect(
@@ -1825,7 +1739,6 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         argv: plan.install?.argv ?? [],
         executable: plan.install?.executable ?? "pnpm",
         plan,
-        toolchainReceipt: receipt,
       }),
     ).rejects.toThrow("lockfile integrity did not match");
   });
@@ -1842,7 +1755,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       handle.workspace.provisionSubmittedCodeToolchain?.(
         resolveSubmittedCodeToolchain(supportedPnpmMetadata(".")),
       ),
-    ).resolves.toBeDefined();
+    ).resolves.toBeUndefined();
   });
 
   it("does not depend on submitted-code network update failures during provisioning", async () => {
@@ -1857,7 +1770,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       handle.workspace.provisionSubmittedCodeToolchain?.(
         resolveSubmittedCodeToolchain(supportedPnpmMetadata(".")),
       ),
-    ).resolves.toBeDefined();
+    ).resolves.toBeUndefined();
   });
 
   it("rejects an unprovisioned submitted toolchain before it executes repository code", async () => {
@@ -1922,13 +1835,11 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     const handle = await provider.create();
     const plan = resolveSubmittedCodeToolchain(supportedPnpmMetadata("webapp"));
     const command = "pnpm run demo; printf '%s' safe";
-    const toolchainReceipt =
-      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
-    if (toolchainReceipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
     await handle.workspace.syncSubmittedCodeWorkspace?.();
 
     await handle.workspace.executeSubmittedRuntime?.(
-      { command, plan, toolchainReceipt },
+      { command, plan },
       {
         env: {
           NEXT_PUBLIC_API_URL: "https://public.example.test",
@@ -1957,7 +1868,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(JSON.stringify(calls)).not.toContain("caller-secret");
   });
 
-  it("rejects a runtime plan that changed after its capability was issued", async () => {
+  it("rejects a runtime plan that changed after its private binding", async () => {
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeCommandTimeoutClient([]),
       submittedCodeSnapshot: "makeademo-submitted-code",
@@ -1969,14 +1880,11 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       install: { argv: ["install"], executable: "pnpm" },
     };
 
-    const toolchainReceipt =
-      await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
-    if (toolchainReceipt === undefined) throw new Error("missing receipt");
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
     await expect(
       handle.workspace.executeSubmittedRuntime?.({
         command: "pnpm run demo",
         plan: tampered,
-        toolchainReceipt,
       }),
     ).rejects.toThrow("not the catalog install");
   });
@@ -2995,15 +2903,13 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       submittedCodeSnapshot: "makeademo-submitted-code-browser",
     });
     const handle = await provider.create();
-    const { plan, receipt } =
-      await provisionToolchainForSubmittedCodeSync(handle);
+    const { plan } = await provisionToolchainForSubmittedCodeSync(handle);
     await handle.workspace.syncSubmittedCodeWorkspace?.();
     calls.length = 0;
 
     await handle.workspace.executeSubmittedRuntime?.({
       command: "node capture-script.mjs",
       plan,
-      toolchainReceipt: receipt,
     });
 
     const submittedExecution = calls
@@ -3680,7 +3586,7 @@ function fakeCommandTimeoutClient(
     emulateLinuxRootArtifactWriteAccess?: boolean;
     emulatedYarnCliSha512?: string;
     nodeProvisioningFailure?: boolean;
-    nodeVerificationFailure?: boolean;
+    packageManagerVerificationFailure?: boolean;
     submittedIntegrityFailureAttempt?: number;
     unavailablePackageManagerRelease?: boolean;
   } = {},
@@ -3719,7 +3625,7 @@ function fakeCommandTimeoutSandbox(
     emulateLinuxRootArtifactWriteAccess?: boolean;
     emulatedYarnCliSha512?: string;
     nodeProvisioningFailure?: boolean;
-    nodeVerificationFailure?: boolean;
+    packageManagerVerificationFailure?: boolean;
     submittedIntegrityFailureAttempt?: number;
     unavailablePackageManagerRelease?: boolean;
   },
@@ -3801,11 +3707,9 @@ function fakeCommandTimeoutSandbox(
             const nodeProvisioningFails =
               options.nodeProvisioningFailure === true &&
               trustedNodeProvisionAttestation(script) !== undefined;
-            const nodeVerificationFails =
-              options.nodeVerificationFailure === true &&
-              script.includes(
-                "makeademo-provision-submitted-node-runtime verify",
-              );
+            const packageManagerVerificationFails =
+              options.packageManagerVerificationFailure === true &&
+              script.includes("MAKEADEMO_VERIFY_TRUSTED_ARTIFACT");
             const deprecatedPackageManagerRelease =
               options.deprecatedPackageManagerRelease === true &&
               script.includes("MAKEADEMO_REGISTRY_RELEASE_DEPRECATED");
@@ -3823,7 +3727,7 @@ function fakeCommandTimeoutSandbox(
                 rootFalselyAppearsWritable ||
                 yarnCliDigestMismatch ||
                 nodeProvisioningFails ||
-                nodeVerificationFails
+                packageManagerVerificationFails
                   ? 1
                   : 0,
               stderr: integrityFails
@@ -3838,8 +3742,8 @@ function fakeCommandTimeoutSandbox(
                         ? "launched Yarn CLI digest mismatch"
                         : nodeProvisioningFails
                           ? "signed Node manifest rejected"
-                          : nodeVerificationFails
-                            ? "trusted Node artifact changed"
+                          : packageManagerVerificationFails
+                            ? "trusted package-manager artifact changed"
                             : "",
               stdout:
                 trustedNodeProvisionAttestation(script) ??

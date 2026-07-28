@@ -5,7 +5,6 @@ import type {
   SubmittedProjectExecutionRequest,
   SubmittedProjectRuntimeRequest,
 } from "./preparation-workspace.interface";
-import type { SubmittedCodeToolchainArtifactReceipt } from "./submitted-code-toolchain-artifact.interface";
 import type { SubmittedCodeToolchainPlan } from "./submitted-code-toolchain.schema";
 
 /**
@@ -24,12 +23,45 @@ export class SubmittedCodeWorkspaceSyncError extends Error {
   }
 }
 
+/**
+ * Raised when MakeADemo cannot provision the catalog-selected toolchain.
+ * Callers must treat this as infrastructure failure metadata and must not ask
+ * the preparation agent to repair app code.
+ */
+export class SubmittedCodeToolchainProvisioningError extends Error {
+  readonly failureKind =
+    "submitted-code-toolchain-provisioning-failed" as const;
+
+  constructor(cause: unknown) {
+    super(
+      readSubmittedCodeOperationFailureMessage(
+        cause,
+        "Failed to provision submitted-code toolchain.",
+      ),
+      {
+        cause,
+      },
+    );
+    this.name = "SubmittedCodeToolchainProvisioningError";
+  }
+}
+
 function readSubmittedCodeSyncFailureMessage(cause: unknown): string {
+  return readSubmittedCodeOperationFailureMessage(
+    cause,
+    "Failed to sync prepared files to submitted-code workspace.",
+  );
+}
+
+function readSubmittedCodeOperationFailureMessage(
+  cause: unknown,
+  fallback: string,
+): string {
   if (cause instanceof Error && cause.message.length > 0) {
     return cause.message;
   }
 
-  return "Failed to sync prepared files to submitted-code workspace.";
+  return fallback;
 }
 
 export async function executeSubmittedCode(
@@ -74,13 +106,17 @@ export async function executeSubmittedRuntime(
 export async function provisionSubmittedCodeToolchain(
   workspace: PreparationWorkspace,
   plan: SubmittedCodeToolchainPlan,
-): Promise<SubmittedCodeToolchainArtifactReceipt> {
-  if (workspace.provisionSubmittedCodeToolchain === undefined) {
-    throw new Error(
-      "Preparation workspace cannot provision submitted-code toolchains.",
-    );
+): Promise<void> {
+  try {
+    if (workspace.provisionSubmittedCodeToolchain === undefined) {
+      throw new Error(
+        "Preparation workspace cannot provision submitted-code toolchains.",
+      );
+    }
+    await workspace.provisionSubmittedCodeToolchain(plan);
+  } catch (error) {
+    throw new SubmittedCodeToolchainProvisioningError(error);
   }
-  return await workspace.provisionSubmittedCodeToolchain(plan);
 }
 
 export async function syncSubmittedCodeWorkspace(

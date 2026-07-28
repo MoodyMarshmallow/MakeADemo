@@ -1,6 +1,9 @@
 import type { PreparationManifest } from "../../03-repo-preparation/preparation-manifest";
 import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
-import { SubmittedCodeWorkspaceSyncError } from "../../03-repo-preparation/submitted-code-execution";
+import {
+  SubmittedCodeToolchainProvisioningError,
+  SubmittedCodeWorkspaceSyncError,
+} from "../../03-repo-preparation/submitted-code-execution";
 import type { SubmittedCodeNodeReleaseCatalog } from "../../03-repo-preparation/submitted-code-node-release-catalog.interface";
 import { inspectSubmittedCodeToolchain } from "../../03-repo-preparation/submitted-code-toolchain-inspection";
 import type { BrowserValidator } from "./browser-validator.interface";
@@ -37,10 +40,17 @@ export async function runDemoRuntimePreflight(
 ): Promise<DemoRuntimePreflightResult> {
   let sandboxResult: Awaited<ReturnType<SandboxRunner["runValidation"]>>;
   try {
-    const inspectedToolchain = await inspectSubmittedCodeToolchain(
-      input.preparationWorkspace.workspace,
-      dependencies.nodeReleaseCatalog,
-    );
+    let inspectedToolchain: Awaited<
+      ReturnType<typeof inspectSubmittedCodeToolchain>
+    >;
+    try {
+      inspectedToolchain = await inspectSubmittedCodeToolchain(
+        input.preparationWorkspace.workspace,
+        dependencies.nodeReleaseCatalog,
+      );
+    } catch (error) {
+      throw new SubmittedToolchainInspectionError(error);
+    }
     if (inspectedToolchain.mode === "unsupported") {
       throw new Error(inspectedToolchain.reason);
     }
@@ -62,7 +72,11 @@ export async function runDemoRuntimePreflight(
       blockedNetworkAttempts: [],
       ...(error instanceof SubmittedCodeWorkspaceSyncError
         ? { failureKind: error.failureKind }
-        : { failureKind: "sandbox-execution-failed" }),
+        : error instanceof SubmittedCodeToolchainProvisioningError
+          ? { failureKind: error.failureKind }
+          : error instanceof SubmittedToolchainInspectionError
+            ? { failureKind: error.failureKind }
+            : { failureKind: "sandbox-execution-failed" }),
       failureReason: boundValidationEvidence(
         failureReason,
         validationEvidenceCaps.failureReason,
@@ -305,6 +319,15 @@ export async function runDemoRuntimePreflight(
     };
   } finally {
     await cleanupQuietly(sandboxResult.cleanup);
+  }
+}
+
+class SubmittedToolchainInspectionError extends Error {
+  readonly failureKind = "submitted-toolchain-inspection-failed" as const;
+
+  constructor(cause: unknown) {
+    super(readErrorMessage(cause), { cause });
+    this.name = "SubmittedToolchainInspectionError";
   }
 }
 

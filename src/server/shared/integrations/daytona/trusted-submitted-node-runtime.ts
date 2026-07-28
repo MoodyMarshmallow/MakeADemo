@@ -1,18 +1,10 @@
 const helperExecutable =
   "/usr/local/bin/makeademo-provision-submitted-node-runtime";
-const cacheRoot = "/opt/makeademo/toolchains/node/sha256";
+const runtimeRoot = "/opt/makeademo/toolchains/node/sha256";
 const attestationMaxBytes = 8 * 1024;
 
-type Sha256Digest = Readonly<{ algorithm: "sha256"; value: string }>;
-
 export type TrustedSubmittedNodeRuntimeArtifact = Readonly<{
-  archiveDigest: Sha256Digest;
-  cacheStatus: "hit" | "miss";
-  nodeBinaryDigest: Sha256Digest;
   root: string;
-  signedManifestDigest: Sha256Digest;
-  signerPrimaryFingerprint: string;
-  version: string;
 }>;
 
 export class TrustedSubmittedNodeRuntimeError extends Error {
@@ -34,21 +26,6 @@ export function createTrustedSubmittedNodeProvisionCommand(
 ): string {
   assertExactStableNodeVersion(version);
   return `${helperExecutable} provision ${shellQuote(version)}`;
-}
-
-/** Builds the offline re-verification command bound to the issued receipt. */
-export function createTrustedSubmittedNodeVerificationCommand(
-  artifact: TrustedSubmittedNodeRuntimeArtifact,
-): string {
-  return `${helperExecutable} verify ${[
-    artifact.version,
-    artifact.archiveDigest.value,
-    artifact.nodeBinaryDigest.value,
-    artifact.signedManifestDigest.value,
-    artifact.signerPrimaryFingerprint,
-  ]
-    .map(shellQuote)
-    .join(" ")}`;
 }
 
 /** Parses the helper's sole bounded JSON attestation into a trusted artifact. */
@@ -76,9 +53,8 @@ export function readTrustedSubmittedNodeAttestation(
   const keys = Object.keys(attestation).sort();
   if (
     keys.join(",") !==
-      "archiveSha256,cacheStatus,nodeBinarySha256,schemaVersion,signedManifestSha256,signerPrimaryFingerprint,version" ||
+      "archiveSha256,nodeBinarySha256,schemaVersion,signedManifestSha256,signerPrimaryFingerprint,version" ||
     attestation.schemaVersion !== 1 ||
-    !["hit", "miss"].includes(String(attestation.cacheStatus)) ||
     !isSha256(attestation.archiveSha256) ||
     !isSha256(attestation.nodeBinarySha256) ||
     !isSha256(attestation.signedManifestSha256) ||
@@ -95,21 +71,15 @@ export function readTrustedSubmittedNodeAttestation(
     );
   }
   return Object.freeze({
-    archiveDigest: sha256Digest(attestation.archiveSha256),
-    cacheStatus: attestation.cacheStatus as "hit" | "miss",
-    nodeBinaryDigest: sha256Digest(attestation.nodeBinarySha256),
     root: trustedSubmittedNodeRuntimeRoot(attestation.archiveSha256),
-    signedManifestDigest: sha256Digest(attestation.signedManifestSha256),
-    signerPrimaryFingerprint: attestation.signerPrimaryFingerprint,
-    version: attestation.version,
   });
 }
 
-export function trustedSubmittedNodeRuntimeRoot(archiveSha256: string): string {
+function trustedSubmittedNodeRuntimeRoot(archiveSha256: string): string {
   if (!isSha256(archiveSha256)) {
     throw new Error("Trusted Node runtime archive digest is invalid.");
   }
-  return `${cacheRoot}/${archiveSha256}`;
+  return `${runtimeRoot}/${archiveSha256}`;
 }
 
 function assertExactStableNodeVersion(version: string): void {
@@ -122,10 +92,6 @@ function assertExactStableNodeVersion(version: string): void {
 
 function isSha256(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
-}
-
-function sha256Digest(value: string): Sha256Digest {
-  return Object.freeze({ algorithm: "sha256", value });
 }
 
 function malformedAttestation(): TrustedSubmittedNodeRuntimeError {

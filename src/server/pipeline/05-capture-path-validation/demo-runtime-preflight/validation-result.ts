@@ -18,6 +18,8 @@ export type DemoRuntimePreflightFailureKind =
   | "browser-load-failed"
   | "browser-not-interactable"
   | "sandbox-execution-failed"
+  | "submitted-toolchain-inspection-failed"
+  | "submitted-code-toolchain-provisioning-failed"
   | "submitted-code-workspace-sync-failed";
 
 type DemoRuntimePreflightEvidence = {

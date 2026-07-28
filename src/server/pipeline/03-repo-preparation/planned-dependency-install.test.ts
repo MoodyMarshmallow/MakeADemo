@@ -8,20 +8,6 @@ import type { PreparationWorkspace } from "./preparation-workspace.interface";
 import { submittedCodeKnownGoodNodeReleaseSnapshot } from "./submitted-code-node-release-catalog.interface";
 import { resolveSubmittedCodeToolchain } from "./submitted-code-toolchain.schema";
 
-const fakeToolchainReceipt = {
-  node: {
-    archiveDigest: { algorithm: "sha256", value: "c".repeat(64) },
-    nodeBinaryDigest: { algorithm: "sha256", value: "d".repeat(64) },
-    signedManifestDigest: { algorithm: "sha256", value: "e".repeat(64) },
-    signerPrimaryFingerprint: "F".repeat(40),
-    version: "22.23.1",
-  },
-  packageManager: {
-    artifactDigest: { algorithm: "sha512", value: "a".repeat(128) },
-    upstreamDigest: { algorithm: "sha512", value: "b".repeat(128) },
-  },
-} as const;
-
 describe("runPlannedDependencyInstall", () => {
   it("executes immutable catalog argv with the backend-owned bounded install profile", async () => {
     const events: unknown[] = [];
@@ -65,7 +51,6 @@ describe("runPlannedDependencyInstall", () => {
         },
         submittedCodeKnownGoodNodeReleaseSnapshot,
       ),
-      toolchainReceipt: fakeToolchainReceipt,
       workspace,
     });
 
@@ -132,7 +117,6 @@ describe("runPlannedDependencyInstall", () => {
 
     await runPlannedDependencyInstall({
       toolchainPlan,
-      toolchainReceipt: fakeToolchainReceipt,
       workspace,
     });
 

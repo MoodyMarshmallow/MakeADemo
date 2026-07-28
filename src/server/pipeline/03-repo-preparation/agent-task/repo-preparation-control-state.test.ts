@@ -15,7 +15,10 @@ const manifest = {
 function createState(
   readManifest: () => Promise<unknown> = async () => manifest,
 ): RepoPreparationControlState {
-  return createRepoPreparationControlState({ readManifest });
+  return createRepoPreparationControlState({
+    baselineSourceControlledPaths: ["src/App.tsx"],
+    readManifest,
+  });
 }
 
 describe("Repo Preparation control state", () => {

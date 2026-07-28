@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
-import { SubmittedCodeWorkspaceSyncError } from "../../03-repo-preparation/submitted-code-execution";
-import { submittedCodeKnownGoodNodeReleaseCatalog } from "../../03-repo-preparation/submitted-code-node-release-catalog.interface";
+import {
+  SubmittedCodeToolchainProvisioningError,
+  SubmittedCodeWorkspaceSyncError,
+} from "../../03-repo-preparation/submitted-code-execution";
+import {
+  SubmittedCodeNodeReleaseCatalogError,
+  submittedCodeKnownGoodNodeReleaseCatalog,
+} from "../../03-repo-preparation/submitted-code-node-release-catalog.interface";
 import type { BrowserValidator } from "./browser-validator.interface";
 import { runDemoRuntimePreflight as runAgainstNodeCatalog } from "./demo-runtime-preflight";
 
@@ -333,6 +339,84 @@ describe("runDemoRuntimePreflight", () => {
     });
   });
 
+  it("classifies trusted toolchain catalog failures before sandbox validation", async () => {
+    let sandboxValidationStarted = false;
+    const result = await runDemoRuntimePreflight(
+      {
+        preparationManifest: manifest({
+          demoCommand: "npm run demo",
+          url: "http://localhost:5173",
+        }),
+        preparationWorkspace: workspaceHandle([]),
+      },
+      {
+        browserValidator: {
+          async validate() {
+            throw new Error("browser validation must not start");
+          },
+        },
+        nodeReleaseCatalog: {
+          async load() {
+            throw new SubmittedCodeNodeReleaseCatalogError(
+              "fetch_failed",
+              "trusted catalog unavailable",
+            );
+          },
+        },
+        sandboxRunner: {
+          async runValidation() {
+            sandboxValidationStarted = true;
+            throw new Error("sandbox validation must not start");
+          },
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      failureKind: "submitted-toolchain-inspection-failed",
+      failureReason: "trusted catalog unavailable",
+      status: "failed",
+    });
+    expect(sandboxValidationStarted).toBe(false);
+  });
+
+  it("classifies trusted toolchain scanner failures before sandbox validation", async () => {
+    const preparationWorkspace = workspaceHandle([]);
+    preparationWorkspace.workspace.execute = async () => ({
+      exitCode: 1,
+      stderr: "trusted scanner unavailable",
+      stdout: "",
+    });
+
+    const result = await runDemoRuntimePreflight(
+      {
+        preparationManifest: manifest({
+          demoCommand: "npm run demo",
+          url: "http://localhost:5173",
+        }),
+        preparationWorkspace,
+      },
+      {
+        browserValidator: {
+          async validate() {
+            throw new Error("browser validation must not start");
+          },
+        },
+        sandboxRunner: {
+          async runValidation() {
+            throw new Error("sandbox validation must not start");
+          },
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      failureKind: "submitted-toolchain-inspection-failed",
+      failureReason: expect.stringContaining("trusted scanner unavailable"),
+      status: "failed",
+    });
+  });
+
   it("classifies submitted-code workspace sync failures in validation metadata", async () => {
     const sandboxRunner: SandboxRunner = {
       async runValidation() {
@@ -364,6 +448,41 @@ describe("runDemoRuntimePreflight", () => {
       failureKind: "submitted-code-workspace-sync-failed",
       failureReason: "restore archive failed",
       logs: ["restore archive failed"],
+      status: "failed",
+    });
+  });
+
+  it("classifies submitted-code toolchain provisioning failures in validation metadata", async () => {
+    const sandboxRunner: SandboxRunner = {
+      async runValidation() {
+        throw new SubmittedCodeToolchainProvisioningError(
+          new Error("trusted provisioning unavailable"),
+        );
+      },
+    };
+    const browserValidator: BrowserValidator = {
+      async validate() {
+        throw new Error(
+          "browser validation should not run after sandbox failure",
+        );
+      },
+    };
+
+    const result = await runDemoRuntimePreflight(
+      {
+        preparationManifest: manifest({
+          demoCommand: "npm run demo",
+          url: "http://localhost:5173",
+        }),
+        preparationWorkspace: workspaceHandle([]),
+      },
+      { browserValidator, sandboxRunner },
+    );
+
+    expect(result).toMatchObject({
+      failureKind: "submitted-code-toolchain-provisioning-failed",
+      failureReason: "trusted provisioning unavailable",
+      logs: ["trusted provisioning unavailable"],
       status: "failed",
     });
   });

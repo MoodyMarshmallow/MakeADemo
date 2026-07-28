@@ -147,7 +147,6 @@ describe("production Pipeline assembly", () => {
   it("supplies a fresh deterministic state before Footage Capture", async () => {
     const preparationWorkspace = preparationWorkspaceHandle();
     const prepareFreshCaptureState = createDaytonaFreshCaptureStatePreparer(
-      submittedCodeKnownGoodNodeReleaseCatalog,
       async ({
         preparationManifest: manifest,
         preparationWorkspace: workspace,

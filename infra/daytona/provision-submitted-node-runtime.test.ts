@@ -6,7 +6,6 @@ import {
   mkdir,
   mkdtemp,
   readdir,
-  rename,
   rm,
   symlink,
   writeFile,
@@ -24,7 +23,6 @@ import {
   provisionSubmittedNodeRuntime,
   validateNodeArchiveEntries,
   validateProvisionAttestation,
-  verifySubmittedNodeRuntime,
 } from "./provision-submitted-node-runtime.mjs";
 
 const allowedFingerprint = "5BE8A3F6C8A5C01D106C0AD820B1A390B168D356";
@@ -194,30 +192,23 @@ describe("provisionSubmittedNodeRuntime", () => {
   it("verifies the signed manifest before downloading, hashing, and extracting the archive", async () => {
     const harness = await createProvisionHarness();
 
-    const first = await provisionSubmittedNodeRuntime(
-      "24.3.2",
-      harness.options,
-    );
-    const second = await provisionSubmittedNodeRuntime(
+    const artifact = await provisionSubmittedNodeRuntime(
       "24.3.2",
       harness.options,
     );
 
-    expect(first).toMatchObject({
+    expect(artifact).toMatchObject({
       archiveSha256: harness.archiveSha256,
-      cacheStatus: "miss",
       schemaVersion: 1,
       signerPrimaryFingerprint: allowedFingerprint,
       version: "24.3.2",
     });
-    expect(second).toMatchObject({ cacheStatus: "hit" });
     expect(harness.events).toEqual([
       "fetch:SHASUMS256.txt.asc",
       "gpgv",
       "fetch:node-v24.3.2-linux-x64.tar.xz",
       "tar:list",
       "tar:extract",
-      "node:version",
       "node:version",
     ]);
     expect(harness.fetchImplementation).toHaveBeenCalledTimes(2);
@@ -234,7 +225,7 @@ describe("provisionSubmittedNodeRuntime", () => {
     expect(harness.events).not.toContain("tar:list");
   });
 
-  it("fails first-time hydration before publishing a version record when Node reports another version", async () => {
+  it("fails before publishing when Node reports another version", async () => {
     const harness = await createProvisionHarness({
       nodeVersionOutput: "v24.3.1\n",
     });
@@ -243,154 +234,27 @@ describe("provisionSubmittedNodeRuntime", () => {
       provisionSubmittedNodeRuntime("24.3.2", harness.options),
     ).rejects.toThrow("version verification failed");
     await expect(
-      access(`${harness.cacheParent}/versions/24.3.2.json`),
-    ).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(
-      access(`${harness.cacheParent}/sha256/${harness.archiveSha256}`),
+      access(`${harness.runtimeParent}/sha256/${harness.archiveSha256}`),
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("reverifies the immutable cache without network access", async () => {
-    const harness = await createProvisionHarness();
-    const attestation = await provisionSubmittedNodeRuntime(
-      "24.3.2",
-      harness.options,
-    );
-    harness.events.splice(0);
-    harness.fetchImplementation.mockClear();
+  it("treats safe internal symlink modes as non-operative during provisioning verification", async () => {
+    const harness = await createProvisionHarness({ includeSymlink: true });
 
     await expect(
-      verifySubmittedNodeRuntime(attestation, harness.options),
-    ).resolves.toBe(`${harness.cacheParent}/sha256/${harness.archiveSha256}`);
-    expect(harness.fetchImplementation).not.toHaveBeenCalled();
-    expect(harness.events).toEqual(["node:version"]);
+      provisionSubmittedNodeRuntime("24.3.2", harness.options),
+    ).resolves.toMatchObject({ archiveSha256: harness.archiveSha256 });
   });
 
-  it("adopts a fully verified digest root left after publication was interrupted", async () => {
+  it("rejects artifact ownership that differs from the trusted helper user", async () => {
     const harness = await createProvisionHarness();
-    await provisionSubmittedNodeRuntime("24.3.2", harness.options);
-    await rm(join(harness.cacheParent, "versions/24.3.2.json"));
-    harness.events.splice(0);
-    harness.fetchImplementation.mockClear();
-
-    const recovered = await provisionSubmittedNodeRuntime(
-      "24.3.2",
-      harness.options,
-    );
-
-    expect(recovered).toMatchObject({ cacheStatus: "hit", version: "24.3.2" });
-    expect(harness.fetchImplementation).not.toHaveBeenCalled();
-    expect(harness.events).toEqual(["node:version"]);
-  });
-
-  it("does not delete a concurrently published digest root when its rename loses the race", async () => {
-    const harness = await createProvisionHarness();
-    let simulatedRace = false;
-    const raceRename = async (source: string, destination: string) => {
-      if (!simulatedRace && source.endsWith("/runtime")) {
-        simulatedRace = true;
-        await chmod(source, 0o700);
-        await rename(source, destination);
-        await chmod(destination, 0o555);
-        throw Object.assign(new Error("destination exists"), {
-          code: "EEXIST",
-        });
-      }
-      await rename(source, destination);
-    };
 
     await expect(
       provisionSubmittedNodeRuntime("24.3.2", {
         ...harness.options,
-        rename: raceRename,
-      }),
-    ).rejects.toMatchObject({ code: "EEXIST" });
-    await access(`${harness.cacheParent}/sha256/${harness.archiveSha256}`);
-    harness.events.splice(0);
-    harness.fetchImplementation.mockClear();
-
-    await expect(
-      provisionSubmittedNodeRuntime("24.3.2", harness.options),
-    ).resolves.toMatchObject({ cacheStatus: "hit" });
-    expect(harness.fetchImplementation).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["Node bytes", "bin/node"],
-    ["stored attestation", "makeademo-node-attestation.json"],
-    ["signed manifest evidence", "SHASUMS256.txt.asc"],
-  ])("rejects tampered %s after provisioning", async (_label, relativePath) => {
-    const harness = await createProvisionHarness();
-    const attestation = await provisionSubmittedNodeRuntime(
-      "24.3.2",
-      harness.options,
-    );
-    const path = join(
-      harness.cacheParent,
-      "sha256",
-      harness.archiveSha256,
-      relativePath,
-    );
-    await chmod(path, 0o600);
-    await writeFile(path, "tampered");
-    await chmod(path, relativePath === "bin/node" ? 0o555 : 0o444);
-
-    await expect(
-      verifySubmittedNodeRuntime(attestation, harness.options),
-    ).rejects.toThrow();
-  });
-
-  it("rejects changed cache ownership or mode evidence", async () => {
-    const harness = await createProvisionHarness();
-    const attestation = await provisionSubmittedNodeRuntime(
-      "24.3.2",
-      harness.options,
-    );
-    const nodePath = join(
-      harness.cacheParent,
-      "sha256",
-      harness.archiveSha256,
-      "bin/node",
-    );
-    await chmod(nodePath, 0o755);
-
-    await expect(
-      verifySubmittedNodeRuntime(attestation, harness.options),
-    ).rejects.toThrow("cache permissions are invalid");
-    await expect(
-      verifySubmittedNodeRuntime(attestation, {
-        ...harness.options,
         expectedUid: (process.getuid?.() ?? 0) + 1,
       }),
-    ).rejects.toThrow("cache permissions are invalid");
-  });
-
-  it("fails closed when the stored version receipt is changed after provisioning", async () => {
-    const harness = await createProvisionHarness();
-    await provisionSubmittedNodeRuntime("24.3.2", harness.options);
-    const receiptPath = join(harness.cacheParent, "versions/24.3.2.json");
-    await chmod(receiptPath, 0o600);
-    await writeFile(receiptPath, "{}");
-    await chmod(receiptPath, 0o400);
-    harness.fetchImplementation.mockClear();
-
-    await expect(
-      provisionSubmittedNodeRuntime("24.3.2", harness.options),
-    ).rejects.toThrow("cache record is invalid");
-    expect(harness.fetchImplementation).not.toHaveBeenCalled();
-  });
-
-  it("treats safe internal symlink modes as non-operative during cache verification", async () => {
-    const harness = await createProvisionHarness({ includeSymlink: true });
-
-    const attestation = await provisionSubmittedNodeRuntime(
-      "24.3.2",
-      harness.options,
-    );
-
-    await expect(
-      verifySubmittedNodeRuntime(attestation, harness.options),
-    ).resolves.toContain(harness.archiveSha256);
+    ).rejects.toThrow("permissions are invalid");
   });
 
   it("rejects non-canonical helper attestations", () => {
@@ -398,7 +262,6 @@ describe("provisionSubmittedNodeRuntime", () => {
       validateProvisionAttestation(
         {
           archiveSha256: "a".repeat(64),
-          cacheStatus: "miss",
           extra: true,
           nodeBinarySha256: "b".repeat(64),
           schemaVersion: 1,
@@ -426,17 +289,6 @@ describe("provisionSubmittedNodeRuntime", () => {
       provisionSubmittedNodeRuntime("24.3.2", harness.options),
     ).rejects.toThrow("invalid response");
     expect(harness.events).toEqual(["fetch:SHASUMS256.txt.asc"]);
-  });
-
-  it("fails closed on an invalid cache record without fetching", async () => {
-    const harness = await createProvisionHarness();
-    await mkdir(join(harness.cacheParent, "versions"), { recursive: true });
-    await writeFile(join(harness.cacheParent, "versions/24.3.2.json"), "{}");
-
-    await expect(
-      provisionSubmittedNodeRuntime("24.3.2", harness.options),
-    ).rejects.toThrow("cache record is invalid");
-    expect(harness.fetchImplementation).not.toHaveBeenCalled();
   });
 
   it("forwards cancellation to the fixed-origin fetch", async () => {
@@ -467,7 +319,7 @@ async function createProvisionHarness(
 ) {
   const root = await mkdtemp(join(tmpdir(), "makeademo-node-runtime-"));
   temporaryDirectories.push(root);
-  const cacheParent = join(root, "cache");
+  const runtimeParent = join(root, "runtime-parent");
   const fingerprintPolicyPath = join(root, "fingerprints.txt");
   const keyringPath = join(root, "pubring.kbx");
   await writeFile(fingerprintPolicyPath, `${allowedFingerprint}\n`);
@@ -545,11 +397,11 @@ async function createProvisionHarness(
   });
   return {
     archiveSha256,
-    cacheParent,
+    runtimeParent,
     events,
     fetchImplementation,
     options: {
-      cacheParent,
+      runtimeParent,
       expectedUid: process.getuid?.() ?? 0,
       fetchImplementation,
       fingerprintPolicyPath,

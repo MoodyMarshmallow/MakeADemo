@@ -107,7 +107,6 @@ type RestartPreparedDemoForFreshCapture =
 
 /** Provides Footage Capture with a fresh deterministic Daytona runtime. */
 export function createDaytonaFreshCaptureStatePreparer(
-  nodeReleaseCatalog: SubmittedCodeNodeReleaseCatalog,
   restart: RestartPreparedDemoForFreshCapture = restartPreparedDemoForFreshCapture,
 ): FreshCaptureStatePreparer {
   return async ({ preparedDemo }) => {
@@ -118,7 +117,6 @@ export function createDaytonaFreshCaptureStatePreparer(
     }
 
     return await restart({
-      nodeReleaseCatalog,
       preparationManifest: preparedDemo.preparationManifest,
       preparationWorkspace: preparedDemo.preparationWorkspace,
     });
@@ -219,7 +217,6 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
             browserValidator: new PlaywrightBrowserValidator(),
             nodeReleaseCatalog,
             sandboxRunner: new DaytonaSandboxRunner({
-              nodeReleaseCatalog,
               releaseWorkspaceOnCleanup: false,
             }),
           },
@@ -263,11 +260,10 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
       capturePathRepairer,
       nodeReleaseCatalog,
       repoPreparationAgent,
-      sandboxRunner: new DaytonaSandboxRunner({ nodeReleaseCatalog }),
+      sandboxRunner: new DaytonaSandboxRunner({}),
       scriptGenerationAgent,
     }),
-    prepareFreshCaptureState:
-      createDaytonaFreshCaptureStatePreparer(nodeReleaseCatalog),
+    prepareFreshCaptureState: createDaytonaFreshCaptureStatePreparer(),
     repoSecurityInputLoader,
     reviewDraftComposite: draftCompositeReviewer.review.bind(
       draftCompositeReviewer,

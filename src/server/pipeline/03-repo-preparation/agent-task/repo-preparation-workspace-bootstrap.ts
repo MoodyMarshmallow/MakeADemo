@@ -23,10 +23,16 @@ export async function bootstrapRepoPreparationWorkspace(input: {
   logger: PipelineEventLogger;
   repoUrl: string;
   workspace: PreparationWorkspace;
-}): Promise<{
-  baselineSourceControlledPaths?: string[];
-  failure?: ReturnType<typeof createRepoCloneFailure>;
-}> {
+}): Promise<
+  | {
+      baselineSourceControlledPaths: string[];
+      failure?: never;
+    }
+  | {
+      baselineSourceControlledPaths?: never;
+      failure: ReturnType<typeof createRepoCloneFailure>;
+    }
+> {
   await writeLog(input, { event: "clone-started" });
   const parentClone = await cloneParent(
     input.workspace,

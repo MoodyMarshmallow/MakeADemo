@@ -1,8 +1,5 @@
 import type { PreparationWorkspace } from "./preparation-workspace.interface";
-import {
-  type SubmittedCodeNodeReleaseCatalog,
-  SubmittedCodeNodeReleaseCatalogError,
-} from "./submitted-code-node-release-catalog.interface";
+import type { SubmittedCodeNodeReleaseCatalog } from "./submitted-code-node-release-catalog.interface";
 import {
   type SubmittedCodeToolchainPlan,
   SubmittedCodeToolchainResolutionError,
@@ -15,7 +12,9 @@ const inspectorOutputMaxBytes = 1024 * 1024;
 export type SubmittedCodeToolchainInspectionResult =
   | { mode: "catalog"; plan: SubmittedCodeToolchainPlan }
   | {
-      code: SubmittedCodeToolchainResolutionError["code"];
+      code:
+        | SubmittedCodeToolchainResolutionError["code"]
+        | "invalid_project_metadata";
       /** A bounded, redacted product blocker; never an executable fallback. */
       mode: "unsupported";
       reason: string;
@@ -49,8 +48,8 @@ export async function inspectSubmittedCodeToolchain(
     );
   }
 
+  const nodeReleases = await nodeReleaseCatalog.load();
   try {
-    const nodeReleases = await nodeReleaseCatalog.load();
     return {
       mode: "catalog",
       plan: resolveSubmittedCodeToolchain(
@@ -66,8 +65,12 @@ export async function inspectSubmittedCodeToolchain(
         reason: unsupportedToolchainReason(error.code),
       };
     }
-    if (error instanceof SubmittedCodeNodeReleaseCatalogError) throw error;
-    throw new Error("Submitted toolchain metadata could not be resolved.");
+    return {
+      code: "invalid_project_metadata",
+      mode: "unsupported",
+      reason:
+        "The submitted JavaScript project metadata is incomplete, malformed, ambiguous, or conflicting.",
+    };
   }
 }
 

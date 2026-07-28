@@ -7,17 +7,14 @@ import { describe, expect, it } from "vitest";
 
 import type { PreparationWorkspaceHandle } from "../../../pipeline/03-repo-preparation/preparation-workspace-runner";
 import type { SubmittedProjectRuntimeRequest } from "../../../pipeline/03-repo-preparation/preparation-workspace.interface";
-import {
-  submittedCodeKnownGoodNodeReleaseCatalog,
-  submittedCodeKnownGoodNodeReleaseSnapshot,
-} from "../../../pipeline/03-repo-preparation/submitted-code-node-release-catalog.interface";
+import { submittedCodeKnownGoodNodeReleaseSnapshot } from "../../../pipeline/03-repo-preparation/submitted-code-node-release-catalog.interface";
 import { resolveSubmittedCodeToolchain } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
 import type { PipelineEventLogger } from "../../logging/pipeline-event-logger";
 import {
   DaytonaSandboxRunner as RuntimeDaytonaSandboxRunner,
   createStartDemoScript,
   parseDemoProcessState,
-  restartPreparedDemoForFreshCapture as restartAgainstNodeCatalog,
+  restartPreparedDemoForFreshCapture,
 } from "./daytona-sandbox-runner";
 
 type DaytonaSandboxRunnerOptions = NonNullable<
@@ -25,33 +22,9 @@ type DaytonaSandboxRunnerOptions = NonNullable<
 >;
 
 class DaytonaSandboxRunner extends RuntimeDaytonaSandboxRunner {
-  constructor(
-    options: Omit<DaytonaSandboxRunnerOptions, "nodeReleaseCatalog"> &
-      Partial<Pick<DaytonaSandboxRunnerOptions, "nodeReleaseCatalog">> = {},
-  ) {
-    super({
-      nodeReleaseCatalog: submittedCodeKnownGoodNodeReleaseCatalog,
-      ...options,
-    });
+  constructor(options: DaytonaSandboxRunnerOptions = {}) {
+    super(options);
   }
-}
-
-function restartPreparedDemoForFreshCapture(
-  input: Omit<
-    Parameters<typeof restartAgainstNodeCatalog>[0],
-    "nodeReleaseCatalog"
-  > &
-    Partial<
-      Pick<
-        Parameters<typeof restartAgainstNodeCatalog>[0],
-        "nodeReleaseCatalog"
-      >
-    >,
-) {
-  return restartAgainstNodeCatalog({
-    nodeReleaseCatalog: submittedCodeKnownGoodNodeReleaseCatalog,
-    ...input,
-  });
 }
 
 const execFileAsync = promisify(execFile);
@@ -104,9 +77,7 @@ describe("DaytonaSandboxRunner", () => {
       url: "http://localhost:3000",
     });
 
-    expect(workspace.commands).toEqual([
-      "makeademo-inspect-submitted-code-toolchain",
-    ]);
+    expect(workspace.commands).toEqual([]);
     expect(workspace.submittedCommands[0]).toContain("find /workspace");
     expect(workspace.plannedInstalls).toEqual([
       {
@@ -193,7 +164,7 @@ describe("DaytonaSandboxRunner", () => {
     expect(result.runtimeExitCode).toBe(0);
   });
 
-  it("rejects repaired metadata that no longer selects a catalog runtime before validation executes", async () => {
+  it("uses the authoritative preflight plan without rescanning repaired metadata", async () => {
     const workspace = new FakePreparationWorkspaceHandle();
     workspace.toolchainMetadata = unsupportedToolchainMetadata();
 
@@ -205,9 +176,12 @@ describe("DaytonaSandboxRunner", () => {
         repoUrl: "https://github.com/example/app",
         url: "http://localhost:3000",
       }),
-    ).rejects.toThrow("submitted Node version is not available");
-    expect(workspace.plannedInstalls).toEqual([]);
-    expect(workspace.plannedRuntimes).toEqual([]);
+    ).resolves.toMatchObject({ runtimeExitCode: 0 });
+    expect(workspace.plannedInstalls).toHaveLength(1);
+    expect(workspace.plannedRuntimes).toHaveLength(1);
+    expect(workspace.commands).not.toContain(
+      "makeademo-inspect-submitted-code-toolchain",
+    );
   });
 
   it("uses one catalog plan for dependency installation and demo startup while leaving control commands raw", async () => {
@@ -450,7 +424,7 @@ describe("DaytonaSandboxRunner", () => {
     ).rejects.toThrow("Daytona validation requires the prepared workspace");
   });
 
-  it("refreshes validation to an authoritative toolchain plan before submitted-code execution", async () => {
+  it("requires the authoritative preflight plan before submitted-code execution", async () => {
     const workspace = new FakePreparationWorkspaceHandle();
     (
       workspace as unknown as {
@@ -467,7 +441,7 @@ describe("DaytonaSandboxRunner", () => {
         repoUrl: "https://github.com/example/app",
         url: "http://localhost:3000",
       }),
-    ).resolves.toMatchObject({ runtimeExitCode: 0 });
+    ).rejects.toThrow("requires an authoritative toolchain plan");
   });
 
   it("destroys the Daytona workspace when dependency installation fails", async () => {
@@ -735,6 +709,7 @@ describe("DaytonaSandboxRunner", () => {
         nodeVersion: "22.23.1",
       },
     ]);
+    expect(workspace.provisionedToolchains).toEqual([]);
     expect(workspace.submittedCommands).not.toEqual(
       expect.arrayContaining([
         expect.stringContaining("exec npm run demo:makeademo"),
@@ -748,7 +723,7 @@ describe("DaytonaSandboxRunner", () => {
     );
   });
 
-  it("refreshes fresh Footage Capture to an authoritative toolchain plan", async () => {
+  it("requires the authoritative preflight toolchain plan for fresh Footage Capture", async () => {
     const workspace = new FakePreparationWorkspaceHandle();
     (
       workspace as unknown as {
@@ -762,10 +737,10 @@ describe("DaytonaSandboxRunner", () => {
         preparationWorkspace: workspace,
         readinessPollIntervalMs: 0,
       }),
-    ).resolves.toMatchObject({ browserUrl: expect.any(String) });
+    ).rejects.toThrow("requires an authoritative toolchain plan");
   });
 
-  it("rejects repaired metadata before fresh capture restarts the demo", async () => {
+  it("reuses the retained preflight plan without rescanning repaired metadata", async () => {
     const workspace = new FakePreparationWorkspaceHandle();
     workspace.toolchainMetadata = unsupportedToolchainMetadata();
 
@@ -775,8 +750,11 @@ describe("DaytonaSandboxRunner", () => {
         preparationWorkspace: workspace,
         readinessPollIntervalMs: 0,
       }),
-    ).rejects.toThrow("submitted Node version is not available");
-    expect(workspace.plannedRuntimes).toEqual([]);
+    ).resolves.toMatchObject({ browserUrl: expect.any(String) });
+    expect(workspace.plannedRuntimes).toHaveLength(1);
+    expect(workspace.commands).not.toContain(
+      "makeademo-inspect-submitted-code-toolchain",
+    );
   });
 
   it("continues fresh Footage Capture restart when sandbox progress logging fails", async () => {
@@ -923,22 +901,6 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
         `${plan.packageManager?.name}@${plan.packageManager?.version}`,
       );
       this.events.push("provisionSubmittedCodeToolchain");
-      return {
-        node: {
-          archiveDigest: { algorithm: "sha256", value: "c".repeat(64) },
-          nodeBinaryDigest: { algorithm: "sha256", value: "d".repeat(64) },
-          signedManifestDigest: {
-            algorithm: "sha256",
-            value: "e".repeat(64),
-          },
-          signerPrimaryFingerprint: "F".repeat(40),
-          version: plan.node.version,
-        },
-        packageManager: {
-          artifactDigest: { algorithm: "sha512", value: "a".repeat(128) },
-          upstreamDigest: { algorithm: "sha512", value: "b".repeat(128) },
-        },
-      } as const;
     },
     executeSubmittedRuntime: async (
       request: SubmittedProjectRuntimeRequest,

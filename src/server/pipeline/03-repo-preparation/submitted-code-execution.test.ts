@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { PreparationWorkspace } from "./preparation-workspace.interface";
 import {
+  SubmittedCodeToolchainProvisioningError,
   SubmittedCodeWorkspaceSyncError,
   executeSubmittedCode,
   executeSubmittedProject,
@@ -28,6 +29,60 @@ describe("submitted-code execution helpers", () => {
         projectRoot: ".",
       }),
     ).rejects.toThrow("cannot provision submitted-code toolchains");
+  });
+
+  it("wraps trusted toolchain provisioning failures with structured metadata", async () => {
+    const cause = new Error("trusted provisioning unavailable");
+
+    await expect(
+      provisionSubmittedCodeToolchain(
+        {
+          ...fakeWorkspace(),
+          async provisionSubmittedCodeToolchain() {
+            throw cause;
+          },
+        },
+        {
+          catalogRevision: "submitted-js-2026-07-26.1",
+          evidence: [],
+          node: {
+            family: 22,
+            lifecycle: "supported",
+            version: "22.23.1",
+          },
+          packageManager: {
+            generation: "yarn-berry",
+            name: "yarn",
+            version: "4.12.0",
+          },
+          projectRoot: ".",
+        },
+      ),
+    ).rejects.toMatchObject({
+      cause,
+      failureKind: "submitted-code-toolchain-provisioning-failed",
+      message: "trusted provisioning unavailable",
+    });
+  });
+
+  it("exposes provisioning failures as a typed error", async () => {
+    await expect(
+      provisionSubmittedCodeToolchain(fakeWorkspace(), {
+        catalogRevision: "submitted-js-2026-07-26.1",
+        evidence: [],
+        node: {
+          family: 22,
+          lifecycle: "supported",
+          version: "22.23.1",
+        },
+        packageManager: {
+          generation: "yarn-berry",
+          name: "yarn",
+          version: "4.12.0",
+        },
+        projectRoot: ".",
+      }),
+    ).rejects.toBeInstanceOf(SubmittedCodeToolchainProvisioningError);
   });
 
   it("passes a resolved plan only to submitted-project execution", async () => {

@@ -2,20 +2,6 @@ import { submittedCodeKnownGoodNodeReleaseSnapshot } from "../src/server/pipelin
 import { resolveSubmittedCodeToolchain } from "../src/server/pipeline/03-repo-preparation/submitted-code-toolchain.schema";
 import { DaytonaSdkPreparationWorkspaceProvider } from "../src/server/shared/integrations/daytona/daytona-sdk-preparation-workspace-provider";
 
-const deliberatelyInvalidToolchainReceipt = {
-  node: {
-    archiveDigest: { algorithm: "sha256", value: "0".repeat(64) },
-    nodeBinaryDigest: { algorithm: "sha256", value: "0".repeat(64) },
-    signedManifestDigest: { algorithm: "sha256", value: "0".repeat(64) },
-    signerPrimaryFingerprint: "0".repeat(40),
-    version: "22.23.1",
-  },
-  packageManager: {
-    artifactDigest: { algorithm: "sha512", value: "0".repeat(128) },
-    upstreamDigest: { algorithm: "sha512", value: "0".repeat(128) },
-  },
-} as const;
-
 const snapshot = process.env.MAKEADEMO_DAYTONA_SNAPSHOT;
 const submittedCodeSnapshot =
   process.env.MAKEADEMO_DAYTONA_SUBMITTED_CODE_SNAPSHOT;
@@ -191,7 +177,7 @@ try {
   );
 
   console.log(
-    "Verifying trusted dynamic package-manager hydration and offline receipt binding...",
+    "Verifying trusted dynamic package-manager provisioning and private binding...",
   );
   const toolchainProjectRoot = `makeademo-toolchain-smoke-${crypto.randomUUID()}`;
   const toolchainProjectPath = `/workspace/${toolchainProjectRoot}`;
@@ -237,43 +223,31 @@ try {
       "Prepared Daytona workspace lacks the submitted-code toolchain lifecycle.",
     );
   }
-  const toolchainReceipt =
-    await handle.workspace.provisionSubmittedCodeToolchain(dynamicPlan);
+  await handle.workspace.provisionSubmittedCodeToolchain(dynamicPlan);
   await handle.workspace.syncSubmittedCodeWorkspace();
-  await assertRejectedReceipt(
-    () =>
-      handle.workspace.executeSubmittedRuntime?.({
-        command: "pnpm --version",
-        plan: dynamicPlan,
-        toolchainReceipt: deliberatelyInvalidToolchainReceipt,
-      }),
-    "Submitted-code runtime accepted a wrong provisioning receipt.",
-  );
   const trustedPlaywrightRuntime =
     await handle.workspace.executeSubmittedRuntime({
       command: `node -e 'const { createRequire } = require("node:module"); const root = process.env.MAKEADEMO_PLAYWRIGHT_MODULE_ROOT; const requireFromTrustedRuntime = createRequire(root + "/playwright/package.json"); let metadata = requireFromTrustedRuntime("playwright/package.json"); if (metadata.version !== "1.49.1") process.exit(1); const { chromium } = requireFromTrustedRuntime("playwright"); metadata = requireFromTrustedRuntime("@playwright/test/package.json"); if (metadata.version !== "1.49.1") process.exit(1); requireFromTrustedRuntime("@playwright/test"); (async () => { const browser = await chromium.launch({ headless: true }); await browser.close(); console.log("trusted playwright chromium ok"); })().catch((error) => { console.error(error); process.exit(1); });'`,
       plan: dynamicPlan,
-      toolchainReceipt,
     });
   assertCommandSucceeded(
-    "receipt-bound trusted Playwright Chromium launch",
+    "privately bound trusted Playwright Chromium launch",
     trustedPlaywrightRuntime,
   );
   if (
     !trustedPlaywrightRuntime.stdout.includes("trusted playwright chromium ok")
   ) {
     throw new Error(
-      "Receipt-bound submitted runtime did not launch the trusted Playwright Chromium.",
+      "Privately bound submitted runtime did not launch the trusted Playwright Chromium.",
     );
   }
   const offlineToolchain = await handle.workspace.executeSubmittedRuntime({
     command:
       'tool="$(command -v pnpm)" && case "$tool" in /opt/makeademo/toolchains/pnpm-*/*/bin/pnpm) ;; *) exit 1 ;; esac && test ! -w "$tool" && test ! -w "$(dirname "$tool")" && node --version && pnpm --version',
     plan: dynamicPlan,
-    toolchainReceipt,
   });
   assertCommandSucceeded(
-    "dynamically hydrated pnpm with read-only cache",
+    "dynamically provisioned pnpm with read-only trusted files",
     offlineToolchain,
   );
   if (
@@ -281,7 +255,7 @@ try {
     !offlineToolchain.stdout.includes("10.27.0")
   ) {
     throw new Error(
-      "Unconstrained Node 24 and dynamically hydrated pnpm did not run from their trusted caches.",
+      "Unconstrained Node 24 and dynamically provisioned pnpm did not run from their trusted files.",
     );
   }
 
@@ -483,17 +457,8 @@ async function verifySubmittedToolchainMatrix(input: {
           `${matrixCase.label} workspace lacks the submitted-code lifecycle.`,
         );
       }
-      const receipt = await workspace.provisionSubmittedCodeToolchain(plan);
+      await workspace.provisionSubmittedCodeToolchain(plan);
       await workspace.syncSubmittedCodeWorkspace();
-      await assertRejectedReceipt(
-        () =>
-          workspace.executeSubmittedRuntime?.({
-            command: `${matrixCase.manager} --version`,
-            plan,
-            toolchainReceipt: deliberatelyInvalidToolchainReceipt,
-          }),
-        `${matrixCase.label} accepted a wrong provisioning receipt.`,
-      );
 
       const expectedBoundedArgv =
         matrixCase.manager === "npm"
@@ -523,7 +488,6 @@ async function verifySubmittedToolchainMatrix(input: {
         executable: plan.install?.executable ?? matrixCase.manager,
         installProfile: "bounded",
         plan,
-        toolchainReceipt: receipt,
       });
       assertCommandSucceeded(`${matrixCase.label} immutable install`, install);
 
@@ -540,7 +504,6 @@ async function verifySubmittedToolchainMatrix(input: {
         const probe = await workspace.executeSubmittedRuntime({
           command: `cd /workspace/${projectRoot} && ${configurationProbe}`,
           plan,
-          toolchainReceipt: receipt,
         });
         assertCommandSucceeded(
           `${matrixCase.label} bounded configuration probe`,
@@ -561,14 +524,13 @@ async function verifySubmittedToolchainMatrix(input: {
       }
 
       const versionCommand = `node --version && ${matrixCase.manager} --version`;
-      const cacheCheck = `tool="$(command -v ${matrixCase.manager})"; case "$tool" in /opt/makeademo/toolchains/${matrixCase.manager}-*/*/bin/${matrixCase.manager}) ;; *) exit 1 ;; esac; test ! -w "$tool"; test ! -w "$(dirname "$tool")"`;
+      const trustedPathCheck = `tool="$(command -v ${matrixCase.manager})"; case "$tool" in /opt/makeademo/toolchains/${matrixCase.manager}-*/*/bin/${matrixCase.manager}) ;; *) exit 1 ;; esac; test ! -w "$tool"; test ! -w "$(dirname "$tool")"`;
       const offline = await workspace.executeSubmittedRuntime({
-        command: `${cacheCheck}; ${versionCommand}`,
+        command: `${trustedPathCheck}; ${versionCommand}`,
         plan,
-        toolchainReceipt: receipt,
       });
       assertCommandSucceeded(
-        `${matrixCase.label} exact cached-manager runtime`,
+        `${matrixCase.label} exact trusted-manager runtime`,
         offline,
       );
       if (
@@ -603,16 +565,4 @@ function assertCommandSucceeded(
 
 function hasNonEmptyValue(value: string | undefined): boolean {
   return value !== undefined && value.trim().length > 0;
-}
-
-async function assertRejectedReceipt(
-  operation: () => Promise<unknown> | undefined,
-  message: string,
-): Promise<void> {
-  try {
-    await operation();
-  } catch {
-    return;
-  }
-  throw new Error(message);
 }

@@ -39,6 +39,7 @@ type RepoPreparationSubmission =
  * workspace files, symlinks, or shell commands.
  */
 export function createRepoPreparationControlState(input: {
+  baselineSourceControlledPaths: string[];
   readManifest(): Promise<unknown>;
 }): RepoPreparationControlState {
   let dependencyInstallRequest: DependencyInstallRequest | undefined;
@@ -85,6 +86,7 @@ export function createRepoPreparationControlState(input: {
         );
       }
       submittedResult = {
+        baselineSourceControlledPaths: input.baselineSourceControlledPaths,
         manifest: latestValidation.manifest,
         status: "succeeded",
       };

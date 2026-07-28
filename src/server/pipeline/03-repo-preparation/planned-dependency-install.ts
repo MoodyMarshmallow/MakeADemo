@@ -3,12 +3,10 @@ import type {
   PreparationWorkspaceCommandResult,
 } from "./preparation-workspace.interface";
 import { executeSubmittedProject } from "./submitted-code-execution";
-import type { SubmittedCodeToolchainArtifactReceipt } from "./submitted-code-toolchain-artifact.interface";
 import type { SubmittedCodeToolchainPlan } from "./submitted-code-toolchain.schema";
 
 export type PlannedDependencyInstallInput = {
   toolchainPlan: SubmittedCodeToolchainPlan;
-  toolchainReceipt: SubmittedCodeToolchainArtifactReceipt;
   workspace: PreparationWorkspace;
 };
 
@@ -54,7 +52,6 @@ export async function runPlannedDependencyInstall(
       executable: install.executable,
       installProfile: "bounded",
       plan: input.toolchainPlan,
-      toolchainReceipt: input.toolchainReceipt,
     },
     { env: createBoundedInstallEnvironment(input.toolchainPlan) },
   );

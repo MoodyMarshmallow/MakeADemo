@@ -15,7 +15,10 @@ const manifest = {
 function createState(
   readManifest: () => Promise<unknown> = async () => manifest,
 ): RepoPreparationControlState {
-  return createRepoPreparationControlState({ readManifest });
+  return createRepoPreparationControlState({
+    baselineSourceControlledPaths: ["src/App.tsx"],
+    readManifest,
+  });
 }
 
 describe("Repo Preparation stage tools", () => {
@@ -114,6 +117,7 @@ describe("Repo Preparation stage tools", () => {
       "Submitted Repo Preparation succeeded result.",
     );
     expect(state.readSubmittedResult()).toEqual({
+      baselineSourceControlledPaths: ["src/App.tsx"],
       manifest,
       status: "succeeded",
     });

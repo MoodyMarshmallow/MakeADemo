@@ -15,6 +15,9 @@ import {
 const dependencyInstallOutputTailMaxLength = 1_500;
 export function createDaytonaRepoPreparationPrompt(
   input: RepoPreparationInput,
+  options: {
+    toolchainAdvisory?: { code: string; reason: string };
+  } = {},
 ): string {
   return [
     "# MakeADemo Repo Preparation",
@@ -38,6 +41,14 @@ export function createDaytonaRepoPreparationPrompt(
     "- Prefer local mock data, fixture data, or frontend-only demo modes over hosted services.",
     "- Keep existing project conventions where practical.",
     "- If the repo already has a suitable demo command, use it rather than creating a new one.",
+    ...(options.toolchainAdvisory === undefined
+      ? []
+      : [
+          "",
+          "## Toolchain Repair Context",
+          `The initial advisory scan found repairable repository metadata (${options.toolchainAdvisory.code}): ${options.toolchainAdvisory.reason}`,
+          "Repair the repository metadata before requesting dependency installation or preparation validation.",
+        ]),
     `- Write the draft Preparation Manifest JSON to ${preparationManifestPath}, then call makeademo_validate_preparation with that manifest path and stop for preparation preflight feedback.`,
     "- If preparation preflight fails, repair the repo using the feedback and call `makeademo_validate_preparation` again.",
     "- Call `makeademo_submit_preparation_result` only after the latest preparation preflight passes.",
@@ -114,6 +125,29 @@ export function createContinueRepoPreparationPrompt(
         repoUrl: input.repoUrl,
         workspaceId: input.workspaceId,
       },
+      null,
+      2,
+    ),
+    "```",
+  ].join("\n");
+}
+
+export function createToolchainRepairPrompt(
+  input: RepoPreparationInput,
+  issue: { code: string; reason: string },
+): string {
+  return [
+    "# Continue MakeADemo Repo Preparation",
+    "",
+    "## Repair Required",
+    `The authoritative dependency scan found repairable repository metadata (${issue.code}): ${issue.reason}`,
+    "Repair the submitted package-manager, Node-version, or canonical lockfile metadata in `/workspace`, then request dependency installation again.",
+    "Do not run a dependency install command directly.",
+    "",
+    "## Submission Context",
+    "```json",
+    JSON.stringify(
+      { repoUrl: input.repoUrl, workspaceId: input.workspaceId },
       null,
       2,
     ),

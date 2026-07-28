@@ -126,6 +126,7 @@ describe("prepareRepo", () => {
     const agent: RepoPreparationAgent = {
       async prepare() {
         return {
+          baselineSourceControlledPaths: [],
           manifest: {
             demoCommand: "npm run demo",
             repoUrl: "https://github.com/example/app",
@@ -151,6 +152,52 @@ describe("prepareRepo", () => {
     if (result.status === "failed") {
       expect(result.fallbackPrompt).toContain(
         "Preparation Manifest was invalid: status must be a non-empty string",
+      );
+    }
+  });
+
+  it("reports an infrastructure handoff failure when a success omits provenance", async () => {
+    const agent = {
+      async prepare() {
+        return {
+          manifest: {
+            assumptions: [],
+            createdFiles: [],
+            demoCommand: "npm run demo:makeademo",
+            diffArtifactId: "artifact_diff",
+            nativeVisibleInterface: {
+              nativeStartupAttempts: ["npm run demo:makeademo"],
+              sourceControlledUiPaths: [],
+            },
+            repoUrl: "https://github.com/example/app",
+            risks: [],
+            setupSummary: "Prepared demo runtime.",
+            status: "created-new-demo",
+            url: "http://localhost:3000",
+            workspaceId: "workspace_123",
+          },
+          status: "succeeded" as const,
+        };
+      },
+    } as unknown as RepoPreparationAgent;
+
+    const result = await prepareRepo(
+      {
+        normalizedSupportingDocuments: [],
+        repoUrl: "https://github.com/example/app",
+        structuredDemoIntent: { keyProductFeatures: ["dashboard"] },
+        workspaceId: "workspace_123",
+      },
+      { agent },
+    );
+
+    expect(result.status).toBe("failed");
+    if (result.status === "failed") {
+      expect(result.fallbackPrompt).toContain(
+        "MakeADemo infrastructure contract failure",
+      );
+      expect(result.fallbackPrompt).toContain(
+        "the preparation agent cannot repair it",
       );
     }
   });

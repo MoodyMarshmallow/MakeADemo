@@ -147,20 +147,20 @@ describe("Daytona image verifier", () => {
     expect(script).toContain("touch /workspace/.makeademo/runtime-write-test");
   });
 
-  it("launches the trusted Playwright runtime only through a provisioned receipt", async () => {
+  it("launches the trusted Playwright runtime only through the private provisioned binding", async () => {
     const script = await readVerifierScript();
     const provisionIndex = script.indexOf(
       "await handle.workspace.provisionSubmittedCodeToolchain(dynamicPlan)",
     );
     const trustedLaunchIndex = script.indexOf("trusted playwright chromium ok");
-    const receiptBoundRuntimeIndex = script.lastIndexOf(
+    const boundRuntimeIndex = script.lastIndexOf(
       "handle.workspace.executeSubmittedRuntime({",
       trustedLaunchIndex,
     );
 
     expect(provisionIndex).toBeGreaterThanOrEqual(0);
-    expect(receiptBoundRuntimeIndex).toBeGreaterThan(provisionIndex);
-    expect(trustedLaunchIndex).toBeGreaterThan(receiptBoundRuntimeIndex);
+    expect(boundRuntimeIndex).toBeGreaterThan(provisionIndex);
+    expect(trustedLaunchIndex).toBeGreaterThan(boundRuntimeIndex);
     expect(script.slice(0, provisionIndex)).not.toContain(
       "trusted playwright chromium ok",
     );

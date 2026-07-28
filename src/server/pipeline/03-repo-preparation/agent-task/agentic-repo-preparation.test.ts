@@ -17,26 +17,16 @@ import type {
   PreparationWorkspaceCommandResult,
   SubmittedProjectExecutionRequest,
 } from "../preparation-workspace.interface";
-import { submittedCodeKnownGoodNodeReleaseCatalog } from "../submitted-code-node-release-catalog.interface";
+import { prepareRepo } from "../repo-preparer";
+import {
+  SubmittedCodeNodeReleaseCatalogError,
+  submittedCodeKnownGoodNodeReleaseCatalog,
+} from "../submitted-code-node-release-catalog.interface";
 import {
   AgenticRepoPreparation,
   type AgenticRepoPreparationOptions,
 } from "./agentic-repo-preparation";
 import type { RepoPreparationToolHandoff } from "./tools/repo-preparation-tool-protocol";
-
-const fakeToolchainReceipt = {
-  node: {
-    archiveDigest: { algorithm: "sha256", value: "c".repeat(64) },
-    nodeBinaryDigest: { algorithm: "sha256", value: "d".repeat(64) },
-    signedManifestDigest: { algorithm: "sha256", value: "e".repeat(64) },
-    signerPrimaryFingerprint: "F".repeat(40),
-    version: "22.23.1",
-  },
-  packageManager: {
-    artifactDigest: { algorithm: "sha512", value: "a".repeat(128) },
-    upstreamDigest: { algorithm: "sha512", value: "b".repeat(128) },
-  },
-} as const;
 
 type RepoPreparationTestOptions = Omit<
   AgenticRepoPreparationOptions,
@@ -1420,6 +1410,79 @@ describe("AgenticRepoPreparation", () => {
     );
   });
 
+  it("fails fast when preparation preflight cannot inspect the trusted toolchain", async () => {
+    const events: unknown[] = [];
+    const runner = new RecordingAgentTaskRunner();
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider(events, {
+        agentResults: [validationHandoff(), validationHandoff()],
+      }),
+      runner,
+      timeoutMs: 1_000,
+      runRuntimePreflight: async () => ({
+        blockedNetworkAttempts: [],
+        failureKind: "submitted-toolchain-inspection-failed",
+        failureReason: "trusted catalog unavailable",
+        logs: ["trusted catalog unavailable"],
+        status: "failed",
+        warnings: [],
+      }),
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result).toMatchObject({
+      blockers: [
+        expect.stringContaining(
+          "non-retryable MakeADemo infrastructure failure",
+        ),
+      ],
+      status: "failed",
+    });
+    expect(runner.calls).toHaveLength(1);
+  });
+
+  it("fails fast when preparation preflight cannot provision the trusted toolchain", async () => {
+    const runner = new RecordingAgentTaskRunner();
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider([], {
+        agentResults: [validationHandoff(), validationHandoff()],
+      }),
+      runner,
+      timeoutMs: 1_000,
+      runRuntimePreflight: async () => ({
+        blockedNetworkAttempts: [],
+        failureKind: "submitted-code-toolchain-provisioning-failed",
+        failureReason: "trusted provisioning unavailable",
+        logs: ["trusted provisioning unavailable"],
+        status: "failed",
+        warnings: [],
+      }),
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result).toMatchObject({
+      blockers: [
+        expect.stringContaining(
+          "non-retryable MakeADemo infrastructure failure",
+        ),
+      ],
+      status: "failed",
+    });
+    expect(runner.calls).toHaveLength(1);
+  });
+
   it("does not accept a structured final result outside backend control state", async () => {
     const events: unknown[] = [];
     const agent = createRepoPreparationAgent({
@@ -1661,25 +1724,30 @@ describe("AgenticRepoPreparation", () => {
     );
   });
 
-  it("blocks unsupported submitted toolchains before the preparation agent can continue", async () => {
+  it("lets the preparation agent repair advisory toolchain metadata before validation", async () => {
     const events: unknown[] = [];
+    const runner = new RecordingAgentTaskRunner();
     const agent = createRepoPreparationAgent({
       provider: fakeProvider(events, {
-        toolchainMetadata: {
-          candidates: [
-            {
-              files: {
-                "package.json": JSON.stringify({
-                  engines: { node: "16" },
-                  packageManager: "npm@10.8.2",
-                }),
-                "package-lock.json": "",
+        toolchainMetadataResults: [
+          {
+            candidates: [
+              {
+                files: {
+                  "package.json": JSON.stringify({
+                    engines: { node: "16" },
+                    packageManager: "npm@10.8.2",
+                  }),
+                  "package-lock.json": "",
+                },
+                projectRoot: ".",
               },
-              projectRoot: ".",
-            },
-          ],
-        },
+            ],
+          },
+          supportedToolchainMetadata(),
+        ],
       }),
+      runner,
       timeoutMs: 500,
     });
 
@@ -1690,11 +1758,244 @@ describe("AgenticRepoPreparation", () => {
       workspaceId: "workspace_123",
     });
 
-    expect(result).toMatchObject({
-      blockers: [expect.stringContaining("unsupported_node_version")],
-      status: "failed",
-    });
+    expect(result).toMatchObject({ status: "succeeded" });
+    expect(runner.calls).toHaveLength(1);
   });
+
+  it("lets the agent repair ambiguous project metadata from the initial scan", async () => {
+    const runner = new RecordingAgentTaskRunner();
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider([], {
+        toolchainMetadataResults: [
+          ambiguousToolchainMetadata(),
+          supportedToolchainMetadata(),
+        ],
+      }),
+      runner,
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result).toMatchObject({ status: "succeeded" });
+    expect(runner.calls).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      expected: "trusted scanner unavailable",
+      options: {
+        toolchainInspectionResult: new Error("trusted scanner unavailable"),
+      },
+      title: "scanner",
+    },
+    {
+      expected: "trusted catalog unavailable",
+      options: {
+        nodeReleaseCatalog: {
+          async load() {
+            throw new SubmittedCodeNodeReleaseCatalogError(
+              "fetch_failed",
+              "trusted catalog unavailable",
+            );
+          },
+        },
+      },
+      title: "catalog",
+    },
+  ])(
+    "keeps trusted $title failures terminal",
+    async ({ expected, options }) => {
+      const runner = new RecordingAgentTaskRunner();
+      const agent = createRepoPreparationAgent({
+        provider: fakeProvider(
+          [],
+          "toolchainInspectionResult" in options
+            ? { toolchainInspectionResult: options.toolchainInspectionResult }
+            : {},
+        ),
+        runner,
+        ...(options.nodeReleaseCatalog === undefined
+          ? {}
+          : { nodeReleaseCatalog: options.nodeReleaseCatalog }),
+      });
+
+      const result = await agent.prepare({
+        normalizedSupportingDocuments: [],
+        repoUrl: "https://github.com/example/app",
+        structuredDemoIntent: { keyProductFeatures: ["validation"] },
+        workspaceId: "workspace_123",
+      });
+
+      expect(result).toMatchObject({ blockers: [expected], status: "failed" });
+      expect(runner.calls).toEqual([]);
+    },
+  );
+
+  it("continues after an authoritative dependency rescan finds repairable metadata", async () => {
+    const runner = new RecordingAgentTaskRunner();
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider([], {
+        agentResults: [
+          dependencyInstallHandoff(),
+          dependencyInstallHandoff(),
+          validationHandoff(),
+        ],
+        toolchainMetadataResults: [
+          supportedToolchainMetadata(),
+          {
+            candidates: [
+              {
+                files: {
+                  "package.json": JSON.stringify({
+                    engines: { node: "16" },
+                    packageManager: "npm@10.8.2",
+                  }),
+                  "package-lock.json": "",
+                },
+                projectRoot: ".",
+              },
+            ],
+          },
+          supportedToolchainMetadata(),
+          supportedToolchainMetadata(),
+        ],
+      }),
+      runner,
+      timeoutMs: 1_000,
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result).toMatchObject({ status: "succeeded" });
+    expect(runner.calls).toHaveLength(3);
+  });
+
+  it("continues after an authoritative dependency rescan finds a missing lockfile", async () => {
+    const runner = new RecordingAgentTaskRunner();
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider([], {
+        agentResults: [
+          dependencyInstallHandoff(),
+          dependencyInstallHandoff(),
+          validationHandoff(),
+        ],
+        toolchainMetadataResults: [
+          supportedToolchainMetadata(),
+          {
+            candidates: [
+              {
+                files: {
+                  "package.json": JSON.stringify({
+                    engines: { node: "22" },
+                    packageManager: "pnpm@11.13.0",
+                  }),
+                },
+                projectRoot: ".",
+              },
+            ],
+          },
+          supportedToolchainMetadata(),
+          supportedToolchainMetadata(),
+        ],
+      }),
+      runner,
+      timeoutMs: 1_000,
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result).toMatchObject({ status: "succeeded" });
+    expect(runner.calls).toHaveLength(3);
+  });
+
+  it("continues after an authoritative rescan finds conflicting lockfiles", async () => {
+    const runner = new RecordingAgentTaskRunner();
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider([], {
+        agentResults: [
+          dependencyInstallHandoff(),
+          dependencyInstallHandoff(),
+          validationHandoff(),
+        ],
+        toolchainMetadataResults: [
+          supportedToolchainMetadata(),
+          conflictingLockfileToolchainMetadata(),
+          supportedToolchainMetadata(),
+          supportedToolchainMetadata(),
+        ],
+      }),
+      runner,
+      timeoutMs: 1_000,
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result).toMatchObject({ status: "succeeded" });
+    expect(runner.calls).toHaveLength(3);
+  });
+
+  it.each([
+    {
+      expected: "trusted provisioning unavailable",
+      options: {
+        toolchainProvisioningError: new Error(
+          "trusted provisioning unavailable",
+        ),
+      },
+      title: "provisioning",
+    },
+    {
+      expected: "submitted workspace sync unavailable",
+      options: {
+        submittedCodeSyncError: new Error(
+          "submitted workspace sync unavailable",
+        ),
+      },
+      title: "synchronization",
+    },
+  ])(
+    "keeps dependency $title infrastructure failures terminal",
+    async ({ expected, options }) => {
+      const runner = new RecordingAgentTaskRunner();
+      const agent = createRepoPreparationAgent({
+        provider: fakeProvider([], {
+          agentResults: [dependencyInstallHandoff()],
+          ...options,
+        }),
+        runner,
+      });
+
+      const result = await agent.prepare({
+        normalizedSupportingDocuments: [],
+        repoUrl: "https://github.com/example/app",
+        structuredDemoIntent: { keyProductFeatures: ["validation"] },
+        workspaceId: "workspace_123",
+      });
+
+      expect(result).toMatchObject({ blockers: [expected], status: "failed" });
+      expect(runner.calls).toHaveLength(1);
+    },
+  );
 
   it("does not read a validation request from the agent workspace", async () => {
     const events: unknown[] = [];
@@ -1831,6 +2132,36 @@ describe("AgenticRepoPreparation", () => {
       }),
     ]);
     expect(events).toEqual(expect.arrayContaining([]));
+  });
+
+  it("preserves source-controlled provenance when auto-success crosses prepareRepo", async () => {
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider([], {
+        commandStdout: ["Validation requested."],
+        validationRequest: {
+          manifestPath: "/workspace/.makeademo/preparation-manifest.json",
+        },
+      }),
+      timeoutMs: 1_000,
+      runRuntimePreflight: async () => ({
+        blockedNetworkAttempts: [],
+        logs: ["loaded preview"],
+        status: "succeeded" as const,
+        warnings: [],
+      }),
+    });
+
+    const result = await prepareRepo(
+      {
+        normalizedSupportingDocuments: [],
+        repoUrl: "https://github.com/example/app",
+        structuredDemoIntent: { keyProductFeatures: ["validation"] },
+        workspaceId: "workspace_123",
+      },
+      { agent },
+    );
+
+    expect(result.status).toBe("succeeded");
   });
 
   it("preserves the retained agent session identity when validation passes", async () => {
@@ -2109,12 +2440,16 @@ function fakeProvider(
         submittedCodeNeverSettles?: boolean;
         submittedCodeInstallDelayMs?: number;
         submittedCodeSyncNeverSettles?: boolean;
+        submittedCodeSyncError?: Error;
         validationRequest?: {
           manifestPath: string;
         };
         validationRequestReadNeverSettles?: boolean;
         validationResult?: ReturnType<typeof validationArtifact>;
         toolchainMetadata?: unknown;
+        toolchainMetadataResults?: unknown[];
+        toolchainInspectionResult?: PreparationWorkspaceCommandResult | Error;
+        toolchainProvisioningError?: Error;
       } = [JSON.stringify(successResult())],
 ): PreparationWorkspaceProvider {
   const workspaceInput = Array.isArray(input)
@@ -2180,12 +2515,16 @@ function fakeWorkspace(
     submittedCodeNeverSettles?: boolean;
     submittedCodeInstallDelayMs?: number;
     submittedCodeSyncNeverSettles?: boolean;
+    submittedCodeSyncError?: Error;
     validationRequest?: {
       manifestPath: string;
     };
     validationRequestReadNeverSettles?: boolean;
     validationResult?: ReturnType<typeof validationArtifact>;
     toolchainMetadata?: unknown;
+    toolchainMetadataResults?: unknown[];
+    toolchainInspectionResult?: PreparationWorkspaceCommandResult | Error;
+    toolchainProvisioningError?: Error;
   },
 ): PreparationWorkspace {
   const commandStdout = input.commandStdout ?? [
@@ -2198,6 +2537,7 @@ function fakeWorkspace(
   let settleSubmittedCodeSync: (() => void) | undefined;
   let validationRequest = input.validationRequest;
   let validationResult = input.validationResult;
+  const toolchainMetadataResults = [...(input.toolchainMetadataResults ?? [])];
 
   return {
     async executeAgentCommand(command) {
@@ -2225,24 +2565,19 @@ function fakeWorkspace(
         events.push({ cloneTimeoutMs: options?.timeoutMs });
       }
       if (command === "makeademo-inspect-submitted-code-toolchain") {
+        if (input.toolchainInspectionResult instanceof Error) {
+          throw input.toolchainInspectionResult;
+        }
+        if (input.toolchainInspectionResult !== undefined) {
+          return input.toolchainInspectionResult;
+        }
         return {
           exitCode: 0,
           stderr: "",
           stdout: JSON.stringify(
-            input.toolchainMetadata ?? {
-              candidates: [
-                {
-                  files: {
-                    "package.json": JSON.stringify({
-                      engines: { node: "22" },
-                      packageManager: "pnpm@11.13.0",
-                    }),
-                    "pnpm-lock.yaml": "",
-                  },
-                  projectRoot: ".",
-                },
-              ],
-            },
+            toolchainMetadataResults.shift() ??
+              input.toolchainMetadata ??
+              supportedToolchainMetadata(),
           ),
         };
       }
@@ -2429,9 +2764,15 @@ function fakeWorkspace(
       return { exitCode: 0, stderr: "", stdout: "installed" };
     },
     async provisionSubmittedCodeToolchain() {
-      return fakeToolchainReceipt;
+      if (input.toolchainProvisioningError !== undefined) {
+        throw input.toolchainProvisioningError;
+      }
+      return;
     },
     async syncSubmittedCodeWorkspace() {
+      if (input.submittedCodeSyncError !== undefined) {
+        throw input.submittedCodeSyncError;
+      }
       if (input.submittedCodeSyncNeverSettles === true) {
         events.push({ submittedCodeSync: true });
         await new Promise<void>((resolve) => {
@@ -2509,6 +2850,72 @@ function validationArtifact() {
       status: "succeeded" as const,
       warnings: [],
     },
+  };
+}
+
+function dependencyInstallHandoff(): AgentTaskRunResult<RepoPreparationToolHandoff> {
+  return {
+    exitCode: 0,
+    handoff: {
+      input: {},
+      toolName: "makeademo_dependency_request_install",
+    },
+  };
+}
+
+function validationHandoff(): AgentTaskRunResult<RepoPreparationToolHandoff> {
+  return {
+    exitCode: 0,
+    handoff: {
+      input: {
+        manifestPath: "/workspace/.makeademo/preparation-manifest.json",
+      },
+      toolName: "makeademo_validate_preparation",
+    },
+  };
+}
+
+function supportedToolchainMetadata() {
+  return {
+    candidates: [
+      {
+        files: {
+          "package.json": JSON.stringify({
+            engines: { node: "22" },
+            packageManager: "pnpm@11.13.0",
+          }),
+          "pnpm-lock.yaml": "",
+        },
+        projectRoot: ".",
+      },
+    ],
+  };
+}
+
+function ambiguousToolchainMetadata() {
+  return {
+    candidates: ["frontend", "webapp"].map((projectRoot) => ({
+      files: {
+        "package-lock.json": "",
+        "package.json": JSON.stringify({ packageManager: "npm@10.8.2" }),
+      },
+      projectRoot,
+    })),
+  };
+}
+
+function conflictingLockfileToolchainMetadata() {
+  return {
+    candidates: [
+      {
+        files: {
+          "package.json": "{}",
+          "pnpm-lock.yaml": "",
+          "yarn.lock": "",
+        },
+        projectRoot: ".",
+      },
+    ],
   };
 }
 

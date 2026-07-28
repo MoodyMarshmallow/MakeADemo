@@ -95,6 +95,6 @@ ENV HOME=/home/pwuser \
 
 WORKDIR /workspace
 # Daytona backend control commands run as root so the provider can hydrate a
-# root-owned toolchain cache before submitted files are synchronized. The
+# root-owned toolchain artifact directory before submitted files are synchronized. The
 # provider always drops submitted-code execution to pwuser.
 USER root

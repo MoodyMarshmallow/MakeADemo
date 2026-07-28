@@ -27,7 +27,7 @@ type RepoPreparationAgentResult =
        * Backend-captured source-controlled paths from the submitted pinned
        * repository, collected before Repo Preparation can edit the workspace.
        */
-      baselineSourceControlledPaths?: string[];
+      baselineSourceControlledPaths: string[];
       manifest: unknown;
       agentSession?: AgentSession;
       status: "succeeded";

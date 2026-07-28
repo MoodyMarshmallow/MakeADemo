@@ -1,5 +1,3 @@
-import type { SubmittedCodeToolchainArtifactProvider } from "./submitted-code-toolchain-artifact.interface";
-import type { SubmittedCodeToolchainArtifactReceipt } from "./submitted-code-toolchain-artifact.interface";
 import type { SubmittedCodeToolchainPlan } from "./submitted-code-toolchain.schema";
 
 export type PreparationWorkspaceCommandResult = {
@@ -60,8 +58,6 @@ export type SubmittedProjectExecutionRequest = {
   /** Backend-owned execution policy; callers cannot supply arbitrary install environment. */
   installProfile?: "bounded";
   plan: SubmittedCodeToolchainPlan;
-  /** Opaque provisioning capability bound to this exact resolved plan. */
-  toolchainReceipt?: SubmittedCodeToolchainArtifactReceipt;
 };
 
 /** A backend-validated demo runtime command paired with its catalog plan. */
@@ -69,8 +65,6 @@ export type SubmittedProjectRuntimeRequest = {
   /** Complete backend wrapper command; provider implementations must shell-quote it. */
   command: string;
   plan: SubmittedCodeToolchainPlan;
-  /** Opaque provisioning capability bound to this exact resolved plan. */
-  toolchainReceipt?: SubmittedCodeToolchainArtifactReceipt;
 };
 
 /**
@@ -134,11 +128,13 @@ export interface PreparationWorkspace {
    */
   prepareForAgent?(): Promise<void>;
   /**
-   * Hydrates the exact resolved package-manager artifact before submitted repo
-   * files are copied into the runtime sandbox. Implementations must leave an
-   * integrity-attested receipt and reject execution until that receipt exists.
+   * Acquires and verifies the exact resolved runtime before submitted repo
+   * files are copied into the runtime sandbox. Implementations must privately
+   * bind that plan and reject execution until provisioning and sync complete.
    */
-  provisionSubmittedCodeToolchain?: SubmittedCodeToolchainArtifactProvider["provisionSubmittedCodeToolchain"];
+  provisionSubmittedCodeToolchain?(
+    plan: SubmittedCodeToolchainPlan,
+  ): Promise<void>;
   /**
    * Emits structured audit logs inside the sandbox. Implementations must keep a
    * durable copy available from workspace storage and may additionally relay the

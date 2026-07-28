@@ -30,11 +30,27 @@ export async function prepareRepo(
     };
   }
 
+  if (result.baselineSourceControlledPaths === undefined) {
+    return {
+      fallbackPrompt: createPreparationFallbackPrompt({
+        assumptions: [],
+        blockers: [
+          "MakeADemo infrastructure contract failure: Repo Preparation agent result omitted baselineSourceControlledPaths, which is required for successful preparation.",
+        ],
+        repoUrl: input.repoUrl,
+        suggestedChanges: [
+          "Report this MakeADemo handoff failure; the preparation agent cannot repair it.",
+        ],
+      }),
+      status: "failed",
+    };
+  }
+
   try {
     const manifest = readPreparationManifest(result.manifest);
     validateNativeVisibleInterfaceProvenance(
       manifest,
-      result.baselineSourceControlledPaths ?? [],
+      result.baselineSourceControlledPaths,
     );
     return {
       manifest,

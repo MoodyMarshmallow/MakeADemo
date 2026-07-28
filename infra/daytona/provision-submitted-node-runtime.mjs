@@ -18,7 +18,7 @@ import { pathToFileURL } from "node:url";
 
 const officialOrigin = "https://nodejs.org";
 const trustRoot = "/opt/makeademo/node-release-trust";
-const defaultCacheParent = "/opt/makeademo/toolchains/node";
+const defaultRuntimeParent = "/opt/makeademo/toolchains/node";
 const keyringPath = `${trustRoot}/pubring.kbx`;
 const fingerprintPolicyPath = `${trustRoot}/allowed-primary-fingerprints.txt`;
 const maxManifestBytes = 128 * 1024;
@@ -187,36 +187,13 @@ export function validateNodeArchiveEntries(entries, version, limits = {}) {
 
 export async function provisionSubmittedNodeRuntime(version, options = {}) {
   assertExactStableNodeVersion(version);
-  const cacheParent = options.cacheParent ?? defaultCacheParent;
+  const runtimeParent = options.runtimeParent ?? defaultRuntimeParent;
   const signal = options.signal;
-  const versionRecordPath = `${cacheParent}/versions/${version}.json`;
   const dependencies = createDependencies(options);
-  await dependencies.mkdir(`${cacheParent}/versions`, { recursive: true });
-  const existing = await readOptionalBoundedJson(
-    versionRecordPath,
-    maxAttestationBytes,
-    dependencies,
+  await dependencies.mkdir(runtimeParent, { recursive: true });
+  const incomingRoot = await dependencies.mkdtemp(
+    `${runtimeParent}/.incoming-`,
   );
-  if (existing !== undefined) {
-    try {
-      const attestation = validateProvisionAttestation(existing, version);
-      await verifySubmittedNodeRuntime(attestation, options);
-      return Object.freeze({ ...attestation, cacheStatus: "hit" });
-    } catch {
-      throw new Error("Trusted Node runtime cache record is invalid.");
-    }
-  }
-  const orphan = await findRecoverableOrphanRuntime(
-    version,
-    options,
-    dependencies,
-  );
-  if (orphan !== undefined) {
-    await writeVersionRecordAtomically(versionRecordPath, orphan, dependencies);
-    return Object.freeze({ ...orphan, cacheStatus: "hit" });
-  }
-
-  const incomingRoot = await dependencies.mkdtemp(`${cacheParent}/.incoming-`);
   try {
     const urls = buildNodeReleaseUrls(version);
     const signedManifestPath = `${incomingRoot}/SHASUMS256.txt.asc`;
@@ -304,7 +281,6 @@ export async function provisionSubmittedNodeRuntime(version, options = {}) {
     );
     const attestation = Object.freeze({
       archiveSha256: archive.sha256,
-      cacheStatus: "miss",
       nodeBinarySha256,
       schemaVersion: 1,
       signedManifestSha256: manifest.sha256,
@@ -321,35 +297,16 @@ export async function provisionSubmittedNodeRuntime(version, options = {}) {
       JSON.stringify(attestation),
       { mode: 0o400 },
     );
-    const finalRoot = nodeRuntimeRoot(cacheParent, attestation.archiveSha256);
+    const finalRoot = nodeRuntimeRoot(runtimeParent, attestation.archiveSha256);
     await dependencies.mkdir(dirname(finalRoot), { recursive: true });
-    let publishedFinalRoot = false;
-    try {
-      await makeTreeImmutable(extractedRoot, dependencies);
-      await verifySubmittedNodeRuntimeAtRoot(
-        attestation,
-        extractedRoot,
-        options,
-        dependencies,
-      );
-      await renameImmutableRoot(extractedRoot, finalRoot, dependencies);
-      publishedFinalRoot = true;
-      await writeVersionRecordAtomically(
-        versionRecordPath,
-        attestation,
-        dependencies,
-      );
-    } catch (error) {
-      if (publishedFinalRoot) {
-        try {
-          await makeDirectoriesOwnerWritable(finalRoot, dependencies);
-          await dependencies.rm(finalRoot, { force: true, recursive: true });
-        } catch (cleanupError) {
-          if (cleanupError?.code !== "ENOENT") throw cleanupError;
-        }
-      }
-      throw error;
-    }
+    await makeTreeImmutable(extractedRoot, dependencies);
+    await verifyProvisionedNodeRuntime(
+      attestation,
+      extractedRoot,
+      options,
+      dependencies,
+    );
+    await renameImmutableRoot(extractedRoot, finalRoot, dependencies);
     return attestation;
   } finally {
     await makeDirectoriesOwnerWritable(incomingRoot, dependencies).catch(
@@ -359,26 +316,7 @@ export async function provisionSubmittedNodeRuntime(version, options = {}) {
   }
 }
 
-export async function verifySubmittedNodeRuntime(
-  attestationInput,
-  options = {},
-) {
-  const attestation = validateProvisionAttestation(
-    attestationInput,
-    attestationInput?.version,
-  );
-  const dependencies = createDependencies(options);
-  const cacheParent = options.cacheParent ?? defaultCacheParent;
-  const root = nodeRuntimeRoot(cacheParent, attestation.archiveSha256);
-  return await verifySubmittedNodeRuntimeAtRoot(
-    attestation,
-    root,
-    options,
-    dependencies,
-  );
-}
-
-async function verifySubmittedNodeRuntimeAtRoot(
+async function verifyProvisionedNodeRuntime(
   attestation,
   root,
   options,
@@ -397,7 +335,7 @@ async function verifySubmittedNodeRuntimeAtRoot(
   );
   if (!sameAttestation(stored, attestation)) {
     throw new Error(
-      "Trusted Node runtime attestation does not match its receipt.",
+      "Trusted Node runtime attestation does not match its provisioned artifact.",
     );
   }
   await validateImmutableTree(root, dependencies, options.expectedUid ?? 0);
@@ -407,7 +345,7 @@ async function verifySubmittedNodeRuntimeAtRoot(
     (await sha256File(`${root}/SHASUMS256.txt.asc`, dependencies)) !==
       attestation.signedManifestSha256
   ) {
-    throw new Error("Trusted Node runtime cache verification failed.");
+    throw new Error("Trusted Node runtime artifact verification failed.");
   }
   const version = await dependencies.runCommand(
     `${root}/bin/node`,
@@ -425,70 +363,6 @@ async function verifySubmittedNodeRuntimeAtRoot(
   return root;
 }
 
-async function findRecoverableOrphanRuntime(version, options, dependencies) {
-  const cacheParent = options.cacheParent ?? defaultCacheParent;
-  const digestParent = `${cacheParent}/sha256`;
-  let names;
-  try {
-    names = await dependencies.readdir(digestParent);
-  } catch (error) {
-    if (error?.code === "ENOENT") return undefined;
-    throw new Error("Trusted Node runtime cache record is invalid.");
-  }
-  if (names.length > 4096) {
-    throw new Error("Trusted Node runtime cache record is invalid.");
-  }
-  const matches = [];
-  for (const name of names) {
-    if (!/^[a-f0-9]{64}$/.test(name)) {
-      throw new Error("Trusted Node runtime cache record is invalid.");
-    }
-    const root = nodeRuntimeRoot(cacheParent, name);
-    let candidate;
-    try {
-      const value = JSON.parse(
-        await readBoundedFile(
-          `${root}/makeademo-node-attestation.json`,
-          maxAttestationBytes,
-          dependencies,
-          "utf8",
-        ),
-      );
-      candidate = validateProvisionAttestation(value, value?.version);
-    } catch {
-      throw new Error("Trusted Node runtime cache record is invalid.");
-    }
-    if (candidate.version !== version) continue;
-    if (candidate.archiveSha256 !== name) {
-      throw new Error("Trusted Node runtime cache record is invalid.");
-    }
-    await verifySubmittedNodeRuntimeAtRoot(
-      candidate,
-      root,
-      options,
-      dependencies,
-    );
-    matches.push(candidate);
-  }
-  if (matches.length > 1) {
-    throw new Error("Trusted Node runtime cache record is invalid.");
-  }
-  return matches[0];
-}
-
-async function writeVersionRecordAtomically(path, attestation, dependencies) {
-  const stagingRoot = await dependencies.mkdtemp(`${dirname(path)}/.record-`);
-  const stagingPath = `${stagingRoot}/receipt.json`;
-  try {
-    await dependencies.writeFile(stagingPath, JSON.stringify(attestation), {
-      mode: 0o400,
-    });
-    await dependencies.rename(stagingPath, path);
-  } finally {
-    await dependencies.rm(stagingRoot, { force: true, recursive: true });
-  }
-}
-
 async function renameImmutableRoot(source, destination, dependencies) {
   try {
     await dependencies.rename(source, destination);
@@ -503,7 +377,6 @@ async function renameImmutableRoot(source, destination, dependencies) {
 export function validateProvisionAttestation(value, expectedVersion) {
   const expectedKeys = [
     "archiveSha256",
-    "cacheStatus",
     "nodeBinarySha256",
     "schemaVersion",
     "signedManifestSha256",
@@ -520,8 +393,7 @@ export function validateProvisionAttestation(value, expectedVersion) {
     !/^[a-f0-9]{64}$/.test(value.archiveSha256 ?? "") ||
     !/^[a-f0-9]{64}$/.test(value.nodeBinarySha256 ?? "") ||
     !/^[a-f0-9]{64}$/.test(value.signedManifestSha256 ?? "") ||
-    !/^[A-F0-9]{40}$/.test(value.signerPrimaryFingerprint ?? "") ||
-    !["hit", "miss"].includes(value.cacheStatus)
+    !/^[A-F0-9]{40}$/.test(value.signerPrimaryFingerprint ?? "")
   ) {
     throw new Error(
       "Trusted Node runtime returned malformed attestation JSON.",
@@ -529,7 +401,6 @@ export function validateProvisionAttestation(value, expectedVersion) {
   }
   return Object.freeze({
     archiveSha256: value.archiveSha256,
-    cacheStatus: value.cacheStatus,
     nodeBinarySha256: value.nodeBinarySha256,
     schemaVersion: 1,
     signedManifestSha256: value.signedManifestSha256,
@@ -637,8 +508,8 @@ function parseTarVerboseListing(output) {
     });
 }
 
-function nodeRuntimeRoot(cacheParent, archiveSha256) {
-  return `${cacheParent}/sha256/${archiveSha256}`;
+function nodeRuntimeRoot(runtimeParent, archiveSha256) {
+  return `${runtimeParent}/sha256/${archiveSha256}`;
 }
 
 function createDependencies(options) {
@@ -730,7 +601,7 @@ async function validateImmutableTree(root, dependencies, expectedUid) {
         ((entry.details.mode & 0o222) !== 0 ||
           (entry.details.mode & 0o6000) !== 0))
     ) {
-      throw new Error("Trusted Node runtime cache permissions are invalid.");
+      throw new Error("Trusted Node runtime artifact permissions are invalid.");
     }
   }
 }
@@ -751,17 +622,6 @@ async function walkTree(root, dependencies) {
   return result;
 }
 
-async function readOptionalBoundedJson(path, maxBytes, dependencies) {
-  try {
-    return JSON.parse(
-      await readBoundedFile(path, maxBytes, dependencies, "utf8"),
-    );
-  } catch (error) {
-    if (error?.code === "ENOENT") return undefined;
-    throw new Error("Trusted Node runtime cache record is invalid.");
-  }
-}
-
 async function readBoundedFile(path, maxBytes, dependencies, encoding) {
   const details = await dependencies.lstat(path);
   if (
@@ -769,7 +629,7 @@ async function readBoundedFile(path, maxBytes, dependencies, encoding) {
     details.isSymbolicLink() ||
     details.size > maxBytes
   ) {
-    throw new Error("Trusted Node runtime cache record is invalid.");
+    throw new Error("Trusted Node runtime artifact record is invalid.");
   }
   return await dependencies.readFile(path, encoding);
 }
@@ -797,26 +657,7 @@ async function runCli(argv) {
     );
     return;
   }
-  if (command === "verify" && rest.length === 4) {
-    const [archiveSha256, nodeBinarySha256, signedManifestSha256, primary] =
-      rest;
-    await verifySubmittedNodeRuntime({
-      archiveSha256,
-      cacheStatus: "hit",
-      nodeBinarySha256,
-      schemaVersion: 1,
-      signedManifestSha256,
-      signerPrimaryFingerprint: primary,
-      version,
-    });
-    process.stdout.write(
-      `${JSON.stringify({ schemaVersion: 1, verified: true })}\n`,
-    );
-    return;
-  }
-  throw new Error(
-    "Usage: provision <version> | verify <version> <archive-sha256> <node-binary-sha256> <manifest-sha256> <primary-fingerprint>",
-  );
+  throw new Error("Usage: provision <version>");
 }
 
 if (

@@ -29,9 +29,9 @@ trusted module root. Caller-provided environment variables cannot select a
 different module or browser store.
 
 Image verification walks the complete browser tree for ownership and writable
-mode violations. After provisioning an exact submitted Node runtime and issuing
-its receipt, verification loads the exact trusted Playwright 1.49.1 module and
-launches and closes its Chromium through the receipt-bound runtime seam. The
+mode violations. After provisioning an exact submitted Node runtime,
+verification loads the exact trusted Playwright 1.49.1 module and launches and
+closes its Chromium through the privately bound runtime seam. The
 agent-facing CLI session smoke test remains a separate image-level check.
 
 ## Submitted Node release resolution
@@ -40,9 +40,14 @@ Each Pipeline Job owns one lazy, immutable snapshot of the official Node.js
 release index at `https://nodejs.org/dist/index.json`. The trusted catalog
 adapter rejects redirects, bounds request time, response bytes, entry count,
 and entry schema, and retains only stable releases that advertise a Linux x64
-artifact. Repo Preparation, Demo Runtime Preflight, the Daytona Sandbox Runner,
-and fresh-capture restart share that same snapshot; submitted repository data
-cannot change its origin or refresh it partway through a job.
+artifact. Repo Preparation and Demo Runtime Preflight share that same snapshot;
+submitted repository data cannot change its origin or refresh it partway
+through a job. Repo Preparation's initial metadata scan is advisory so the
+agent can repair unsupported or incomplete metadata. A dependency-install
+request performs an authoritative rescan and returns repairable metadata
+outcomes to the agent. Demo Runtime Preflight performs the single authoritative
+validation scan; the Daytona runner and fresh-capture restart consume its
+retained plan instead of scanning again.
 
 The resolver records a role for every accepted Node claim. Package
 `engines.node` remains a hard compatibility range. Exact stable claims are hard
@@ -86,17 +91,15 @@ row for the planned archive and checks that digest before bounded extraction.
 
 The verified runtime is stored by archive SHA-256 beneath
 `/opt/makeademo/toolchains/node/sha256`, owned by root with no writable tree
-entries. Cache hits never reopen the network and fail closed if their bounded
-attestation, ownership, modes, Node binary digest, signed-manifest digest, or
-exact `node --version` check differs. Provisioning emits a bounded attestation
-containing the exact version, archive, Node binary and signed-manifest digests,
-and signer primary fingerprint. A completely verified content-addressed root
-left by an interruption between atomic publication and the version index is
-adopted offline only after the same full verification; malformed, ambiguous,
-or mismatched orphan state fails closed. The provider combines that authority
-with the package-manager artifact authority in one deeply immutable opaque
-receipt and re-verifies Node before package-manager verification on every
-submitted execution, including raw product-plane commands.
+entries. During first provisioning in a submitted-code child, the helper
+verifies the bounded attestation, ownership, modes, Node binary digest,
+signed-manifest digest, and exact `node --version` before publishing the
+runtime. Provisioning emits a bounded attestation containing the exact version,
+archive, Node binary and signed-manifest digests, and signer primary
+fingerprint. The helper exposes no reuse or later verification protocol. The
+provider privately binds the verified Node
+runtime and once-verified package-manager artifact to the exact plan; callers
+do not carry artifact authority through pipeline requests.
 
 ## Submitted package-manager provisioning
 
@@ -149,22 +152,23 @@ exact-version launcher in its own root-owned, non-writable `bin`; that `bin` is
 prepended to submitted install, build, runtime, and raw-command `PATH`, so
 ordinary `npm`, `pnpm`, `yarn`, and `bun` commands cannot drift to snapshot
 defaults. Submitted execution receives an exact `PATH` consisting of the
-provisioned package-manager `bin`, the receipt-bound Node `bin`, and fixed
+provisioned package-manager `bin`, the privately bound Node `bin`, and fixed
 system utility directories in that order; caller `PATH` and image-level Node
 or package-manager installations cannot override it. The image has no static
 mise, Corepack, pnpm, or Yarn project-toolchain fallback. The base image's Node
 installation remains an image/agent-CLI dependency, but it is excluded from
-receipt-bound project `PATH`. A resolved plan is not executable without its
-provider-issued
-composite Node and package-manager receipt, including algorithm-tagged artifact
-and upstream digests. After synchronization
+the submitted project `PATH`. A resolved plan is not executable until the
+provider has privately provisioned and synchronized its exact Node,
+package-manager, project root, and lockfile binding. After synchronization
 and again before immutable installation, the provider rejects a canonical
 lockfile whose no-symlink SHA-256 digest differs from the plan.
 
 The same verified artifact may be rebound to repaired workspace contents and
-resynchronized without reopening acquisition. Selecting a different manager,
-version, generation, or Node runtime still requires a fresh submitted-code
-Sandbox. The provider does not open or close a network acquisition window under
+resynchronized without reopening acquisition. Re-provisioning the same exact
+plan preserves synchronized state, and repeat synchronization can restore later
+workspace repairs. Selecting a different manager, version, generation, or Node
+runtime still requires a fresh submitted-code Sandbox. The provider does not
+open or close a network acquisition window under
 the current always-networked development policy. Submitted code cannot request
 alternate manager names, tags, URLs, or later manager downloads, and Yarn
 project `yarnPath` does not replace the provider-selected executable.
