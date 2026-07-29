@@ -12,6 +12,7 @@ import type { BrowserValidator } from "../pipeline/05-capture-path-validation/de
 import type { SandboxRunner } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/sandbox-runner.interface";
 import { resolveProductionAgentModelConfig } from "./production-agent-model-config";
 import {
+  type ProductionSandboxProviderBundle,
   createDaytonaFreshCaptureStatePreparer,
   createProductionPipeline,
   createProductionPipelineDependencies,
@@ -41,28 +42,17 @@ describe("production Pipeline assembly", () => {
           providerID: "openai",
         }),
         agentSessionRunner,
-        daytonaApiKey: "test-daytona-api-key",
+        sandbox: {
+          apiKey: "test-daytona-api-key",
+          provider: "daytona",
+        },
       });
 
       expect(fetch).not.toHaveBeenCalled();
-      expect(Object.keys(pipeline).sort()).toEqual([
-        "disposeAgentSessions",
-        "pipelineDependencies",
-        "prepareFreshCaptureState",
-        "repoSecurityInputLoader",
-        "reviewDraftComposite",
-      ]);
-      expect(pipeline.pipelineDependencies).toMatchObject({
-        generateDemoScript: expect.any(Function),
-        prepareRepo: expect.any(Function),
-        screenRepoSecurity: expect.any(Function),
-        validateCapturePath: expect.any(Function),
-      });
-      expect(pipeline.prepareFreshCaptureState).toEqual(expect.any(Function));
-      expect(pipeline.repoSecurityInputLoader).toBeDefined();
-      expect(pipeline.reviewDraftComposite).toEqual(expect.any(Function));
+      expect(Object.keys(pipeline).sort()).toEqual(["dispose", "run"]);
+      expect(pipeline.run).toEqual(expect.any(Function));
 
-      await pipeline.disposeAgentSessions();
+      await pipeline.dispose();
       expect(dispose).toHaveBeenCalledTimes(1);
     } finally {
       globalThis.fetch = originalFetch;
@@ -142,6 +132,40 @@ describe("production Pipeline assembly", () => {
         id: "scene-validation",
       });
     }
+  });
+
+  it("selects a Railway provider bundle without exposing it to controllers", () => {
+    const factory = vi.fn(() => railwayProviderBundle());
+    const agentSessionRunner: AgentSessionRunner = {
+      async dispose() {},
+      async run() {
+        return { exitCode: 0, stderr: "", stdout: "" };
+      },
+    };
+
+    const pipeline = createProductionPipeline({
+      agentModel: resolveProductionAgentModelConfig({
+        modelID: "gpt-5.6",
+        providerID: "openai",
+      }),
+      agentSessionRunner,
+      sandbox: {
+        environmentId: "environment_railway",
+        projectToken: "project-token",
+        provider: "railway",
+      },
+      sandboxProviderFactory: factory,
+    });
+
+    expect(factory).toHaveBeenCalledWith(
+      {
+        environmentId: "environment_railway",
+        projectToken: "project-token",
+        provider: "railway",
+      },
+      expect.objectContaining({ sandboxLogSinks: [] }),
+    );
+    expect(Object.keys(pipeline).sort()).toEqual(["dispose", "run"]);
   });
 
   it("supplies a fresh deterministic state before Footage Capture", async () => {
@@ -238,6 +262,34 @@ function preparationManifest() {
     status: "created-new-demo" as const,
     url: "http://localhost:3000",
     workspaceId: "workspace_123",
+  };
+}
+
+function railwayProviderBundle(): ProductionSandboxProviderBundle {
+  return {
+    createSandboxRunner() {
+      return {
+        async runValidation() {
+          throw new Error("Not used during Pipeline assembly.");
+        },
+      };
+    },
+    async prepareFreshCaptureState() {
+      return {};
+    },
+    repoPreparationWorkspaceProvider: {
+      async create() {
+        return preparationWorkspaceHandle();
+      },
+    },
+    repoSecurityInputLoader: {
+      async load() {
+        return {
+          files: [],
+          repoStats: { fileCount: 0, sizeBytes: 0 },
+        };
+      },
+    },
   };
 }
 

@@ -1,7 +1,5 @@
-import { runFullPipelineJob } from "../pipeline/00-orchestration/job/full-pipeline-runner";
 import { processNextProjectDemoGenerationJob } from "../pipeline/00-orchestration/queue/project-demo-generation-queue";
 import { createProjectDemoGenerationWorkerLogger } from "../pipeline/00-orchestration/queue/project-demo-generation-worker-logging";
-import { readRepoSecurityInput } from "../pipeline/02-repo-security-screen/repository-loading/repo-security-input";
 import { compositeVideoFromScript } from "../pipeline/07-compositing/composite-video";
 import { finalVideoEmailsEnabled } from "../pipeline/final-output/final-video-email-feature";
 import { createResendFinalVideoEmailNotifierFromEnv } from "../shared/integrations/email/resend-final-video-email-notifier";
@@ -41,33 +39,29 @@ do {
   const result = await processNextProjectDemoGenerationJob(queueStore, {
     async runFullPipeline(job) {
       const productionPipeline = createProductionPipeline({
-        daytonaApiKey,
-        ...(daytonaSnapshot === undefined ? {} : { daytonaSnapshot }),
-        ...(daytonaSubmittedCodeSnapshot === undefined
-          ? {}
-          : { daytonaSubmittedCodeSnapshot }),
         agentModel,
         logger: workerLogger.child({ component: "agent-harness" }),
         repoSecurityLogger: workerLogger.child({
           component: "repo-security-screen",
         }),
+        sandbox: {
+          apiKey: daytonaApiKey,
+          provider: "daytona",
+          ...(daytonaSnapshot === undefined
+            ? {}
+            : { snapshot: daytonaSnapshot }),
+          ...(daytonaSubmittedCodeSnapshot === undefined
+            ? {}
+            : { submittedCodeSnapshot: daytonaSubmittedCodeSnapshot }),
+        },
       });
       try {
-        const repoSecurity = await readRepoSecurityInput(
-          productionPipeline.repoSecurityInputLoader,
-          job.repoUrl,
-        );
-
-        const pipelineResult = await runFullPipelineJob(
-          {
-            demoBrief: job.demoBrief,
-            normalizedSupportingDocuments: job.normalizedSupportingDocuments,
-            repoSecurity,
-            repoUrl: job.repoUrl,
-            workspaceId: job.workspaceId,
-          },
-          productionPipeline.pipelineDependencies,
-          {
+        const pipelineResult = await productionPipeline.run({
+          demoBrief: job.demoBrief,
+          normalizedSupportingDocuments: job.normalizedSupportingDocuments,
+          repoUrl: job.repoUrl,
+          workspaceId: job.workspaceId,
+          runOptions: {
             async compositeVideo(input) {
               return compositeVideoFromScript({
                 ...input,
@@ -81,11 +75,8 @@ do {
               });
             },
             onProgress: (event) => workerLogger.pipelineProgress(event),
-            prepareFreshCaptureState:
-              productionPipeline.prepareFreshCaptureState,
-            reviewDraftComposite: productionPipeline.reviewDraftComposite,
           },
-        );
+        });
 
         if (!pipelineResult.finalVideo.finalVideo) {
           throw new Error("Full pipeline did not store a final video.");
@@ -95,7 +86,7 @@ do {
           generatedDemoUrl: pipelineResult.finalVideo.finalVideo.r2Url,
         };
       } finally {
-        await productionPipeline.disposeAgentSessions();
+        await productionPipeline.dispose();
       }
     },
   });

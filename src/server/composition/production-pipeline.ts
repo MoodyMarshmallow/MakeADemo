@@ -1,8 +1,11 @@
 import { createBrowserToolControllerProvider } from "../agent-harness/tools/browser/browser-tool-controller-registry";
 import type { FullPipelineRunnerOptions } from "../pipeline/00-orchestration/job/full-pipeline-runner";
+import { createMakeADemoPipeline } from "../pipeline/00-orchestration/job/pipeline-controller";
 import type { PipelineOrchestratorDependencies } from "../pipeline/00-orchestration/job/pipeline-orchestrator";
 import { screenRepoSecurity } from "../pipeline/02-repo-security-screen/repo-security-screen";
+import type { RepoSecurityInputLoader } from "../pipeline/02-repo-security-screen/repository-loading/repo-security-input-loader.interface";
 import { AgenticRepoPreparation } from "../pipeline/03-repo-preparation/agent-task/agentic-repo-preparation";
+import type { PreparationWorkspaceProvider } from "../pipeline/03-repo-preparation/preparation-workspace-runner";
 import type { RepoPreparationAgent } from "../pipeline/03-repo-preparation/repo-preparation-agent.interface";
 import type { RepoPreparationPreflightResult } from "../pipeline/03-repo-preparation/repo-preparation-preflight.interface";
 import { prepareRepo } from "../pipeline/03-repo-preparation/repo-preparer";
@@ -26,6 +29,7 @@ import { PlaywrightBrowserValidator } from "../shared/integrations/browser/playw
 import { DaytonaRepoSecurityInputLoader } from "../shared/integrations/daytona/daytona-repo-security-input-loader";
 import { DaytonaSdkPreparationWorkspaceProvider } from "../shared/integrations/daytona/daytona-sdk-preparation-workspace-provider";
 import { OfficialNodejsReleaseCatalog } from "../shared/integrations/nodejs/official-nodejs-release-catalog";
+import { createRailwayProductionSandboxProvider } from "../shared/integrations/railway/railway-production-sandbox-provider";
 import {
   PreparedWorkspaceSandboxRunner,
   restartPreparedDemoForFreshCapture,
@@ -105,6 +109,54 @@ type FreshCaptureStatePreparer = NonNullable<
 type RestartPreparedDemoForFreshCapture =
   typeof restartPreparedDemoForFreshCapture;
 
+/** Identifies the sandbox infrastructure selected for a production Pipeline. */
+export type SandboxProviderId = "daytona" | "railway";
+
+/** Daytona's production sandbox configuration. It is the default provider. */
+type DaytonaProductionSandboxConfig = {
+  apiKey: string;
+  provider?: "daytona";
+  snapshot?: string;
+  submittedCodeSnapshot?: string;
+};
+
+/** Railway's production sandbox configuration. Credentials stay in composition. */
+type RailwayProductionSandboxConfig = {
+  environmentId: string;
+  projectToken: string;
+  provider: "railway";
+};
+
+/**
+ * Discriminated production sandbox configuration. Omitting `provider` selects
+ * Daytona, preserving it as the production default.
+ */
+export type ProductionSandboxConfig =
+  | DaytonaProductionSandboxConfig
+  | RailwayProductionSandboxConfig;
+
+/**
+ * Provider-neutral infrastructure required to assemble the complete Pipeline.
+ * Each adapter must use only the selected provider and preserve the Pipeline's
+ * workspace, validation, and fresh-capture lifecycle invariants.
+ */
+export type ProductionSandboxProviderBundle = {
+  createSandboxRunner(input: {
+    releaseWorkspaceOnCleanup: boolean;
+  }): SandboxRunner;
+  prepareFreshCaptureState: FreshCaptureStatePreparer;
+  repoPreparationWorkspaceProvider: PreparationWorkspaceProvider;
+  repoSecurityInputLoader: RepoSecurityInputLoader;
+};
+
+export type ProductionSandboxProviderFactory = (
+  config: ProductionSandboxConfig,
+  context: {
+    repoSecurityLogger?: PipelineEventLogger;
+    sandboxLogSinks: PipelineLogSink[];
+  },
+) => ProductionSandboxProviderBundle;
+
 /** Provides Footage Capture with a fresh deterministic Daytona runtime. */
 export function createDaytonaFreshCaptureStatePreparer(
   restart: RestartPreparedDemoForFreshCapture = restartPreparedDemoForFreshCapture,
@@ -124,13 +176,12 @@ export function createDaytonaFreshCaptureStatePreparer(
 }
 
 export type ProductionPipelineOptions = ProductionAgentHarnessOptions & {
-  daytonaApiKey: string;
-  daytonaSnapshot?: string;
-  daytonaSubmittedCodeSnapshot?: string;
   logger?: PipelineEventLogger;
   maxScriptGenerationAttempts?: number;
   repoPreparationTimeoutMs?: number;
   repoSecurityLogger?: PipelineEventLogger;
+  sandbox: ProductionSandboxConfig;
+  sandboxProviderFactory?: ProductionSandboxProviderFactory;
   sandboxLogSinks?: PipelineLogSink[];
 };
 
@@ -147,40 +198,26 @@ const defaultDraftReviewEvidenceUploadRetryDelaysMs = [250] as const;
  */
 export function createProductionPipeline(options: ProductionPipelineOptions) {
   const {
-    daytonaApiKey,
-    daytonaSnapshot,
-    daytonaSubmittedCodeSnapshot,
     logger,
     maxScriptGenerationAttempts,
     repoPreparationTimeoutMs: configuredRepoPreparationTimeoutMs,
     repoSecurityLogger,
+    sandbox: sandboxConfig,
+    sandboxProviderFactory,
     sandboxLogSinks: configuredSandboxLogSinks,
     ...agentHarnessOptions
   } = options;
 
-  if (daytonaApiKey.length === 0) {
-    throw new Error(
-      "DAYTONA_API_KEY is required for production pipeline runs.",
-    );
-  }
-
   const sandboxLogSinks = configuredSandboxLogSinks ?? [];
   const nodeReleaseCatalog = new OfficialNodejsReleaseCatalog();
-  const repoSecurityInputLoader = new DaytonaRepoSecurityInputLoader({
-    apiKey: daytonaApiKey,
-    ...(repoSecurityLogger === undefined ? {} : { logger: repoSecurityLogger }),
-    ...(daytonaSnapshot === undefined ? {} : { snapshot: daytonaSnapshot }),
-    sandboxLogSinks,
-  });
-  const repoPreparationWorkspaceProvider =
-    new DaytonaSdkPreparationWorkspaceProvider({
-      apiKey: daytonaApiKey,
-      ...(daytonaSnapshot === undefined ? {} : { snapshot: daytonaSnapshot }),
-      ...(daytonaSubmittedCodeSnapshot === undefined
-        ? {}
-        : { submittedCodeSnapshot: daytonaSubmittedCodeSnapshot }),
+  const sandboxProvider = createProductionSandboxProvider(
+    sandboxConfig,
+    {
+      ...(repoSecurityLogger === undefined ? {} : { repoSecurityLogger }),
       sandboxLogSinks,
-    });
+    },
+    sandboxProviderFactory,
+  );
   const agentHarness = createProductionAgentHarness({
     ...agentHarnessOptions,
   });
@@ -191,20 +228,26 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
   const browserToolControllerProvider = createBrowserToolControllerProvider();
   const repoPreparationAgent = new AgenticRepoPreparation({
     browserToolControllerProvider,
-    ...(daytonaSnapshot === undefined &&
-    daytonaSubmittedCodeSnapshot === undefined
+    ...(sandboxConfig.provider === "railway" ||
+    (sandboxConfig.snapshot === undefined &&
+      sandboxConfig.submittedCodeSnapshot === undefined)
       ? {}
       : {
           cloneFailureDiagnosticsContext: {
-            ...(daytonaSnapshot === undefined ? {} : { daytonaSnapshot }),
-            ...(daytonaSubmittedCodeSnapshot === undefined
+            ...(sandboxConfig.snapshot === undefined
               ? {}
-              : { daytonaSubmittedCodeSnapshot }),
+              : { daytonaSnapshot: sandboxConfig.snapshot }),
+            ...(sandboxConfig.submittedCodeSnapshot === undefined
+              ? {}
+              : {
+                  daytonaSubmittedCodeSnapshot:
+                    sandboxConfig.submittedCodeSnapshot,
+                }),
           },
         }),
     ...(logger === undefined ? {} : { logger }),
     nodeReleaseCatalog,
-    provider: repoPreparationWorkspaceProvider,
+    provider: sandboxProvider.repoPreparationWorkspaceProvider,
     runner: agentHarness.agentTaskRunners.repoPreparation,
     ...(repoPreparationTimeoutMs === undefined
       ? {}
@@ -216,7 +259,7 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
           {
             browserValidator: new PlaywrightBrowserValidator(),
             nodeReleaseCatalog,
-            sandboxRunner: new PreparedWorkspaceSandboxRunner({
+            sandboxRunner: sandboxProvider.createSandboxRunner({
               releaseWorkspaceOnCleanup: false,
             }),
           },
@@ -254,20 +297,68 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
     timeoutMs: defaultInactivityTimeoutMs,
   });
 
-  return {
-    disposeAgentSessions: agentHarness.disposeAgentSessions,
+  return createMakeADemoPipeline({
+    dispose: agentHarness.disposeAgentSessions,
     pipelineDependencies: createProductionPipelineDependencies({
       capturePathRepairer,
       nodeReleaseCatalog,
       repoPreparationAgent,
-      sandboxRunner: new PreparedWorkspaceSandboxRunner({}),
+      sandboxRunner: sandboxProvider.createSandboxRunner({
+        releaseWorkspaceOnCleanup: false,
+      }),
       scriptGenerationAgent,
     }),
-    prepareFreshCaptureState: createDaytonaFreshCaptureStatePreparer(),
-    repoSecurityInputLoader,
+    prepareFreshCaptureState: sandboxProvider.prepareFreshCaptureState,
+    repoSecurityInputLoader: sandboxProvider.repoSecurityInputLoader,
     reviewDraftComposite: draftCompositeReviewer.review.bind(
       draftCompositeReviewer,
     ),
+    sandboxProvider: sandboxConfig.provider ?? "daytona",
+  });
+}
+
+function createProductionSandboxProvider(
+  config: ProductionSandboxConfig,
+  context: Parameters<ProductionSandboxProviderFactory>[1],
+  factory: ProductionSandboxProviderFactory | undefined,
+): ProductionSandboxProviderBundle {
+  if (config.provider === "railway") {
+    return (
+      factory?.(config, context) ??
+      createRailwayProductionSandboxProvider({
+        environmentId: config.environmentId,
+        projectToken: config.projectToken,
+      })
+    );
+  }
+
+  if (config.apiKey.length === 0) {
+    throw new Error(
+      "A non-empty Daytona sandbox API key is required for production pipeline runs.",
+    );
+  }
+
+  return {
+    createSandboxRunner: ({ releaseWorkspaceOnCleanup }) =>
+      new PreparedWorkspaceSandboxRunner({ releaseWorkspaceOnCleanup }),
+    prepareFreshCaptureState: createDaytonaFreshCaptureStatePreparer(),
+    repoPreparationWorkspaceProvider:
+      new DaytonaSdkPreparationWorkspaceProvider({
+        apiKey: config.apiKey,
+        ...(config.snapshot === undefined ? {} : { snapshot: config.snapshot }),
+        ...(config.submittedCodeSnapshot === undefined
+          ? {}
+          : { submittedCodeSnapshot: config.submittedCodeSnapshot }),
+        sandboxLogSinks: context.sandboxLogSinks,
+      }),
+    repoSecurityInputLoader: new DaytonaRepoSecurityInputLoader({
+      apiKey: config.apiKey,
+      ...(context.repoSecurityLogger === undefined
+        ? {}
+        : { logger: context.repoSecurityLogger }),
+      ...(config.snapshot === undefined ? {} : { snapshot: config.snapshot }),
+      sandboxLogSinks: context.sandboxLogSinks,
+    }),
   };
 }
 

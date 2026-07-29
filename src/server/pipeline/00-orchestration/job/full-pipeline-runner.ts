@@ -40,6 +40,7 @@ export type FullPipelineResult = {
   finalVideo: CompositedVideoManifest;
   logPath: string;
   resultPath: string;
+  sandboxProvider?: "daytona" | "railway";
   sandboxLogPath?: string;
   scriptPath?: string;
   preparedDemo: Extract<
@@ -54,7 +55,7 @@ export type FullPipelineFailureContext = {
   logPath: string;
   agentAuditLogPath: string | undefined;
   resultPath: string;
-  stage: "pipeline";
+  stage: "pipeline" | "repo-security-screen";
   status:
     | Exclude<
         Awaited<ReturnType<typeof runPipelineJob>>,
@@ -68,7 +69,7 @@ export class FullPipelineStageFailure extends Error {
   readonly logPath: string;
   readonly agentAuditLogPath: string | undefined;
   readonly resultPath: string;
-  readonly stage: "pipeline";
+  readonly stage: FullPipelineFailureContext["stage"];
   readonly status: FullPipelineFailureContext["status"];
 
   constructor(context: FullPipelineFailureContext) {
@@ -104,6 +105,7 @@ type FullPipelineArtifactSummary = {
   draftCompositeReview: DraftCompositeReviewSummary;
   runDirectory: string;
   runId: string;
+  sandboxProvider?: "daytona" | "railway";
   script: {
     sceneCount: number;
     scriptId: string;
@@ -151,7 +153,11 @@ export type FullPipelineRunnerOptions = PipelineOrchestratorOptions & {
     browserUrl: string;
     preparedDemo: PreparedDemoResult;
   }) => Promise<{ browserUrl?: string }>;
+  /** Controller-owned marker for a failed Repo Security input infrastructure load. */
+  repoSecurityInputFailure?: true;
   runId?: string;
+  /** Controller-owned provider provenance persisted in terminal summaries. */
+  sandboxProvider?: "daytona" | "railway";
   sandboxLogPath?: string;
   scriptGenerationAuditLogPath?: string;
 };
@@ -215,6 +221,49 @@ export async function runFullPipelineJob(
     });
     throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
 
+    if (options.repoSecurityInputFailure === true) {
+      const resultPath = join(runDirectory, "full-pipeline-result.json");
+      const failureSummary = createRepoSecurityInputFailureSummary({
+        agentAuditLogPath: options.agentAuditLogPath,
+        logPath,
+        runDirectory,
+        runId,
+        sandboxLogPath,
+        sandboxProvider: options.sandboxProvider,
+        scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
+      });
+      await reportPipelineProgress({
+        stage: "repo-security-screen",
+        status: "failed",
+      });
+      await log({
+        event: "pipeline-failed",
+        message: "Repo Security Screen input loading failed.",
+        severity: "error",
+        stage: "repo-security-screen",
+        status: "security-rejected",
+      });
+      terminalFailureLogged = true;
+      await writeFile(
+        resultPath,
+        `${JSON.stringify(failureSummary, null, 2)}\n`,
+      );
+      await log({
+        event: "result-written",
+        message: "Full pipeline failure result written.",
+        resultPath,
+        severity: "info",
+      });
+      throw new FullPipelineStageFailure({
+        failure: failureSummary.failure,
+        logPath,
+        agentAuditLogPath: options.agentAuditLogPath,
+        resultPath,
+        stage: "repo-security-screen",
+        status: "security-rejected",
+      });
+    }
+
     const initialPreparedDemo = await runPipelineJob(
       input,
       orchestratorDependencies,
@@ -228,6 +277,7 @@ export async function runFullPipelineJob(
         runDirectory,
         runId,
         sandboxLogPath,
+        sandboxProvider: options.sandboxProvider,
         scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
         preparedDemo: initialPreparedDemo,
       });
@@ -344,6 +394,9 @@ export async function runFullPipelineJob(
       draftCompositeReview: reviewSummary,
       runDirectory,
       runId,
+      ...(options.sandboxProvider === undefined
+        ? {}
+        : { sandboxProvider: options.sandboxProvider }),
       script: {
         sceneCount: scriptSummary.sceneCount,
         scriptId: preparedDemo.demoScript.scriptId,
@@ -367,6 +420,9 @@ export async function runFullPipelineJob(
       finalVideo,
       logPath,
       resultPath,
+      ...(options.sandboxProvider === undefined
+        ? {}
+        : { sandboxProvider: options.sandboxProvider }),
       ...(sandboxLogPath === undefined ? {} : { sandboxLogPath }),
       ...(scriptPersistence.scriptPath === undefined
         ? {}
@@ -384,6 +440,7 @@ export async function runFullPipelineJob(
         runDirectory,
         runId,
         sandboxLogPath,
+        sandboxProvider: options.sandboxProvider,
         scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
       });
       await cleanupPreparationWorkspaces({
@@ -443,6 +500,7 @@ function createCancellationSummary(input: {
   runDirectory: string;
   runId: string;
   sandboxLogPath: string | undefined;
+  sandboxProvider: "daytona" | "railway" | undefined;
   scriptGenerationAuditLogPath: string | undefined;
 }) {
   const blocker =
@@ -466,7 +524,49 @@ function createCancellationSummary(input: {
     failure: { blockers: [blocker], suggestedChanges: [] },
     runDirectory: input.runDirectory,
     runId: input.runId,
+    ...(input.sandboxProvider === undefined
+      ? {}
+      : { sandboxProvider: input.sandboxProvider }),
     status: "cancelled" as const,
+  };
+}
+
+function createRepoSecurityInputFailureSummary(input: {
+  agentAuditLogPath: string | undefined;
+  logPath: string;
+  runDirectory: string;
+  runId: string;
+  sandboxLogPath: string | undefined;
+  sandboxProvider: "daytona" | "railway" | undefined;
+  scriptGenerationAuditLogPath: string | undefined;
+}) {
+  return {
+    artifacts: {
+      logPath: input.logPath,
+      ...(input.agentAuditLogPath === undefined
+        ? {}
+        : { agentAuditLogPath: input.agentAuditLogPath }),
+      ...(input.scriptGenerationAuditLogPath === undefined
+        ? {}
+        : {
+            scriptGenerationAuditLogPath: input.scriptGenerationAuditLogPath,
+          }),
+      ...(input.sandboxLogPath === undefined
+        ? {}
+        : { sandboxLogPath: input.sandboxLogPath }),
+    },
+    failure: {
+      blockers: [
+        "Repo Security Screen input could not be loaded because sandbox infrastructure was unavailable.",
+      ],
+      suggestedChanges: [],
+    },
+    runDirectory: input.runDirectory,
+    runId: input.runId,
+    ...(input.sandboxProvider === undefined
+      ? {}
+      : { sandboxProvider: input.sandboxProvider }),
+    status: "security-rejected" as const,
   };
 }
 
@@ -645,6 +745,7 @@ function createFailureSummary(input: {
   runDirectory: string;
   runId: string;
   sandboxLogPath: string | undefined;
+  sandboxProvider: "daytona" | "railway" | undefined;
   scriptGenerationAuditLogPath: string | undefined;
   preparedDemo: Exclude<
     Awaited<ReturnType<typeof runPipelineJob>>,
@@ -669,6 +770,9 @@ function createFailureSummary(input: {
     failure: readPipelineFailure(input.preparedDemo),
     runDirectory: input.runDirectory,
     runId: input.runId,
+    ...(input.sandboxProvider === undefined
+      ? {}
+      : { sandboxProvider: input.sandboxProvider }),
     status: input.preparedDemo.status,
   };
 }
