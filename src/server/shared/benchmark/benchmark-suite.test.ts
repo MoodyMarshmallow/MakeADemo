@@ -45,6 +45,8 @@ describe("benchmarkRepos", () => {
       "src/server/composition/full-pipeline-cli.mts",
       "--output-root",
       ".makeademo-benchmark-runs/run-1",
+      "--sandbox-provider",
+      "daytona",
       "--repo",
       "https://github.com/midday-ai/midday",
       "--commit",

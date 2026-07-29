@@ -1,6 +1,9 @@
 import { basename, dirname, relative, resolve, sep } from "node:path";
 
-import type { BenchmarkStatusLevel } from "./benchmark-manifest";
+import type {
+  BenchmarkSandboxProvider,
+  BenchmarkStatusLevel,
+} from "./benchmark-manifest";
 
 type BenchmarkTokenUsage = {
   completionTokens: number;
@@ -29,6 +32,7 @@ export type BenchmarkResult = {
   logPath?: string;
   repoId: string;
   repoUrl: string;
+  sandboxProvider?: BenchmarkSandboxProvider;
   resultPath?: string;
   runDirectory?: string;
   startedAt: string;
@@ -52,6 +56,7 @@ export type BenchmarkTerminalPipelineResult = {
   };
   cancellationReason?: "deadline-exceeded" | "signal";
   resultPath: string;
+  sandboxProvider?: BenchmarkSandboxProvider;
   status:
     | "capture-path-validation-failed"
     | "preparation-failed"
@@ -81,6 +86,7 @@ export type BenchmarkResultBuildInput = {
   repoId: string;
   repoUrl: string;
   runDirectory: string;
+  sandboxProvider?: BenchmarkSandboxProvider;
   startedAt: string;
   stderrPath: string;
   stdoutPath: string;
@@ -177,6 +183,9 @@ export function buildBenchmarkResult(
       : { logPath: terminalResult.artifacts.logPath }),
     repoId: input.repoId,
     repoUrl: input.repoUrl,
+    ...(input.sandboxProvider === undefined
+      ? {}
+      : { sandboxProvider: input.sandboxProvider }),
     ...(terminalResult === undefined
       ? {}
       : { resultPath: terminalResult.resultPath }),
@@ -227,6 +236,10 @@ export function readBenchmarkTerminalPipelineResult(input: {
   if (!isRecord(input.value)) return undefined;
 
   const result = input.value;
+  const sandboxProvider = readOptionalSandboxProvider(result.sandboxProvider);
+  if (result.sandboxProvider !== undefined && sandboxProvider === undefined) {
+    return undefined;
+  }
   const owningRunDirectory = dirname(resolve(input.resultPath));
   if (
     result.runId !== basename(owningRunDirectory) ||
@@ -241,6 +254,7 @@ export function readBenchmarkTerminalPipelineResult(input: {
       artifacts: { logPath: result.artifacts.logPath },
       resultPath: input.resultPath,
       status: "succeeded",
+      ...(sandboxProvider === undefined ? {} : { sandboxProvider }),
     };
   }
 
@@ -268,6 +282,7 @@ export function readBenchmarkTerminalPipelineResult(input: {
       failure: { blockers: result.failure.blockers },
       resultPath: input.resultPath,
       status: "cancelled",
+      ...(sandboxProvider === undefined ? {} : { sandboxProvider }),
     };
   }
   return {
@@ -275,6 +290,7 @@ export function readBenchmarkTerminalPipelineResult(input: {
     failure: { blockers: result.failure.blockers },
     resultPath: input.resultPath,
     status: result.status,
+    ...(sandboxProvider === undefined ? {} : { sandboxProvider }),
   };
 }
 
@@ -492,6 +508,15 @@ function isStringArray(value: unknown): value is string[] {
   return (
     Array.isArray(value) && value.every((entry) => typeof entry === "string")
   );
+}
+
+function readOptionalSandboxProvider(
+  value: unknown,
+): BenchmarkSandboxProvider | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return value === "daytona" || value === "railway" ? value : undefined;
 }
 
 function failureStageForTerminalStatus(

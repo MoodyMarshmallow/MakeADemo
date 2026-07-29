@@ -90,6 +90,20 @@ describe("readBenchmarkTerminalPipelineResult", () => {
     ).toMatchObject({ resultPath, status: "preparation-failed" });
   });
 
+  it("preserves the sandbox provider attribution emitted by the Pipeline", () => {
+    expect(
+      readBenchmarkTerminalPipelineResult({
+        pipelineOutputRoot,
+        resultPath,
+        value: { ...successfulTerminalSummary(), sandboxProvider: "railway" },
+      }),
+    ).toMatchObject({
+      resultPath,
+      sandboxProvider: "railway",
+      status: "succeeded",
+    });
+  });
+
   it("accepts a durable cooperative cancellation result from this benchmark run", () => {
     expect(
       readBenchmarkTerminalPipelineResult({
@@ -197,6 +211,7 @@ describe("buildBenchmarkResult", () => {
         repoId: "ghost",
         repoUrl: "https://github.com/TryGhost/Ghost",
         runDirectory: ".makeademo-benchmark-runs/run-1/ghost-r1",
+        sandboxProvider: "railway",
         startedAt: "2026-07-20T00:00:00.000Z",
         stderrPath: "stderr.log",
         stdoutPath: "stdout.log",
@@ -205,6 +220,7 @@ describe("buildBenchmarkResult", () => {
       disposition: "inconclusive",
       failureStage: "repo-preparation",
       infrastructureFailureKind: "pipeline-deadline-exceeded",
+      sandboxProvider: "railway",
       statusLevel: "L0",
     });
   });

@@ -9,6 +9,19 @@ import type {
 } from "./railway-sandbox-gateway.interface";
 import { railwaySpikeTemplateRecipe } from "./railway-spike-template-recipe";
 
+/** Provider-neutral template data rendered only by the Railway SDK gateway. */
+export type RailwaySandboxTemplateRecipe = Readonly<{
+  commands: readonly string[];
+  packages: Readonly<{ system: readonly string[] }>;
+  trustedFiles: readonly Readonly<{
+    contents: string;
+    mode: number;
+    owner: "root:root";
+    path: string;
+  }>[];
+  user: Readonly<{ workspace: string }>;
+}>;
+
 type RailwaySdkExecHandle = {
   detach(): Promise<string>;
   kill(signal?: "KILL" | "TERM"): Promise<boolean>;
@@ -71,6 +84,8 @@ export type RailwaySdkSandboxGatewayOptions = {
   railwayAgentSession?: string;
   railwayCaller?: string;
   sandboxApi?: RailwaySdkSandboxApi;
+  /** Explicit image recipe; defaults to the isolated Phase 0 spike recipe. */
+  templateRecipe?: RailwaySandboxTemplateRecipe;
   terminalPollIntervalMs?: number;
 };
 
@@ -121,6 +136,7 @@ export class RailwaySdkSandboxGateway implements RailwaySandboxGateway {
   private readonly inventoryNow: () => number;
   private readonly sandboxApi: RailwaySdkSandboxApi;
   private readonly terminalPollIntervalMs: number;
+  private readonly templateRecipe: RailwaySandboxTemplateRecipe;
   private readonly ownedSandboxIds = new Set<string>();
   private readonly pendingCreationDiagnostics: unknown[] = [];
   private readonly pendingCreations = new Set<Promise<void>>();
@@ -143,6 +159,7 @@ export class RailwaySdkSandboxGateway implements RailwaySandboxGateway {
     this.inventoryNow = options.inventoryNow ?? Date.now;
     this.terminalPollIntervalMs =
       options.terminalPollIntervalMs ?? defaultTerminalPollIntervalMs;
+    this.templateRecipe = options.templateRecipe ?? railwaySpikeTemplateRecipe;
     this.sandboxApi =
       options.sandboxApi ?? (Sandbox as unknown as RailwaySdkSandboxApi);
   }
@@ -440,14 +457,14 @@ export class RailwaySdkSandboxGateway implements RailwaySandboxGateway {
 
   private getTemplate(): RailwaySdkSandboxTemplate {
     this.template ??= [
-      ...railwaySpikeTemplateRecipe.trustedFiles.map(renderTrustedFile),
-      ...railwaySpikeTemplateRecipe.commands,
+      ...this.templateRecipe.trustedFiles.map(renderTrustedFile),
+      ...this.templateRecipe.commands,
     ].reduce(
       (template, command) => template.run(command),
       this.sandboxApi
         .template()
-        .withPackages(...railwaySpikeTemplateRecipe.packages.system)
-        .workdir(railwaySpikeTemplateRecipe.user.workspace),
+        .withPackages(...this.templateRecipe.packages.system)
+        .workdir(this.templateRecipe.user.workspace),
     );
     return this.template;
   }
@@ -697,7 +714,7 @@ function inventoryAbortReason(signal: AbortSignal): Error {
 }
 
 function renderTrustedFile(
-  file: (typeof railwaySpikeTemplateRecipe.trustedFiles)[number],
+  file: RailwaySandboxTemplateRecipe["trustedFiles"][number],
 ): string {
   const contents = Buffer.from(file.contents, "utf8").toString("base64");
   const parent = file.path.slice(0, file.path.lastIndexOf("/"));

@@ -2,11 +2,26 @@ import { describe, expect, it } from "vitest";
 
 import { PipelineCancellationError } from "../pipeline/00-orchestration/job/pipeline-cancellation";
 import {
+  addSandboxProviderToTerminalOutput,
   finalizeFullPipelineCli,
   runFullPipelineCliOperation,
 } from "./full-pipeline-cli-lifecycle";
 
 describe("full pipeline CLI lifecycle", () => {
+  it.each(["succeeded", "failed", "cancelled"])(
+    "includes the selected sandbox provider in %s terminal output",
+    (status) => {
+      const output = addSandboxProviderToTerminalOutput({
+        output: `Pipeline ${status}\nResult JSON: /runs/${status}.json\n`,
+        sandboxProvider: "railway",
+      });
+
+      expect(output).toContain("Sandbox provider: railway");
+      expect(output).toContain(`Pipeline ${status}`);
+      expect(output.match(/Result JSON:/g)).toHaveLength(1);
+    },
+  );
+
   it("emits one Result JSON marker only after output and agent disposal complete", async () => {
     const events: string[] = [];
 

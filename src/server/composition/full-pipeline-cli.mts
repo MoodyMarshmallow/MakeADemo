@@ -4,7 +4,6 @@ import { createInterface } from "node:readline/promises";
 
 import { formatFullPipelineFailure } from "../pipeline/00-orchestration/cli/full-pipeline-failure-output";
 import { collectPreCaptureCliOptions } from "../pipeline/00-orchestration/cli/pre-capture-cli-interactive";
-import { runFullPipelineJob } from "../pipeline/00-orchestration/job/full-pipeline-runner";
 import {
   PipelineCancellationError,
   throwIfPipelineDeadlineReached,
@@ -15,8 +14,6 @@ import {
   normalizeSupportingDocument,
   readSupportingDocumentUpload,
 } from "../pipeline/01-context-gathering/supporting-documents";
-import type { RepoSecurityInput } from "../pipeline/02-repo-security-screen/repo-security-screen";
-import { readRepoSecurityInput } from "../pipeline/02-repo-security-screen/repository-loading/repo-security-input";
 import {
   createFilePipelineLogSink,
   createPipelineEventLogger,
@@ -24,25 +21,36 @@ import {
 } from "../shared/logging/pipeline-event-logger";
 import { createAgentOutputRouter } from "./agent-output";
 import {
+  addSandboxProviderToTerminalOutput,
   finalizeFullPipelineCli,
   runFullPipelineCliOperation,
 } from "./full-pipeline-cli-lifecycle";
+import { readFullPipelineSandboxConfig } from "./full-pipeline-sandbox-config";
 import {
   type ProductionAgentCliOptions,
   parseProductionAgentCliArgs,
 } from "./production-agent-cli-options";
 import { resolveProductionAgentModelConfig } from "./production-agent-model-config";
-import { createProductionPipeline } from "./production-pipeline";
+import {
+  type SandboxProviderId,
+  createProductionPipeline,
+} from "./production-pipeline";
 
-const { outputRoot, pipelineDeadlineAt, preCaptureArgs } = readFullPipelineArgs(
-  process.argv.slice(2),
-);
+const { outputRoot, pipelineDeadlineAt, preCaptureArgs, sandboxProvider } =
+  readFullPipelineArgs(process.argv.slice(2));
 const { pipeline: options, agentModel } = await readOptions(preCaptureArgs);
-const daytonaApiKey = process.env.DAYTONA_API_KEY;
 const daytonaSnapshot = readOptionalEnv("MAKEADEMO_DAYTONA_SNAPSHOT");
 const daytonaSubmittedCodeSnapshot = readOptionalEnv(
   "MAKEADEMO_DAYTONA_SUBMITTED_CODE_SNAPSHOT",
 );
+const sandbox = readFullPipelineSandboxConfig({
+  environment: process.env,
+  provider: sandboxProvider,
+  ...(daytonaSnapshot === undefined ? {} : { daytonaSnapshot }),
+  ...(daytonaSubmittedCodeSnapshot === undefined
+    ? {}
+    : { daytonaSubmittedCodeSnapshot }),
+});
 const fullPipelineOutputRoot = outputRoot ?? ".makeademo-full-pipeline-runs";
 const runId = createRunId();
 const runDirectory = join(fullPipelineOutputRoot, runId);
@@ -72,10 +80,6 @@ const handleSignal = (signal: NodeJS.Signals) => {
 process.on("SIGINT", handleSignal);
 process.on("SIGTERM", handleSignal);
 
-if (daytonaApiKey === undefined || daytonaApiKey === "") {
-  throw new Error("DAYTONA_API_KEY is required for full pipeline runs.");
-}
-
 const cliLogger = createPipelineEventLogger({
   base: { component: "full-pipeline-cli" },
   sinks: [cliLogSink, localPipelineLogSink],
@@ -87,11 +91,6 @@ const agentOutputRouter = createAgentOutputRouter({
 });
 const productionPipeline = createProductionPipeline({
   agentModel,
-  daytonaApiKey,
-  ...(daytonaSnapshot === undefined ? {} : { daytonaSnapshot }),
-  ...(daytonaSubmittedCodeSnapshot === undefined
-    ? {}
-    : { daytonaSubmittedCodeSnapshot }),
   logger: cliLogger.child({ component: "agent-harness" }),
   onRepoPreparationDiagnostic: agentOutputRouter.repoPreparation.onDiagnostic,
   onRepoPreparationEvent: agentOutputRouter.repoPreparation.onEvent,
@@ -101,9 +100,10 @@ const productionPipeline = createProductionPipeline({
   onAgentDiagnostic: agentOutputRouter.agentTasks.onDiagnostic,
   onAgentEvent: agentOutputRouter.agentTasks.onEvent,
   onAgentStandard: agentOutputRouter.agentTasks.onStandard,
+  sandbox,
 });
 
-let result: Awaited<ReturnType<typeof runFullPipelineJob>> | undefined;
+let result: Awaited<ReturnType<typeof productionPipeline.run>> | undefined;
 let terminalFailureOutput: string | undefined;
 let unexpectedError: unknown;
 try {
@@ -111,10 +111,6 @@ try {
     materializeCancellation: () =>
       executeFullPipeline({
         normalizedSupportingDocuments: [],
-        repoSecurity: {
-          files: [],
-          repoStats: { fileCount: 0, sizeBytes: 0 },
-        },
       }),
     prepare: async () => {
       throwIfPipelineDeadlineReached(
@@ -151,24 +147,7 @@ try {
         cancellationController.signal,
         pipelineDeadlineAt,
       );
-      const repoSecurity = await readRepoSecurityInput(
-        productionPipeline.repoSecurityInputLoader,
-        options.repoUrl,
-        {
-          ...(options.commitSha === undefined
-            ? {}
-            : { commitSha: options.commitSha }),
-          ...(pipelineDeadlineAt === undefined
-            ? {}
-            : { deadlineAt: pipelineDeadlineAt }),
-          signal: cancellationController.signal,
-        },
-      );
-      throwIfPipelineDeadlineReached(
-        cancellationController.signal,
-        pipelineDeadlineAt,
-      );
-      return { normalizedSupportingDocuments, repoSecurity };
+      return { normalizedSupportingDocuments };
     },
     run: executeFullPipeline,
   });
@@ -177,7 +156,7 @@ try {
   if (formattedFailure === undefined) {
     unexpectedError = error;
   } else {
-    terminalFailureOutput = `\n${formattedFailure}`;
+    terminalFailureOutput = formattedFailure;
     process.exitCode =
       receivedSignal === "SIGINT"
         ? 130
@@ -191,7 +170,7 @@ await finalizeFullPipelineCli({
   cleanup: async () => {
     await Promise.all([
       agentOutputRouter.close(),
-      productionPipeline.disposeAgentSessions(),
+      productionPipeline.dispose(),
     ]);
   },
   removeSignalHandlers: () => {
@@ -202,9 +181,12 @@ await finalizeFullPipelineCli({
   ...(terminalFailureOutput === undefined && result === undefined
     ? {}
     : {
-        terminalOutput:
-          terminalFailureOutput ??
-          formatFullPipelineSuccess(result as NonNullable<typeof result>),
+        terminalOutput: addSandboxProviderToTerminalOutput({
+          output:
+            terminalFailureOutput ??
+            formatFullPipelineSuccess(result as NonNullable<typeof result>),
+          sandboxProvider,
+        }),
       }),
   write: (output) =>
     terminalFailureOutput === undefined
@@ -216,26 +198,19 @@ if (unexpectedError !== undefined) throw unexpectedError;
 
 function executeFullPipeline(input: {
   normalizedSupportingDocuments: NormalizedSupportingDocument[];
-  repoSecurity: RepoSecurityInput;
 }) {
-  return runFullPipelineJob(
-    {
-      ...(options.commitSha === undefined
-        ? {}
-        : { commitSha: options.commitSha }),
-      demoBrief: readDemoBrief({ keyProductFeatures: options.features }),
-      normalizedSupportingDocuments: input.normalizedSupportingDocuments,
-      repoSecurity: input.repoSecurity,
-      repoUrl: options.repoUrl,
-      workspaceId: options.workspaceId,
-    },
-    productionPipeline.pipelineDependencies,
-    {
+  return productionPipeline.run({
+    ...(options.commitSha === undefined
+      ? {}
+      : { commitSha: options.commitSha }),
+    demoBrief: readDemoBrief({ keyProductFeatures: options.features }),
+    normalizedSupportingDocuments: input.normalizedSupportingDocuments,
+    repoUrl: options.repoUrl,
+    workspaceId: options.workspaceId,
+    runOptions: {
       logSinks: [cliLogSink],
       outputRoot: fullPipelineOutputRoot,
-      prepareFreshCaptureState: productionPipeline.prepareFreshCaptureState,
       agentAuditLogPath: agentOutputRouter.primaryAuditLogPath,
-      reviewDraftComposite: productionPipeline.reviewDraftComposite,
       runId,
       sandboxLogPath,
       ...(pipelineDeadlineAt === undefined
@@ -245,7 +220,7 @@ function executeFullPipeline(input: {
       scriptGenerationAuditLogPath:
         agentOutputRouter.scriptGenerationAuditLogPath,
     },
-  );
+  });
 }
 
 function formatFullPipelineSuccess(
@@ -273,6 +248,8 @@ function readFullPipelineArgs(args: string[]) {
   const preCaptureArgs: string[] = [];
   let pipelineDeadlineAt: number | undefined;
   let outputRoot: string | undefined;
+  let sandboxProvider: SandboxProviderId = "daytona";
+  let sandboxProviderSeen = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] as string;
@@ -289,6 +266,22 @@ function readFullPipelineArgs(args: string[]) {
       continue;
     }
 
+    if (arg === "--sandbox-provider") {
+      if (sandboxProviderSeen) {
+        throw new Error("--sandbox-provider may be specified at most once.");
+      }
+      const value = readFlagValue(args, index, arg);
+      if (value !== "daytona" && value !== "railway") {
+        throw new Error(
+          `Unsupported sandbox provider "${value}". Expected daytona or railway.`,
+        );
+      }
+      sandboxProvider = value;
+      sandboxProviderSeen = true;
+      index += 1;
+      continue;
+    }
+
     preCaptureArgs.push(arg);
   }
 
@@ -296,6 +289,7 @@ function readFullPipelineArgs(args: string[]) {
     preCaptureArgs,
     ...(outputRoot === undefined ? {} : { outputRoot }),
     ...(pipelineDeadlineAt === undefined ? {} : { pipelineDeadlineAt }),
+    sandboxProvider,
   };
 }
 

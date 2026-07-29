@@ -7,6 +7,8 @@ export type BenchmarkStatusLevel =
   | "L5"
   | "L6";
 
+export type BenchmarkSandboxProvider = "daytona" | "railway";
+
 type BenchmarkManifestDefaults = {
   daytonaSnapshot?: string;
   outputRoot?: string;
@@ -45,6 +47,7 @@ export type BenchmarkPipelineArgsInput = {
   deadlineAt?: number;
   outputRoot: string;
   repo: BenchmarkRepo;
+  sandboxProvider?: BenchmarkSandboxProvider;
 };
 
 export function readBenchmarkManifest(value: unknown): BenchmarkManifest {
@@ -73,6 +76,8 @@ export function buildBenchmarkPipelineArgs(input: BenchmarkPipelineArgsInput) {
   if (input.deadlineAt !== undefined) {
     args.push("--deadline-at", String(input.deadlineAt));
   }
+
+  args.push("--sandbox-provider", input.sandboxProvider ?? "daytona");
 
   args.push(
     "--repo",

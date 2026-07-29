@@ -1,6 +1,7 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import { parseBenchmarkCommandArgs } from "../src/server/shared/benchmark/benchmark-command";
 import type { BenchmarkRepo } from "../src/server/shared/benchmark/benchmark-manifest";
 import { redactBenchmarkOutput } from "../src/server/shared/benchmark/benchmark-output-redaction";
 import {
@@ -25,13 +26,17 @@ import {
   selectBenchmarkRepos,
 } from "../src/server/shared/benchmark/benchmark-suite";
 
+const { repoIds, sandboxProvider } = parseBenchmarkCommandArgs(
+  process.argv.slice(2),
+);
 const selectedBenchmarkRepos = selectBenchmarkRepos({
-  repoIds: process.argv.slice(2).filter((argument) => argument !== "--"),
+  repoIds,
   repos: benchmarkRepos,
 });
 const selectedBenchmarkSuite = {
   ...benchmarkSuite,
   repos: selectedBenchmarkRepos,
+  sandboxProvider,
 };
 const benchmarkRunId = createRunId();
 const outputRoot = join(".makeademo-benchmark-runs", benchmarkRunId);
@@ -77,6 +82,7 @@ try {
         outputRoot,
         repo,
         repetitionIndex,
+        sandboxProvider,
         ...(deadlineAt === undefined ? {} : { deadlineAt }),
       });
       pendingResultWrite = pendingResultWrite.then(() =>
@@ -103,6 +109,7 @@ async function runRepoBenchmark(input: {
   outputRoot: string;
   repo: BenchmarkRepo;
   repetitionIndex: number;
+  sandboxProvider: "daytona" | "railway";
   deadlineAt?: number;
 }): Promise<BenchmarkResult> {
   const runName = `${input.repo.id}-r${input.repetitionIndex + 1}`;
@@ -120,6 +127,7 @@ async function runRepoBenchmark(input: {
     ),
     outputRoot: pipelineOutputRoot,
     repo: input.repo,
+    sandboxProvider: input.sandboxProvider,
   });
   const command = ["bun", ...args];
   const startedAt = new Date();
@@ -163,6 +171,7 @@ async function runRepoBenchmark(input: {
     repoId: input.repo.id,
     repoUrl: input.repo.repoUrl,
     runDirectory,
+    sandboxProvider: input.sandboxProvider,
     startedAt: startedAt.toISOString(),
     stderrPath,
     stdoutPath,

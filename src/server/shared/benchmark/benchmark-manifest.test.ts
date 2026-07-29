@@ -154,6 +154,7 @@ describe("buildBenchmarkPipelineArgs", () => {
         deadlineAt: 1_234_567_890,
         outputRoot: ".makeademo-benchmark-runs/run-1",
         repo,
+        sandboxProvider: "railway",
       }),
     ).toEqual([
       "src/server/composition/full-pipeline-cli.mts",
@@ -161,6 +162,8 @@ describe("buildBenchmarkPipelineArgs", () => {
       ".makeademo-benchmark-runs/run-1",
       "--deadline-at",
       "1234567890",
+      "--sandbox-provider",
+      "railway",
       "--repo",
       "https://github.com/example/calendar",
       "--commit",

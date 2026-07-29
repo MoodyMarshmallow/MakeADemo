@@ -25,6 +25,39 @@ This deliberately tightens the attached plan's broader `RAILWAY_API_TOKEN`
 proposal to the environment-scoped credential Railway recommends for
 single-environment automation.
 
+## Whole-Pipeline benchmark
+
+The existing benchmark runner can exercise the complete MakeADemo Pipeline on
+Railway, from Repo Security Screen through Compositing, with an explicit
+provider flag:
+
+```sh
+MAKEADEMO_RAILWAY_SANDBOX_PROJECT_TOKEN=... \
+MAKEADEMO_RAILWAY_SANDBOX_ENVIRONMENT_ID=... \
+OPENAI_API_KEY=... \
+bun run benchmark --sandbox-provider railway -- midday
+```
+
+The flag is intentionally benchmark-only and does not change the Daytona
+default or expose Railway as a product fallback. The provider-neutral
+controller-facing Pipeline interface receives the selected adapter; controllers
+do not construct Railway sandboxes or manage their lifecycle. The benchmark
+records the selected provider in its manifest and result rows and preserves the
+same pinned repository commit and success-level rules used by Daytona.
+
+Railway whole-Pipeline runs use the revisioned
+`makeademo-railway-pipeline-v2` recipe, including root-owned capture tooling.
+They require the dedicated project token and environment variables above and
+ignore ambient Railway credential names. Each run destroys its exact
+run-owned Railway sandboxes during cleanup. This differs from Daytona's normal
+release, which stops and archives usable preparation workspaces.
+
+The browser and app remain inside the Railway sandbox on loopback addresses;
+the benchmark therefore validates the pipeline's local capture path, not a
+public preview or remote-browser URL. A passing machine result is not an L6
+review: manual Benchmark Demo Verification remains required, and promotion to
+production still requires the hard gates in ADR 0023.
+
 ## Demo Runtime Preflight canary
 
 The Phase 3 canary is a separate, hard-gated command. It uses the checked-in

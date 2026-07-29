@@ -47,6 +47,20 @@ bun run benchmark -- midday
 bun run benchmark -- midday excalidraw cyberchef
 ```
 
+The benchmark defaults to Daytona. Pass `--sandbox-provider railway` to run
+the same whole-pipeline jobs through the Railway sandbox implementation:
+
+```bash
+bun run benchmark --sandbox-provider railway -- midday
+```
+
+The flag may appear anywhere among repo IDs, but only once. Supported values
+are `daytona` and `railway`; missing, duplicate, or unsupported values fail
+before the benchmark creates an output directory or starts a Pipeline Job.
+The selected provider is recorded additively in the manifest snapshot and
+each result row. The child Pipeline command receives the same provider as
+`--sandbox-provider <value>`.
+
 Selected repos still run concurrently and retain their benchmark importance
 order. Valid IDs are `midday`, `calcom`, `directus`, `mattermost`, `ghost`,
 `ghostfolio`, `outline`, `twenty`, `excalidraw`, and `cyberchef`. An unknown ID
@@ -66,16 +80,36 @@ DAYTONA_API_KEY=...
 OPENAI_API_KEY=...
 ```
 
+For a Railway benchmark run, `DAYTONA_API_KEY` is not used. Supply the
+dedicated Railway project token and environment instead, and keep the explicit
+provider flag:
+
+```bash
+MAKEADEMO_RAILWAY_SANDBOX_PROJECT_TOKEN=...
+MAKEADEMO_RAILWAY_SANDBOX_ENVIRONMENT_ID=...
+OPENAI_API_KEY=...
+bun run benchmark --sandbox-provider railway -- midday
+```
+
+The Railway selection is intentionally benchmark-only and hard-gated. The
+runner ignores ambient `RAILWAY_API_TOKEN`, `RAILWAY_TOKEN`, and
+`RAILWAY_ENVIRONMENT_ID`; do not place those names in benchmark configuration.
+Railway sandboxes are destroyed after each job rather than stopped and archived
+like Daytona preparation workspaces. The Railway browser runtime serves the
+prepared app on loopback inside the sandbox, so a successful run does not
+produce a public preview URL.
+
 The embedded Pi Agent Harness reads `OPENAI_API_KEY` only in the backend
 process. Provider credentials are held in memory and are never copied into the
 Repo Preparation Daytona workspace.
 
 Every benchmark runs the whole MakeADemo Pipeline, from Repo Security Screen
-through Compositing. Repositories, commits, features, provider, and repetition
+through Compositing, regardless of the selected sandbox provider.
+Repositories, commits, features, provider, and repetition
 count are fixed in
 `src/server/shared/benchmark/benchmark-suite.ts`; command-line arguments only
-select which hardcoded repo entries to run. The model is not overridden, so
-pipeline runs inherit the normal CLI default.
+select which hardcoded repo entries to run and choose the sandbox provider.
+The model is not overridden, so pipeline runs inherit the normal CLI default.
 
 Every repository has a full 40-character `commitSha`. The
 security inspection and both Repo Preparation workspace views check out that
