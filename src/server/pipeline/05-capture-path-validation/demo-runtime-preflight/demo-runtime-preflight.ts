@@ -182,9 +182,9 @@ export async function runDemoRuntimePreflight(
           ).text,
           logs: boundValidationLogs([...sandboxResult.logs, error.message]),
           localUrl: browserValidationUrl,
-          ...(sandboxResult.browserUrl === undefined
+          ...(sandboxResult.previewUrl === undefined
             ? {}
-            : { previewUrl: sandboxResult.browserUrl }),
+            : { previewUrl: sandboxResult.previewUrl }),
           status: "failed",
           warnings: toolchainWarnings,
         };
@@ -230,9 +230,9 @@ export async function runDemoRuntimePreflight(
           ...browserResult.logs,
         ]),
         localUrl: browserValidationUrl,
-        ...(sandboxResult.browserUrl === undefined
+        ...(sandboxResult.previewUrl === undefined
           ? {}
-          : { previewUrl: sandboxResult.browserUrl }),
+          : { previewUrl: sandboxResult.previewUrl }),
         screenshotArtifactId: browserResult.screenshotArtifactId,
         ...(browserResult.screenshot === undefined
           ? {}
@@ -281,9 +281,9 @@ export async function runDemoRuntimePreflight(
           ...browserResult.logs,
         ]),
         localUrl: browserValidationUrl,
-        ...(sandboxResult.browserUrl === undefined
+        ...(sandboxResult.previewUrl === undefined
           ? {}
-          : { previewUrl: sandboxResult.browserUrl }),
+          : { previewUrl: sandboxResult.previewUrl }),
         screenshotArtifactId: browserResult.screenshotArtifactId,
         ...(browserResult.screenshot === undefined
           ? {}
@@ -310,9 +310,9 @@ export async function runDemoRuntimePreflight(
       browserUrl,
       logs: boundValidationLogs([...sandboxResult.logs, ...browserResult.logs]),
       localUrl: browserValidationUrl,
-      ...(sandboxResult.browserUrl === undefined
+      ...(sandboxResult.previewUrl === undefined
         ? {}
-        : { previewUrl: sandboxResult.browserUrl }),
+        : { previewUrl: sandboxResult.previewUrl }),
       screenshotArtifactId: browserResult.screenshotArtifactId,
       status: "succeeded",
       warnings: toolchainWarnings,

@@ -2008,8 +2008,14 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       client: fakeClient(calls),
     });
     const handle = await provider.create();
+    const getPreviewUrl = handle.workspace.getPreviewUrl?.bind(
+      handle.workspace,
+    );
+    if (getPreviewUrl === undefined) {
+      throw new Error("Provider did not expose preview URL support.");
+    }
 
-    await expect(handle.workspace.getPreviewUrl(4173)).resolves.toBe(
+    await expect(getPreviewUrl(4173)).resolves.toBe(
       "https://preview.example.test:4173",
     );
     expect(calls[1]).toEqual({
@@ -2024,8 +2030,14 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       previewUrlTimeoutMs: 1,
     });
     const handle = await provider.create();
+    const getPreviewUrl = handle.workspace.getPreviewUrl?.bind(
+      handle.workspace,
+    );
+    if (getPreviewUrl === undefined) {
+      throw new Error("Provider did not expose preview URL support.");
+    }
 
-    await expect(handle.workspace.getPreviewUrl(4173)).rejects.toThrow(
+    await expect(getPreviewUrl(4173)).rejects.toThrow(
       "Daytona preview URL creation did not finish within 1ms.",
     );
     expect(calls).toEqual(
@@ -2637,9 +2649,15 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       submittedCodeSnapshot: "makeademo-submitted-code-browser",
     });
     const handle = await provider.create();
+    const getPreviewUrl = handle.workspace.getPreviewUrl?.bind(
+      handle.workspace,
+    );
+    if (getPreviewUrl === undefined) {
+      throw new Error("Provider did not expose preview URL support.");
+    }
 
     const result = await handle.workspace.executeSubmittedCode?.("npm test");
-    await expect(handle.workspace.getPreviewUrl(3000)).resolves.toBe(
+    await expect(getPreviewUrl(3000)).resolves.toBe(
       "https://child-preview.example.test:3000",
     );
 

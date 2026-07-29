@@ -4,8 +4,8 @@ import type { SubmittedCodeToolchainPlan } from "./submitted-code-toolchain.sche
 export type PreparationWorkspaceHandle = {
   /**
    * Releases a usable Repo Preparation workspace exactly once. Implementations
-   * must cancel active work, then stop and archive (never delete) both the
-   * primary workspace and any logical submitted-code child.
+   * own provider-specific cleanup and should make this operation idempotent;
+   * callers must not depend on a particular stop, archive, or delete policy.
    */
   release(): Promise<void>;
   id: string;
@@ -17,8 +17,7 @@ export type PreparationWorkspaceHandle = {
 /**
  * Provisions isolated workspaces for Repo Preparation.
  * Implementations should hide provider-specific lifecycle, execution, logging,
- * lifecycle, execution, logging, and teardown details behind this product-level
- * seam.
+ * and teardown details behind this product-level seam.
  */
 export interface PreparationWorkspaceProvider {
   create(): Promise<PreparationWorkspaceHandle>;

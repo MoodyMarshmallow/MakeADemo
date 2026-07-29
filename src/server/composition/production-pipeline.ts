@@ -27,9 +27,9 @@ import { DaytonaRepoSecurityInputLoader } from "../shared/integrations/daytona/d
 import { DaytonaSdkPreparationWorkspaceProvider } from "../shared/integrations/daytona/daytona-sdk-preparation-workspace-provider";
 import { OfficialNodejsReleaseCatalog } from "../shared/integrations/nodejs/official-nodejs-release-catalog";
 import {
-  DaytonaSandboxRunner,
+  PreparedWorkspaceSandboxRunner,
   restartPreparedDemoForFreshCapture,
-} from "../shared/integrations/sandbox/daytona-sandbox-runner";
+} from "../shared/integrations/sandbox/prepared-workspace-sandbox-runner";
 import {
   type PipelineEventLogger,
   type PipelineLogSink,
@@ -216,7 +216,7 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
           {
             browserValidator: new PlaywrightBrowserValidator(),
             nodeReleaseCatalog,
-            sandboxRunner: new DaytonaSandboxRunner({
+            sandboxRunner: new PreparedWorkspaceSandboxRunner({
               releaseWorkspaceOnCleanup: false,
             }),
           },
@@ -260,7 +260,7 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
       capturePathRepairer,
       nodeReleaseCatalog,
       repoPreparationAgent,
-      sandboxRunner: new DaytonaSandboxRunner({}),
+      sandboxRunner: new PreparedWorkspaceSandboxRunner({}),
       scriptGenerationAgent,
     }),
     prepareFreshCaptureState: createDaytonaFreshCaptureStatePreparer(),

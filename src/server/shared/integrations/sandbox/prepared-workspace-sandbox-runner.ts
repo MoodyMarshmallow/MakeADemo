@@ -19,7 +19,7 @@ import {
 } from "../../../pipeline/05-capture-path-validation/demo-runtime-preflight/validation-evidence";
 import type { PipelineEventLogger } from "../../logging/pipeline-event-logger";
 
-export class DaytonaSandboxRunner implements SandboxRunner {
+export class PreparedWorkspaceSandboxRunner implements SandboxRunner {
   private readonly releaseWorkspaceOnCleanup: boolean;
   private readonly logger: PipelineEventLogger | undefined;
   private readonly readinessPollIntervalMs: number;
@@ -44,11 +44,16 @@ export class DaytonaSandboxRunner implements SandboxRunner {
     },
   ): Promise<SandboxValidationOutput> {
     if (input.preparationWorkspace === undefined) {
-      throw new Error("Daytona validation requires the prepared workspace.");
+      throw new Error(
+        "Prepared workspace validation requires the prepared workspace.",
+      );
     }
 
     const handle = input.preparationWorkspace;
-    const toolchainPlan = requireToolchainPlan(handle, "Daytona validation");
+    const toolchainPlan = requireToolchainPlan(
+      handle,
+      "Prepared workspace validation",
+    );
     const writeSandboxLog = (entry: Record<string, unknown>) =>
       writeSandboxLogBestEffort({
         entry: {
@@ -212,18 +217,18 @@ export class DaytonaSandboxRunner implements SandboxRunner {
         port: readPortFromLocalUrl(input.url),
         url: input.url,
       });
-      const browserUrl = await createBrowserPreviewUrl({
+      const browserPreview = await createBrowserPreviewUrl({
         localUrl: input.url,
         workspace: handle.workspace,
       });
       await writeSandboxLog({
-        browserUrl,
+        browserUrl: browserPreview.browserUrl,
         event: "demo-runtime-preflight.browser-preview.created",
       });
 
       return {
         blockedNetworkAttempts: [],
-        browserUrl,
+        browserUrl: browserPreview.browserUrl,
         cleanup: () => this.cleanup(handle),
         logs: [
           ...collectLogs(repoFilesResult),
@@ -240,7 +245,9 @@ export class DaytonaSandboxRunner implements SandboxRunner {
               ).text,
             }),
         localUrl: input.url,
-        previewUrl: browserUrl,
+        ...(browserPreview.previewUrl === undefined
+          ? {}
+          : { previewUrl: browserPreview.previewUrl }),
         repoFiles,
         runtimeExitCode: runtimeResult.exitCode,
       };
@@ -262,12 +269,12 @@ export class DaytonaSandboxRunner implements SandboxRunner {
   }): Promise<{ exitCode: number; stderr: string; stdout: string }> {
     const toolchainPlan = requireToolchainPlan(
       input.handle,
-      "Daytona validation",
+      "Prepared workspace validation",
     );
     if (toolchainPlan.install === undefined) {
       const blocker = toolchainPlan.installBlocker;
       throw new Error(
-        `Daytona validation cannot install dependencies (${blocker?.code ?? "missing_immutable_install"}): ${blocker?.reason ?? "No catalog-owned immutable install is available."}`,
+        `Prepared workspace validation cannot install dependencies (${blocker?.code ?? "missing_immutable_install"}): ${blocker?.reason ?? "No catalog-owned immutable install is available."}`,
       );
     }
     await input.writeSandboxLog({
@@ -371,16 +378,16 @@ export async function restartPreparedDemoForFreshCapture(input: {
     throw new Error("Fresh Footage Capture state did not become ready.");
   }
 
-  const browserUrl = await createBrowserPreviewUrl({
+  const browserPreview = await createBrowserPreviewUrl({
     localUrl: input.preparationManifest.url,
     workspace: input.preparationWorkspace.workspace,
   });
   await writeSandboxLog({
-    browserUrl,
+    browserUrl: browserPreview.browserUrl,
     event: "footage-capture.fresh-state.restart.succeeded",
   });
 
-  return { browserUrl };
+  return { browserUrl: browserPreview.browserUrl };
 }
 
 async function executeDemoStart(
@@ -714,16 +721,23 @@ function readPortFromLocalUrl(url: string): number {
 async function createBrowserPreviewUrl(input: {
   localUrl: string;
   workspace: PreparationWorkspaceHandle["workspace"];
-}): Promise<string> {
+}): Promise<{ browserUrl: string; previewUrl?: string }> {
   const localUrl = new URL(input.localUrl);
-  const previewUrl = new URL(
-    await input.workspace.getPreviewUrl(readPortFromLocalUrl(input.localUrl)),
+  const publicPreviewUrl = await input.workspace.getPreviewUrl?.(
+    readPortFromLocalUrl(input.localUrl),
   );
+  if (publicPreviewUrl === undefined) {
+    return { browserUrl: input.localUrl };
+  }
+  const previewUrl = new URL(publicPreviewUrl);
   previewUrl.pathname = localUrl.pathname;
   previewUrl.search = localUrl.search;
   previewUrl.hash = localUrl.hash;
 
-  return previewUrl.toString();
+  return {
+    browserUrl: previewUrl.toString(),
+    previewUrl: previewUrl.toString(),
+  };
 }
 
 function delay(milliseconds: number): Promise<void> {

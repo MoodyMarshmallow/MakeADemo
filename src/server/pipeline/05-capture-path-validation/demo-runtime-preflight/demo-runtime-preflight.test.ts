@@ -38,6 +38,7 @@ describe("runDemoRuntimePreflight", () => {
           browserUrl: "https://preview.example.test",
           blockedNetworkAttempts: [],
           logs: ["installed", "started demo"],
+          previewUrl: "https://preview.example.test",
           repoFiles: ["package.json", "bun.lock"],
           runtimeExitCode: 0,
         };
@@ -76,6 +77,47 @@ describe("runDemoRuntimePreflight", () => {
       warnings: [],
     });
     expect(browserUrls).toEqual(["http://127.0.0.1:3000"]);
+  });
+
+  it("keeps the preview URL absent when the sandbox only exposes its local manifest URL", async () => {
+    const sandboxRunner: SandboxRunner = {
+      async runValidation() {
+        return {
+          blockedNetworkAttempts: [],
+          browserUrl: "http://127.0.0.1:3000",
+          logs: [],
+          repoFiles: ["package.json"],
+          runtimeExitCode: 0,
+        };
+      },
+    };
+    const browserValidator: BrowserValidator = {
+      async validate() {
+        return {
+          interactable: true,
+          logs: [],
+          screenshotArtifactId: "artifact_screenshot",
+        };
+      },
+    };
+
+    const result = await runDemoRuntimePreflight(
+      {
+        preparationManifest: manifest({
+          demoCommand: "npm run demo",
+          url: "http://127.0.0.1:3000",
+        }),
+        preparationWorkspace: workspaceHandle([]),
+      },
+      { browserValidator, sandboxRunner },
+    );
+
+    expect(result).toMatchObject({
+      browserUrl: "http://127.0.0.1:3000",
+      localUrl: "http://127.0.0.1:3000",
+      status: "succeeded",
+    });
+    expect(result.previewUrl).toBeUndefined();
   });
 
   it("writes browser validation progress to sandbox logs", async () => {

@@ -11,17 +11,17 @@ import { submittedCodeKnownGoodNodeReleaseSnapshot } from "../../../pipeline/03-
 import { resolveSubmittedCodeToolchain } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
 import type { PipelineEventLogger } from "../../logging/pipeline-event-logger";
 import {
-  DaytonaSandboxRunner as RuntimeDaytonaSandboxRunner,
+  PreparedWorkspaceSandboxRunner as RuntimePreparedWorkspaceSandboxRunner,
   createStartDemoScript,
   parseDemoProcessState,
   restartPreparedDemoForFreshCapture,
-} from "./daytona-sandbox-runner";
+} from "./prepared-workspace-sandbox-runner";
 
 type DaytonaSandboxRunnerOptions = NonNullable<
-  ConstructorParameters<typeof RuntimeDaytonaSandboxRunner>[0]
+  ConstructorParameters<typeof RuntimePreparedWorkspaceSandboxRunner>[0]
 >;
 
-class DaytonaSandboxRunner extends RuntimeDaytonaSandboxRunner {
+class DaytonaSandboxRunner extends RuntimePreparedWorkspaceSandboxRunner {
   constructor(options: DaytonaSandboxRunnerOptions = {}) {
     super(options);
   }
@@ -421,7 +421,9 @@ describe("DaytonaSandboxRunner", () => {
         repoUrl: "https://github.com/example/app",
         url: "http://localhost:3000",
       }),
-    ).rejects.toThrow("Daytona validation requires the prepared workspace");
+    ).rejects.toThrow(
+      "Prepared workspace validation requires the prepared workspace",
+    );
   });
 
   it("requires the authoritative preflight plan before submitted-code execution", async () => {
@@ -596,6 +598,27 @@ describe("DaytonaSandboxRunner", () => {
 
     expect(workspace.previewPorts).toEqual([4173]);
     expect(result.browserUrl).toBe("https://preview.example.test:4173/");
+  });
+
+  it("falls back to the manifest URL when the workspace has no public preview URL", async () => {
+    const workspace = new FakePreparationWorkspaceHandle(new Map(), undefined);
+    (workspace.workspace as { getPreviewUrl?: unknown }).getPreviewUrl =
+      undefined;
+    const runner = new DaytonaSandboxRunner();
+
+    const result = await runner.runValidation({
+      demoCommand: "npm run demo",
+      preparationManifest: manifest("workspace_123"),
+      preparationWorkspace: workspace,
+      repoUrl: "https://github.com/example/app",
+      url: "http://localhost:4173/articles?tab=global#/feed",
+    });
+
+    expect(result.browserUrl).toBe(
+      "http://localhost:4173/articles?tab=global#/feed",
+    );
+    expect(result.previewUrl).toBeUndefined();
+    expect(workspace.previewPorts).toEqual([]);
   });
 
   it("preserves the manifest URL path, query, and hash on submitted-code browser URLs", async () => {
@@ -846,17 +869,25 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
   toolchainPlan: ReturnType<typeof supportedPlan> = supportedPlan();
   toolchainMetadata: unknown = supportedToolchainMetadata();
   events: string[] = [];
+  private readonly options: {
+    failFreshCaptureRestore?: boolean;
+    failSandboxLogWrites?: boolean;
+    neverSettleSandboxLogWrites?: boolean;
+    repoFilesOutput?: string;
+  };
 
   constructor(
     private readonly exitCodesByCommand = new Map<string, number>(),
     private readonly commandToThrow?: string,
-    private readonly options: {
+    options: {
       failFreshCaptureRestore?: boolean;
       failSandboxLogWrites?: boolean;
       neverSettleSandboxLogWrites?: boolean;
       repoFilesOutput?: string;
     } = {},
-  ) {}
+  ) {
+    this.options = options;
+  }
 
   workspace = {
     execute: async (command: string) => {

@@ -121,7 +121,8 @@ export interface PreparationWorkspace {
     request: SubmittedProjectRuntimeRequest,
     options?: PreparationWorkspaceExecuteOptions,
   ): Promise<PreparationWorkspaceCommandResult>;
-  getPreviewUrl(port: number): Promise<string>;
+  /** Returns a provider-hosted public URL for a local port when supported. */
+  getPreviewUrl?(port: number): Promise<string | undefined>;
   /**
    * Transfers the cloned repository tree to the unprivileged agent user
    * without dereferencing submitted symlinks. Must run before agent tools.

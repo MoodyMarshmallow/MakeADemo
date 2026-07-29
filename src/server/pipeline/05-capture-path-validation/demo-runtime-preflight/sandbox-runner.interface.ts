@@ -11,10 +11,12 @@ export type SandboxValidationInput = {
 
 export type SandboxValidationOutput = {
   blockedNetworkAttempts: NetworkAttempt[];
+  /** URL the browser validator should use; falls back to the manifest URL. */
   browserUrl?: string;
   failureKind?: DemoRuntimePreflightFailureKind;
   failureReason?: string;
   localUrl?: string;
+  /** Provider-hosted public URL, when the provider can expose one. */
   previewUrl?: string;
   serverLog?: string;
   cleanup?: () => Promise<void>;
@@ -26,8 +28,7 @@ export type SandboxValidationOutput = {
 /**
  * Runs untrusted submitted project code inside an isolated sandbox.
  * Implementations must honor the Preparation Manifest dependency-install
- * strategy, seal the runtime network boundary before the demo command runs,
- * and report any blocked boundary attempts.
+ * strategy and report any observed runtime boundary attempts.
  */
 export interface SandboxRunner {
   runValidation(
