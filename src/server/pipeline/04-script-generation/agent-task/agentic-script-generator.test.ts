@@ -102,6 +102,7 @@ describe("AgenticScriptGenerator", () => {
       expect.objectContaining({ localUrl: "http://localhost:3000", signal }),
     ]);
     expect(controller.resets).toBe(1);
+    expect(agent.runner.calls[0]).not.toHaveProperty("deadlineCeilingAt");
   });
 
   it("resumes the retained Agent Session and returns an interactive Demo Script", async () => {
@@ -132,6 +133,7 @@ describe("AgenticScriptGenerator", () => {
       stage: "script-generation",
     });
     expect(agent.runner.calls[0]?.hardDeadlineAt).toBe(deadlineAt);
+    expect(agent.runner.calls[0]?.deadlineCeilingAt).toBe(deadlineAt);
     expect(agent.runner.calls[0]?.taskPrompt.length).toBeLessThan(35_000);
   });
 

@@ -80,6 +80,9 @@ export class AgenticCapturePathRepairer {
       try {
         return await this.options.runner.run({
           attempt: input.attempt,
+          ...(input.deadlineAt === undefined
+            ? {}
+            : { deadlineCeilingAt: input.deadlineAt }),
           taskPrompt: createCapturePathRepairPrompt(
             input,
             browserController !== undefined,

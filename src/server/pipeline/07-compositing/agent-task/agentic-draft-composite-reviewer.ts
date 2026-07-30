@@ -98,6 +98,9 @@ export class AgenticDraftCompositeReviewer {
     );
     const result = await this.options.runner.run({
       attempt: input.attempt,
+      ...(input.deadlineAt === undefined
+        ? {}
+        : { deadlineCeilingAt: input.deadlineAt }),
       taskPrompt: createDraftCompositeReviewPrompt(input),
       session: input.agentSession,
       ...(input.signal === undefined ? {} : { signal: input.signal }),

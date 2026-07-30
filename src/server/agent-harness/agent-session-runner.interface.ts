@@ -73,6 +73,8 @@ export type AgentToolProtocol<T> = {
 
 export type AgentSessionRunInput<T = never> = {
   attempt: number;
+  /** Immutable Pipeline deadline; retry extensions must never pass it. */
+  deadlineCeilingAt?: number;
   hardDeadlineAt: number;
   hardTimeoutMs: number;
   inactivityLabel?: string;
@@ -85,6 +87,14 @@ export type AgentSessionRunInput<T = never> = {
   tools?: readonly AgentToolDefinition[];
   /** Receives reasoning text or summaries explicitly exposed by the provider. */
   onReasoning?: (content: string) => void;
+  /**
+   * Receives bounded, provider-neutral audit metadata for a harness lifecycle
+   * event. Implementations must never include provider error text or secrets.
+   */
+  onAudit?: (
+    event: string,
+    metadata: Readonly<Record<string, boolean | number | string>>,
+  ) => void;
   onStderr?: (chunk: string) => void;
   onStdout?: (chunk: string) => void;
   /** Receives complete provider-emitted tool lifecycle data. */
@@ -98,7 +108,12 @@ export type AgentSessionRunInput<T = never> = {
 /** Provider-neutral input supplied by a Pipeline Stage to a bound task runner. */
 export type AgentTaskRunInput<T = never> = Omit<
   AgentSessionRunInput<T>,
-  "onReasoning" | "onStderr" | "onStdout" | "onToolExecution" | "profile"
+  | "onAudit"
+  | "onReasoning"
+  | "onStderr"
+  | "onStdout"
+  | "onToolExecution"
+  | "profile"
 >;
 
 export type AgentSessionRunResult<T = never> = {

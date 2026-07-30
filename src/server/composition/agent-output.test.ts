@@ -81,6 +81,20 @@ describe("createAgentOutputRouter", () => {
       length: toolOutput.length,
       outputType: "tool",
     });
+    router.agentTasks.onEvent({
+      event: "agent-task.provider-retry",
+      kind: "audit",
+      metadata: {
+        appliedDelayMs: 2_000,
+        attempt: 1,
+        capped: false,
+        cumulativeDelayMs: 2_000,
+        delayMs: 2_000,
+        maxAttempts: 3,
+        reason: "rate-limit",
+        requestedDelayMs: 2_000,
+      },
+    });
     await router.close();
 
     expect(standard).toEqual(["repo\n", "script\n", providerReasoning]);
@@ -117,6 +131,25 @@ describe("createAgentOutputRouter", () => {
     expect(scriptLog).toContain('"eventType":"agent-task.tool-used"');
     expect(scriptLog).toContain('"tool":"read"');
     expect(primaryLog).toContain('"source":"agent-harness"');
+    expect(primaryLog).toContain('"eventType":"agent-task.provider-retry"');
+    expect(primaryLog).toContain('"level":"warn"');
+    const retryWarning = primaryLog
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .find((entry) => entry.eventType === "agent-task.provider-retry");
+    expect(retryWarning).toMatchObject({
+      eventType: "agent-task.provider-retry",
+      level: "warn",
+      metadata: {
+        appliedDelayMs: 2_000,
+        capped: false,
+        reason: "rate-limit",
+      },
+    });
+    expect(JSON.stringify(retryWarning)).not.toMatch(
+      /org_|https?:|credential|token/i,
+    );
   });
 });
 

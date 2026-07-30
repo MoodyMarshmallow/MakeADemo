@@ -85,9 +85,12 @@ function createAgentOutputLog(logPath: string) {
     hasWriteError = true;
     firstWriteError = error;
   };
-  const appendEntry = (entry: Record<string, unknown>) => {
+  const appendEntry = (
+    entry: Record<string, unknown>,
+    level: "info" | "warn" = "info",
+  ) => {
     pendingWrites = pendingWrites
-      .then(() => logger.info(entry, "Agent harness output."))
+      .then(() => logger[level](entry, "Agent harness output."))
       .catch(rememberWriteError);
   };
 
@@ -108,7 +111,12 @@ function createAgentOutputLog(logPath: string) {
     },
     logPath,
     writeEvent(event: AgentTaskEvent) {
-      appendEntry(createAuditEntry(event));
+      appendEntry(
+        createAuditEntry(event),
+        event.kind === "audit" && event.event === "agent-task.provider-retry"
+          ? "warn"
+          : "info",
+      );
     },
   };
 }

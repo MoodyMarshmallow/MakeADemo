@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   ModelRuntime,
+  SettingsManager,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
@@ -183,6 +184,38 @@ describe("PiAgentSession", () => {
       expect.arrayContaining(["resolve-library-id", "query-docs"]),
     );
     created.session.dispose();
+  });
+
+  it("pins the provider retry policy in the isolated Pi settings", async () => {
+    const settings = vi.spyOn(SettingsManager, "inMemory");
+    const { result } = createRawPiSdkSession();
+    const runner = new PiAgentSession({
+      createSdkSession: vi.fn(async () => result) as never,
+      modelRuntime: {
+        getModel: vi.fn(() => ({ id: "test-model" }) as never),
+      },
+    });
+
+    try {
+      await runner.run({
+        attempt: 1,
+        hardDeadlineAt: Date.now() + 1_000,
+        hardTimeoutMs: 1_000,
+        inactivityTimeoutMs: 1_000,
+        profile,
+        stage: "test",
+        taskPrompt: "use retry settings",
+        workspace: workspaceStub(),
+      });
+
+      expect(settings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          retry: { baseDelayMs: 2_000, enabled: true, maxRetries: 3 },
+        }),
+      );
+    } finally {
+      settings.mockRestore();
+    }
   });
 
   it("uses backend provider keys without repeating the model catalog refresh", async () => {
@@ -1149,6 +1182,270 @@ describe("PiAgentSession", () => {
     const result = await resultPromise;
     expect(result.exitCode).toBe(0);
     expect(result.providerError).toBeUndefined();
+  });
+
+  it("recovers from a retryable provider error without retaining a sticky failure", async () => {
+    const { factory, sessions } = createSessionFactory();
+    const runner = new PiAgentSession({
+      createSession: factory,
+      resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
+    });
+    const audits: Array<Record<string, boolean | number | string>> = [];
+    const tools: string[] = [];
+    const resultPromise = runner.run({
+      attempt: 1,
+      hardDeadlineAt: Date.now() + 1_000,
+      hardTimeoutMs: 1_000,
+      inactivityTimeoutMs: 1_000,
+      onAudit: (_event, metadata) => audits.push(metadata),
+      onToolExecution: (event) => tools.push(`${event.name}:${event.status}`),
+      profile,
+      stage: "test",
+      taskPrompt: "retry",
+      workspace: workspaceStub(),
+    });
+    await vi.waitFor(() => expect(sessions[0]?.subscribe).toHaveBeenCalled());
+    const session = sessions[0];
+    if (session === undefined) throw new Error("Expected Pi session.");
+    session.emit({
+      messages: [
+        {
+          errorMessage: "rate limit for org_123 at https://example.test",
+          role: "assistant",
+          stopReason: "error",
+        },
+      ],
+      type: "agent_end",
+      willRetry: true,
+    });
+    session.emit({
+      attempt: 1,
+      delayMs: 2_000,
+      errorMessage: "rate limit for org_123 at https://example.test",
+      maxAttempts: 3,
+      type: "auto_retry_start",
+    });
+    session.state.messages = [
+      {
+        content: [{ text: "recovered", type: "text" }],
+        role: "assistant",
+      },
+    ];
+    session.emit({
+      attempt: 1,
+      success: true,
+      type: "auto_retry_end",
+    });
+    session.emit({
+      args: { path: "package.json" },
+      toolCallId: "read-once",
+      toolName: "read",
+      type: "tool_execution_start",
+    });
+    session.emit({
+      isError: false,
+      result: { content: [] },
+      toolCallId: "read-once",
+      toolName: "read",
+      type: "tool_execution_end",
+    });
+    session.emit({
+      messages: [{ role: "assistant", stopReason: "stop" }],
+      type: "agent_end",
+      willRetry: false,
+    });
+
+    await expect(resultPromise).resolves.toMatchObject({ exitCode: 0 });
+    expect(audits).toEqual([
+      expect.objectContaining({
+        appliedDelayMs: 2_000,
+        appliedHardTimeoutExtensionMs: 2_000,
+        appliedInactivityTimeoutExtensionMs: 2_000,
+        attempt: 1,
+        capped: false,
+        cumulativeDelayMs: 2_000,
+        delayMs: 2_000,
+        maxAttempts: 3,
+        reason: "rate-limit",
+        requestedDelayMs: 2_000,
+      }),
+    ]);
+    expect(JSON.stringify(audits)).not.toContain("org_123");
+    expect(JSON.stringify(audits)).not.toContain("example.test");
+    expect(tools).toEqual(["read:started", "read:completed"]);
+  });
+
+  it("cancels immediately during provider backoff without issuing another prompt", async () => {
+    const base = createSessionFactory();
+    const createSession: PiSessionFactory = vi.fn(async (input) => {
+      const created = await base.factory(input);
+      created.session.prompt = vi.fn(() => new Promise<void>(() => undefined));
+      return created;
+    });
+    const runner = new PiAgentSession({
+      createSession,
+      resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
+    });
+    const controller = new AbortController();
+    const reason = new Error("pipeline cancelled");
+    const resultPromise = runner.run({
+      attempt: 1,
+      hardDeadlineAt: Date.now() + 10_000,
+      hardTimeoutMs: 10_000,
+      inactivityTimeoutMs: 10_000,
+      profile,
+      signal: controller.signal,
+      stage: "test",
+      taskPrompt: "retry",
+      workspace: workspaceStub(),
+    });
+    await vi.waitFor(() =>
+      expect(base.sessions[0]?.subscribe).toHaveBeenCalled(),
+    );
+    base.sessions[0]?.emit({
+      attempt: 1,
+      delayMs: 2_000,
+      errorMessage: "rate limit exceeded",
+      maxAttempts: 3,
+      type: "auto_retry_start",
+    });
+
+    controller.abort(reason);
+    base.sessions[0]?.emit({
+      attempt: 1,
+      finalError: "Retry cancelled",
+      success: false,
+      type: "auto_retry_end",
+    });
+
+    await expect(resultPromise).rejects.toBe(reason);
+    expect(base.sessions[0]?.abort).toHaveBeenCalledTimes(1);
+    expect(base.sessions[0]?.prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the final provider failure after the retry budget is exhausted", async () => {
+    const { factory, sessions } = createSessionFactory();
+    const runner = new PiAgentSession({
+      createSession: factory,
+      resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
+    });
+    const resultPromise = runner.run({
+      attempt: 1,
+      hardDeadlineAt: Date.now() + 1_000,
+      hardTimeoutMs: 1_000,
+      inactivityTimeoutMs: 1_000,
+      profile,
+      stage: "test",
+      taskPrompt: "retry",
+      workspace: workspaceStub(),
+    });
+    await vi.waitFor(() => expect(sessions[0]?.subscribe).toHaveBeenCalled());
+    const finalError = "429 retry budget exhausted";
+    sessions[0]?.emit({
+      attempt: 3,
+      finalError,
+      success: false,
+      type: "auto_retry_end",
+    });
+    sessions[0]?.emit({
+      messages: [
+        { errorMessage: finalError, role: "assistant", stopReason: "error" },
+      ],
+      type: "agent_end",
+      willRetry: false,
+    });
+
+    await expect(resultPromise).resolves.toMatchObject({
+      exitCode: 1,
+      providerError: finalError,
+    });
+  });
+
+  it("accumulates provider-authoritative exponential backoff extensions", async () => {
+    const { factory, sessions } = createSessionFactory();
+    const runner = new PiAgentSession({
+      createSession: factory,
+      resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
+    });
+    const audits: Array<Record<string, boolean | number | string>> = [];
+    const resultPromise = runner.run({
+      attempt: 1,
+      hardDeadlineAt: Date.now() + 1_000,
+      hardTimeoutMs: 1_000,
+      inactivityTimeoutMs: 1_000,
+      onAudit: (_event, metadata) => audits.push(metadata),
+      profile,
+      stage: "test",
+      taskPrompt: "retry",
+      workspace: workspaceStub(),
+    });
+    await vi.waitFor(() => expect(sessions[0]?.subscribe).toHaveBeenCalled());
+    for (const [attempt, delayMs] of [
+      [1, 2_000],
+      [2, 4_000],
+      [3, 8_000],
+    ] as const) {
+      sessions[0]?.emit({
+        attempt,
+        delayMs,
+        errorMessage: "temporary upstream failure",
+        maxAttempts: 3,
+        type: "auto_retry_start",
+      });
+    }
+
+    await expect(resultPromise).resolves.toMatchObject({ exitCode: 0 });
+    expect(audits.map((entry) => entry.cumulativeDelayMs)).toEqual([
+      2_000, 6_000, 14_000,
+    ]);
+    expect(audits.map((entry) => entry.reason)).toEqual([
+      "transient-provider-failure",
+      "transient-provider-failure",
+      "transient-provider-failure",
+    ]);
+  });
+
+  it("caps hard extension at the immutable Pipeline deadline while excluding the full provider sleep", async () => {
+    const { factory, sessions } = createSessionFactory();
+    const runner = new PiAgentSession({
+      createSession: factory,
+      resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
+    });
+    const hardDeadlineAt = Date.now() + 1_000;
+    const audits: Array<Record<string, boolean | number | string>> = [];
+    const resultPromise = runner.run({
+      attempt: 1,
+      deadlineCeilingAt: hardDeadlineAt + 5_000,
+      hardDeadlineAt,
+      hardTimeoutMs: 1_000,
+      inactivityTimeoutMs: 1_000,
+      onAudit: (_event, metadata) => audits.push(metadata),
+      profile,
+      stage: "test",
+      taskPrompt: "retry",
+      workspace: workspaceStub(),
+    });
+    await vi.waitFor(() => expect(sessions[0]?.subscribe).toHaveBeenCalled());
+    sessions[0]?.emit({
+      attempt: 1,
+      delayMs: 40_000,
+      errorMessage: "rate_limit response 429",
+      maxAttempts: 3,
+      type: "auto_retry_start",
+    });
+
+    await expect(resultPromise).resolves.toMatchObject({ exitCode: 0 });
+    expect(audits).toEqual([
+      expect.objectContaining({
+        appliedDelayMs: 5_000,
+        appliedHardTimeoutExtensionMs: 5_000,
+        appliedInactivityTimeoutExtensionMs: 40_000,
+        capped: true,
+        cumulativeDelayMs: 5_000,
+        reason: "rate-limit",
+        requestedDelayMs: 40_000,
+      }),
+    ]);
   });
 
   it("preserves a genuine provider error after an intentional handoff interrupt", async () => {

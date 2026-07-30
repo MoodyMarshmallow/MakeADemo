@@ -28,6 +28,7 @@ import {
 } from "./pi-event-adapter";
 import {
   createPiActivityTracker,
+  createPiRetryBackoff,
   runWithPiActivityTimeout,
 } from "./pi-meaningful-activity-timeout";
 import { createPiResourceLoader } from "./pi-resource-loader";
@@ -38,6 +39,12 @@ const defaultAgentDirectory = "/tmp/makeademo/pi-agent";
 const interruptionSettlementTimeoutMs = 1_000;
 const builtinToolNames = ["read", "bash", "edit", "write"] as const;
 const context7ToolNames = ["resolve-library-id", "query-docs"] as const;
+const retryPolicy = {
+  baseDelayMs: 2_000,
+  enabled: true,
+  maxRetries: 3,
+} as const;
+const maxRetryTimeoutExtensionMs = 30_000;
 
 /** Minimal provider runtime methods used by the harness. */
 export type PiModelRuntime = Pick<ModelRuntime, "getModel"> & {
@@ -200,12 +207,20 @@ export class PiAgentSession implements AgentSessionRunner {
       ]);
       await interruption.throwIfExternallyCancelled();
       const activity = createPiActivityTracker();
+      const deadlineCeilingAt =
+        input.deadlineCeilingAt ?? Number.POSITIVE_INFINITY;
+      const retryBackoff = createPiRetryBackoff(
+        activity,
+        input.hardDeadlineAt,
+        deadlineCeilingAt,
+      );
       const stdoutChunks: string[] = [];
       const stderrChunks: string[] = [];
       let handoff: T | undefined;
       let handoffError: string | undefined;
       let latestToolName: string | undefined;
       let providerError: string | undefined;
+      let cumulativeRetryDelayMs = 0;
       let timeoutError: AgentSessionTimeoutError | undefined;
       const toolArguments = new Map<string, unknown>();
       const reasoningBuffers = new Map<number, string>();
@@ -266,6 +281,37 @@ export class PiAgentSession implements AgentSessionRunner {
       const processEvent = (rawEvent: unknown) => {
         const event = rawEvent as Parameters<typeof readPiTextDelta>[0];
         activity.observe(event.type);
+        if (event.type === "auto_retry_start") {
+          const requestedDelayMs = Math.max(0, event.delayMs);
+          const availableDelayMs = Math.max(
+            0,
+            Math.min(
+              maxRetryTimeoutExtensionMs - cumulativeRetryDelayMs,
+              deadlineCeilingAt - input.hardDeadlineAt - cumulativeRetryDelayMs,
+            ),
+          );
+          const appliedDelayMs = Math.min(requestedDelayMs, availableDelayMs);
+          cumulativeRetryDelayMs += appliedDelayMs;
+          retryBackoff.start({
+            hardExtensionMs: appliedDelayMs,
+            sleepDelayMs: requestedDelayMs,
+          });
+          const metadata = {
+            appliedDelayMs,
+            appliedHardTimeoutExtensionMs: appliedDelayMs,
+            appliedInactivityTimeoutExtensionMs: requestedDelayMs,
+            attempt: event.attempt,
+            capped: appliedDelayMs !== requestedDelayMs,
+            cumulativeDelayMs: cumulativeRetryDelayMs,
+            delayMs: requestedDelayMs,
+            maxAttempts: event.maxAttempts,
+            reason: readSafeRetryReason(event.errorMessage),
+            requestedDelayMs,
+          };
+          input.onAudit?.("agent-task.provider-retry", metadata);
+        } else if (event.type === "auto_retry_end") {
+          retryBackoff.clear();
+        }
         const text = readPiTextDelta(event);
         if (text !== undefined) emit("stdout", text);
         const reasoning = readPiReasoningEvent(event);
@@ -328,9 +374,12 @@ export class PiAgentSession implements AgentSessionRunner {
             }
           }
         }
-        const eventError = readPiProviderError(event, {
-          ignoreAborted: interruption.interrupted,
-        });
+        const eventError =
+          event.type === "agent_end" && event.willRetry
+            ? undefined
+            : readPiProviderError(event, {
+                ignoreAborted: interruption.interrupted,
+              });
         if (eventError !== undefined) {
           flushPendingReasoning();
           providerError = eventError;
@@ -344,6 +393,7 @@ export class PiAgentSession implements AgentSessionRunner {
         await interruption.race(
           runWithPiActivityTimeout({
             activity,
+            backoff: retryBackoff,
             hardDeadlineAt: input.hardDeadlineAt,
             hardTimeoutMs: input.hardTimeoutMs,
             ...(input.inactivityLabel === undefined
@@ -353,6 +403,7 @@ export class PiAgentSession implements AgentSessionRunner {
             label: input.profile.label,
             onTimeout: () => interruption.interrupt("timeout"),
             run: () => retained.providerSession.prompt(input.taskPrompt),
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
           }),
         );
       } catch (error) {
@@ -632,6 +683,7 @@ export class PiAgentSession implements AgentSessionRunner {
     const settingsManager = SettingsManager.inMemory({
       defaultModel: input.modelID,
       defaultProvider: input.providerID,
+      retry: retryPolicy,
     });
     const resourceLoader = await createPiResourceLoader({
       agentDir: input.agentDir,
@@ -920,4 +972,12 @@ function isIntentionalAbortStateError(message: string): boolean {
     "request aborted",
     "request was aborted",
   ].includes(normalized);
+}
+
+function readSafeRetryReason(
+  errorMessage: string,
+): "rate-limit" | "transient-provider-failure" {
+  return /rate[_ -]?limit|too many requests|\b429\b/i.test(errorMessage)
+    ? "rate-limit"
+    : "transient-provider-failure";
 }

@@ -101,6 +101,9 @@ export class AgenticScriptGenerator implements ScriptGenerationAgent {
         try {
           return await this.runner.run({
             attempt,
+            ...(input.deadlineAt === undefined
+              ? {}
+              : { deadlineCeilingAt: input.deadlineAt }),
             taskPrompt: prompt,
             session: input.agentSession,
             ...(input.signal === undefined ? {} : { signal: input.signal }),

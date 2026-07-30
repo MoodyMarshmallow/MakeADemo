@@ -414,6 +414,9 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         try {
           return await this.runner.run({
             attempt: attempt + 1,
+            ...(input.deadlineAt === undefined
+              ? {}
+              : { deadlineCeilingAt: input.deadlineAt }),
             hardDeadlineAt,
             hardTimeoutMs: this.hardTimeoutMs,
             inactivityLabel: "Repo Preparation agent",

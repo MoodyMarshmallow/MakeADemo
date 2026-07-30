@@ -71,6 +71,8 @@ export function bindAgentTaskRunner(
       try {
         const result = await runner.run({
           ...input,
+          onAudit: (event, metadata) =>
+            recordEvent({ event, kind: "audit", metadata }),
           onReasoning: (content) =>
             emitOutput("standard", formatReasoning(content), "reasoning"),
           onStderr: (chunk) => emitOutput("diagnostic", chunk, "diagnostic"),

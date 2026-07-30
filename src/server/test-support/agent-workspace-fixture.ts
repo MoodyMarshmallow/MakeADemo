@@ -44,12 +44,21 @@ export class RecordingAgentTaskRunner implements AgentTaskRunner {
   readonly calls: Array<
     Pick<
       AgentTaskRunInput,
-      "hardDeadlineAt" | "session" | "signal" | "stage" | "taskPrompt" | "tools"
+      | "deadlineCeilingAt"
+      | "hardDeadlineAt"
+      | "session"
+      | "signal"
+      | "stage"
+      | "taskPrompt"
+      | "tools"
     >
   > = [];
 
   async run<T>(input: AgentTaskRunInput<T>): Promise<AgentTaskRunResult<T>> {
     this.calls.push({
+      ...(input.deadlineCeilingAt === undefined
+        ? {}
+        : { deadlineCeilingAt: input.deadlineCeilingAt }),
       hardDeadlineAt: input.hardDeadlineAt,
       stage: input.stage,
       taskPrompt: input.taskPrompt,
