@@ -130,6 +130,7 @@ export class PiAgentSession implements AgentSessionRunner {
     input: AgentSessionRunInput<T>,
   ): Promise<AgentSessionRunResult<T>> {
     const interruption = createPiRunInterruption(input);
+    const setupActivity = createPiActivityTracker();
     try {
       await interruption.throwIfExternallyCancelled();
       const retainedPromise = this.getOrCreateSession(input);
@@ -138,7 +139,7 @@ export class PiAgentSession implements AgentSessionRunner {
           const providerAbort = interruption.attachProvider(
             session.providerSession,
           );
-          if (!interruption.externallyCancelled) return;
+          if (!interruption.interrupted) return;
           if (providerAbort !== undefined) {
             await settleInterruption(
               Promise.resolve(providerAbort).then(() => undefined),
@@ -149,7 +150,20 @@ export class PiAgentSession implements AgentSessionRunner {
         () => undefined,
       );
       interruption.attachCleanup(lateSessionOwnership);
-      const retained = await interruption.race(retainedPromise);
+      const retained = await interruption.race(
+        runWithPiActivityTimeout({
+          activity: setupActivity,
+          hardDeadlineAt: input.hardDeadlineAt,
+          hardTimeoutMs: input.hardTimeoutMs,
+          ...(input.inactivityLabel === undefined
+            ? {}
+            : { inactivityLabel: input.inactivityLabel }),
+          inactivityTimeoutMs: input.inactivityTimeoutMs,
+          label: input.profile.label,
+          onTimeout: () => interruption.interrupt("timeout"),
+          run: () => retainedPromise,
+        }),
+      );
       interruption.attachProvider(retained.providerSession);
       const workspaceRebind = this.rebindWorkspaceTools(
         retained,
@@ -576,14 +590,24 @@ export class PiAgentSession implements AgentSessionRunner {
       );
       return this.modelRuntimePromise;
     }
-    this.modelRuntimePromise ??= this.configureProviderApiKeys(
-      this.options.createModelRuntime?.() ??
-        ModelRuntime.create({
-          credentials: new InMemoryCredentialStore(),
-          modelsPath: null,
-        }),
-    );
+    this.modelRuntimePromise ??=
+      this.options.createModelRuntime === undefined
+        ? this.createDefaultModelRuntime()
+        : this.configureProviderApiKeys(this.options.createModelRuntime());
     return this.modelRuntimePromise;
+  }
+
+  private async createDefaultModelRuntime(): Promise<PiModelRuntime> {
+    const credentials = new InMemoryCredentialStore();
+    for (const [providerID, apiKey] of Object.entries(
+      this.options.providerApiKeys ?? {},
+    )) {
+      await credentials.modify(providerID, async () => ({
+        key: apiKey,
+        type: "api_key",
+      }));
+    }
+    return ModelRuntime.create({ credentials, modelsPath: null });
   }
 
   private async configureProviderApiKeys(

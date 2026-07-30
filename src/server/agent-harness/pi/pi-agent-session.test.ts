@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import {
+  ModelRuntime,
+  type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 
 import type { AgentSession } from "../agent-session";
 import type { AgentSessionProfile } from "../agent-session-runner.interface";
@@ -180,6 +183,54 @@ describe("PiAgentSession", () => {
       expect.arrayContaining(["resolve-library-id", "query-docs"]),
     );
     created.session.dispose();
+  });
+
+  it("uses backend provider keys without repeating the model catalog refresh", async () => {
+    vi.stubEnv("PI_OFFLINE", "1");
+    const setRuntimeApiKey = vi
+      .spyOn(ModelRuntime.prototype, "setRuntimeApiKey")
+      .mockImplementation(() => new Promise<void>(() => undefined));
+    const base = createSessionFactory();
+    const createSession: PiSessionFactory = vi.fn(async (input) => {
+      const created = await base.factory(input);
+      created.session.prompt = vi.fn(async () => undefined);
+      return created;
+    });
+    const runner = new PiAgentSession({
+      createSession,
+      providerApiKeys: { openai: "test-openai-key" },
+    });
+
+    try {
+      await expect(
+        runner.run({
+          attempt: 1,
+          hardDeadlineAt: Date.now() + 1_000,
+          hardTimeoutMs: 1_000,
+          inactivityTimeoutMs: 100,
+          profile: {
+            ...profile,
+            modelID: "gpt-5.6-terra",
+            providerID: "openai",
+          },
+          stage: "test",
+          taskPrompt: "use the configured provider",
+          workspace: workspaceStub(),
+        }),
+      ).resolves.toMatchObject({ exitCode: 0 });
+      expect(setRuntimeApiKey).not.toHaveBeenCalled();
+
+      const runtime = await (
+        runner as unknown as { getModelRuntime: () => Promise<ModelRuntime> }
+      ).getModelRuntime();
+      await expect(runtime.getAuth("openai")).resolves.toMatchObject({
+        auth: { apiKey: "test-openai-key" },
+      });
+    } finally {
+      await runner.dispose();
+      setRuntimeApiKey.mockRestore();
+      vi.unstubAllEnvs();
+    }
   });
 
   it("applies thinking-level changes when a retained model stays the same", async () => {
@@ -980,6 +1031,39 @@ describe("PiAgentSession", () => {
 
     resolveCancel();
     await expect(resultPromise).rejects.toThrow(/timed out/);
+  });
+
+  it("times out when initial provider session setup never settles", async () => {
+    const cancelActiveCommands = vi.fn();
+    const runner = new PiAgentSession({
+      createSession: vi.fn(() => new Promise<never>(() => undefined)),
+      resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
+    });
+
+    const result = runner.run({
+      attempt: 1,
+      hardDeadlineAt: Date.now() + 1_000,
+      hardTimeoutMs: 1_000,
+      inactivityLabel: "Repo Preparation agent",
+      inactivityTimeoutMs: 20,
+      profile,
+      stage: "repo-preparation",
+      taskPrompt: "prepare",
+      workspace: { cancelActiveCommands, ...workspaceStub() },
+    });
+
+    await expect(
+      Promise.race([
+        result,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("session setup hung")), 1_500),
+        ),
+      ]),
+    ).rejects.toMatchObject({
+      name: "AgentSessionTimeoutError",
+      timeoutKind: "inactivity",
+    });
+    expect(cancelActiveCommands).toHaveBeenCalledTimes(1);
   });
 
   it("bounds a hanging workspace cancellation without losing an accepted handoff", async () => {
