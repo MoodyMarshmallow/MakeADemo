@@ -6,7 +6,10 @@ import {
 import type { PipelineEventLogger } from "../../../shared/logging/pipeline-event-logger";
 import { createGitCloneCommand } from "../../02-repo-security-screen/repository-loading/git-clone-command";
 import { runGitCloneWithTransientRetry } from "../../02-repo-security-screen/repository-loading/git-clone-retry";
-import type { PreparationWorkspace } from "../preparation-workspace.interface";
+import type {
+  PreparationWorkspace,
+  PreparationWorkspaceCommandResult,
+} from "../preparation-workspace.interface";
 const diagnosticValueMaxLength = 500;
 const outputChannelMaxLength = 750;
 const outputMaxLength = 1_500;
@@ -86,7 +89,10 @@ export async function bootstrapRepoPreparationWorkspace(input: {
 async function readSourceControlledPaths(
   workspace: PreparationWorkspace,
 ): Promise<string[]> {
-  const result = await workspace.execute("git -C /workspace ls-files -z");
+  const result = await executeRepositoryCommand(
+    workspace,
+    "git -C /workspace ls-files -z",
+  );
   if (result.exitCode !== 0) {
     throw new Error("Failed to inventory source-controlled submitted paths.");
   }
@@ -100,10 +106,23 @@ async function cloneParent(
 ) {
   return await runGitCloneWithTransientRetry({
     clone: () =>
-      workspace.execute(createCloneCommand(repoUrl, commitSha), {
-        timeoutMs: 120_000,
-      }),
+      executeRepositoryCommand(
+        workspace,
+        createCloneCommand(repoUrl, commitSha),
+        {
+          timeoutMs: 120_000,
+        },
+      ),
   });
+}
+
+function executeRepositoryCommand(
+  workspace: PreparationWorkspace,
+  command: string,
+  options?: Parameters<PreparationWorkspace["execute"]>[1],
+): Promise<PreparationWorkspaceCommandResult> {
+  const execute = workspace.executeRepositoryCommand ?? workspace.execute;
+  return execute.call(workspace, command, options);
 }
 
 async function cloneSubmittedCode(

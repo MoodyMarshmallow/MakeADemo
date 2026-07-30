@@ -123,6 +123,27 @@ greater. It ignores ambient Railway
 tokens and does not include fixture upload, browser validation, or other full
 preflight work.
 
+## Cross-process create isolation regression
+
+The SDK gateway adds a cryptographically random, non-secret
+`MAKEADEMO_RAILWAY_SANDBOX_INSTANCE_NONCE` variable to every create request.
+It exists only to prevent Railway from coalescing byte-identical concurrent
+create mutations; submitted callers cannot set or override the reserved key.
+
+The opt-in regression harness starts two independent OS processes. Each process
+creates one Repo Security-shaped sandbox followed by two concurrent Repo
+Preparation-shaped sandboxes. The harness requires six distinct returned ids,
+writes a different marker at the same path in every sandbox, verifies all six
+markers stayed isolated, and destroys only those exact returned ids. It does
+not use inventory and therefore makes no exhaustive-list claim.
+
+```sh
+RUN_RAILWAY_SANDBOX_CROSS_PROCESS_ISOLATION=1 \
+MAKEADEMO_RAILWAY_SANDBOX_PROJECT_TOKEN=... \
+MAKEADEMO_RAILWAY_SANDBOX_ENVIRONMENT_ID=... \
+bun run railway:sandbox-cross-process-isolation
+```
+
 Optional checks:
 
 - `RAILWAY_POC_PUBLIC_URLS`: whitespace/comma-separated HTTPS URLs (defaults

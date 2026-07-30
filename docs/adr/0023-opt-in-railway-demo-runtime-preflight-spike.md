@@ -26,6 +26,14 @@ inherited credentials. Railway cleanup destroys exact run-owned sandbox IDs;
 unlike Daytona's normal release, it does not stop and archive usable workspaces.
 No public preview or user-facing provider selection is part of this spike.
 
+`ISOLATED` retains Railway public NAT egress while denying access to the
+environment private network. Railway-selected whole-Pipeline benchmarks also
+select the explicit `unrestricted-public` runtime policy: app subresources,
+public APIs, validation, and capture may use public egress. This does not expose
+Railway private DNS, inherit backend credentials, or relax the submitted-runtime
+environment allowlist. Daytona and the default production path retain the
+existing loopback-only browser/capture policy.
+
 The recorded POC proves the pinned SDK's core lifecycle and execution seam:
 two isolated sandboxes can be created concurrently, listed and reconnected,
 stream stdout and stderr, detach and reattach a durable session when Railway
@@ -50,9 +58,10 @@ The whole-Pipeline benchmark is evidence that the selected Railway adapter can
 exercise the existing stage sequence only when every stage's capture and
 compositing prerequisites are present. A successful machine run must still be
 reported with its provider, pinned repository commit, and full-Pipeline result;
-it does not award manual L6 verification. The Railway browser path remains
-loopback-only, so it does not establish a public preview URL or remote-browser
-reachability contract.
+it does not award manual L6 verification. The Railway browser remains inside
+the sandbox and navigation stays anchored to the prepared app. Public
+subresources and APIs are allowed, but this does not establish a public preview
+URL or remote-browser reachability contract.
 
 Promotion beyond the spike requires a pinned image/toolchain containing the
 capture prerequisites (including Chromium, Playwright, and FFmpeg), measured
@@ -64,8 +73,8 @@ gate is accepted, Railway is neither a fallback nor a replacement for the
 Daytona production path, and no public preview is exposed.
 
 This ADR intentionally records an evaluation boundary and its non-goals: it
-does not make Railway a production fallback, alter Capture Path Validation
-contracts, promise sandbox-firewall network lockdown, expose a public preview,
+does not make Railway a production fallback, alter the default Daytona Capture
+Path Validation policy, promise sandbox-firewall network lockdown, expose a public preview,
 or authorize ambient credentials. Any future promotion must be a separate
 decision that preserves the provider-neutral seams and the existing Daytona
 production ADRs.

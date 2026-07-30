@@ -51,7 +51,7 @@ describe("Railway production sandbox provider", () => {
 
   it("keeps capture Bun and playwright-cli as separate immutable template capabilities", () => {
     expect(railwayProductionTemplateRecipe.revision).toBe(
-      "makeademo-railway-pipeline-v2",
+      "makeademo-railway-pipeline-v4",
     );
     const commands = railwayProductionTemplateRecipe.commands.join("\n");
     expect(commands).toContain("bun-v1.2.22");
@@ -69,6 +69,41 @@ describe("Railway production sandbox provider", () => {
       "/opt/makeademo/capture-runtime/bin/playwright-cli",
     );
   });
+
+  it("provides the remote agent shell with verified ripgrep without adding trusted Node to its PATH", () => {
+    const commands = railwayProductionTemplateRecipe.commands.join("\n");
+
+    expect(railwayProductionTemplateRecipe.packages.system).toContain(
+      "ripgrep",
+    );
+    expect(commands).toContain(
+      "apt-get install -y --no-install-recommends ca-certificates coreutils curl ffmpeg git gpgv ripgrep tar unzip xz-utils",
+    );
+    expect(commands).toContain("command -v rg");
+    expect(commands).toContain("rg --version");
+    expect(commands).not.toContain("/usr/local/bin/node");
+  });
+
+  it("installs trusted parent Node from the pinned checksummed artifact without publishing it through system PATH", () => {
+    const commands = railwayProductionTemplateRecipe.commands.join("\n");
+
+    expect(railwayProductionTemplateRecipe.node.version).toBe("22.23.1");
+    expect(railwayProductionTemplateRecipe.runtimePaths.nodeBin).toBe(
+      "/opt/makeademo/toolchains/node/versions/22.23.1/bin/node",
+    );
+    expect(commands).toContain(
+      'node_archive="node-v22.23.1-linux-${node_arch}.tar.xz"',
+    );
+    expect(commands).toContain("sha256sum --check");
+    expect(commands).toContain(
+      "chown -R root:root /opt/makeademo/playwright-runtime /ms-playwright /opt/makeademo/toolchains/node",
+    );
+    expect(commands).toContain(
+      "chmod -R a-w /opt/makeademo/playwright-runtime /ms-playwright /opt/makeademo/toolchains/node",
+    );
+    expect(commands).not.toContain("/usr/local/bin/node");
+    expect(commands).not.toContain("/usr/local/bin/npm");
+  });
 });
 
 function fakeGateway(events: unknown[]): RailwaySandboxGateway {
@@ -82,9 +117,10 @@ function fakeGateway(events: unknown[]): RailwaySandboxGateway {
     },
     async execute(sandbox, command) {
       events.push({ execute: { command, id: sandbox.id } });
-      const stdout = command.includes("-printf '%P\\t%s\\n'")
+      const repositoryCommand = decodeRepositoryCommand(command);
+      const stdout = repositoryCommand.includes("-printf '%P\\t%s\\n'")
         ? "README.md\t7\npackage.json\t10\n"
-        : command.includes("cat '/workspace/package.json'")
+        : repositoryCommand.includes("cat '/workspace/package.json'")
           ? '{"name":"demo"}\n'
           : "";
       return {
@@ -105,4 +141,11 @@ function fakeGateway(events: unknown[]): RailwaySandboxGateway {
     },
     async writeFile() {},
   };
+}
+
+function decodeRepositoryCommand(command: string): string {
+  const encoded = command.match(/^printf %s '([^']+)' \| base64 --decode/);
+  return encoded?.[1] === undefined
+    ? command
+    : Buffer.from(encoded[1], "base64").toString("utf8");
 }

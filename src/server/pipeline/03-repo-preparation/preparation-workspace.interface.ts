@@ -87,6 +87,17 @@ export interface PreparationWorkspace {
     options?: PreparationWorkspaceExecuteOptions,
   ): Promise<PreparationWorkspaceCommandResult>;
   /**
+   * Executes provider-owned repository clone and Git inventory commands as the
+   * unprivileged owner of `/workspace`. Implementations must scrub inherited
+   * environment variables. Providers without a distinct repository identity
+   * may omit this method; Pipeline bootstrap then preserves the trusted
+   * `execute` behavior used before this seam existed.
+   */
+  executeRepositoryCommand?(
+    command: string,
+    options?: PreparationWorkspaceExecuteOptions,
+  ): Promise<PreparationWorkspaceCommandResult>;
+  /**
    * Executes an agent-authored shell command as the image's unprivileged
    * workspace user. Implementations must keep the trusted root filesystem and
    * helper binaries non-writable, expose no backend environment, and make only

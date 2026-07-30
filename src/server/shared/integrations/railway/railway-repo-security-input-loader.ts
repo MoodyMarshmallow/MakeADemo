@@ -1,4 +1,5 @@
 import {
+  isPipelineCancellationError,
   runSettledPipelineOperation,
   throwIfPipelineDeadlineReached,
 } from "../../../pipeline/00-orchestration/job/pipeline-cancellation";
@@ -6,6 +7,8 @@ import type { RepoSecurityInput } from "../../../pipeline/02-repo-security-scree
 import { createGitCloneCommand } from "../../../pipeline/02-repo-security-screen/repository-loading/git-clone-command";
 import { runGitCloneWithTransientRetry } from "../../../pipeline/02-repo-security-screen/repository-loading/git-clone-retry";
 import type {
+  RepoSecurityInputInfrastructureDiagnostic,
+  RepoSecurityInputInfrastructureFailure,
   RepoSecurityInputLoadInput,
   RepoSecurityInputLoader,
 } from "../../../pipeline/02-repo-security-screen/repository-loading/repo-security-input-loader.interface";
@@ -17,6 +20,34 @@ import type {
 
 const workspacePath = "/workspace";
 const cloneTimeoutMs = 120_000;
+const repositoryUser = "makeademo";
+const repositoryHome = "/home/makeademo";
+const repositoryTemp = "/tmp/makeademo";
+const repositoryPath =
+  "/opt/makeademo/capture-runtime/bin:/usr/local/bin:/usr/bin:/bin";
+
+type RailwayRepoSecurityFailurePhase =
+  RepoSecurityInputInfrastructureDiagnostic["phase"];
+
+/**
+ * A deliberately non-sensitive Railway failure classification for the
+ * controller's durable Repo Security Screen result.
+ */
+export class RailwayRepoSecurityInfrastructureError
+  extends Error
+  implements RepoSecurityInputInfrastructureFailure
+{
+  readonly repoSecurityInputInfrastructureDiagnostic: RepoSecurityInputInfrastructureDiagnostic;
+
+  constructor(phase: RailwayRepoSecurityFailurePhase) {
+    super(`Railway Repo Security infrastructure failed during ${phase}.`);
+    this.name = "RailwayRepoSecurityInfrastructureError";
+    this.repoSecurityInputInfrastructureDiagnostic = {
+      phase,
+      provider: "railway",
+    };
+  }
+}
 
 /**
  * Railway implementation of the static Repo Security Screen loading seam.
@@ -28,35 +59,57 @@ export class RailwayRepoSecurityInputLoader implements RepoSecurityInputLoader {
 
   async load(input: RepoSecurityInputLoadInput): Promise<RepoSecurityInput> {
     let workspace: RailwayRepositoryLoadingWorkspace | undefined;
-    return await runSettledPipelineOperation({
-      deadlineAt: input.deadlineAt,
-      onCancel: async () => workspace?.cancelActiveCommands(),
-      operation: (async () => {
-        throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
-        const created = await RailwayRepositoryLoadingWorkspace.create(
-          this.gateway,
-          input.signal,
-        );
-        workspace = created;
-        try {
-          const clone = await runGitCloneWithTransientRetry({
-            clone: () => created.execute(createCloneCommand(input)),
-            retryThrownErrors: false,
-          });
-          if (clone.exitCode !== 0) {
-            throw new Error(
-              `Railway git clone failed: ${[clone.stderr, clone.stdout].filter(Boolean).join("\n")}`,
-            );
-          }
+    let phase: RailwayRepoSecurityFailurePhase = "template-build-or-create";
+    try {
+      return await runSettledPipelineOperation({
+        deadlineAt: input.deadlineAt,
+        onCancel: async () => workspace?.cancelActiveCommands(),
+        operation: (async () => {
           throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
-          return await inventoryWorkspace(created, input);
-        } finally {
-          await created.release();
-          workspace = undefined;
-        }
-      })(),
-      signal: input.signal,
-    });
+          const created = await RailwayRepositoryLoadingWorkspace.create(
+            this.gateway,
+            input.signal,
+          );
+          workspace = created;
+          let repoSecurityInput: RepoSecurityInput | undefined;
+          let releaseError: unknown;
+          try {
+            phase = "command-or-clone";
+            const clone = await runGitCloneWithTransientRetry({
+              clone: () => created.execute(createCloneCommand(input)),
+              retryThrownErrors: false,
+            });
+            if (clone.exitCode !== 0) {
+              throw new Error("Railway git clone failed.");
+            }
+            throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
+            phase = "inventory";
+            repoSecurityInput = await inventoryWorkspace(created, input);
+          } finally {
+            try {
+              await created.release();
+            } catch (error) {
+              releaseError = error;
+            } finally {
+              workspace = undefined;
+            }
+          }
+          if (releaseError !== undefined) {
+            phase = "release-settlement";
+            throw releaseError;
+          }
+          if (repoSecurityInput === undefined) {
+            throw new Error("Railway Repo Security input was not produced.");
+          }
+          return repoSecurityInput;
+        })(),
+        signal: input.signal,
+      });
+    } catch (error) {
+      if (isPipelineCancellationError(error)) throw error;
+      if (error instanceof RailwayRepoSecurityInfrastructureError) throw error;
+      throw new RailwayRepoSecurityInfrastructureError(phase);
+    }
   }
 }
 
@@ -89,11 +142,15 @@ class RailwayRepositoryLoadingWorkspace {
   ): Promise<{ exitCode: number; stderr: string; stdout: string }> {
     if (this.releasing)
       throw new Error("Railway repository workspace is releasing.");
-    const active = await this.gateway.execute(this.sandbox, command, {
-      cwd: workspacePath,
-      env: {},
-      timeoutMs: cloneTimeoutMs,
-    });
+    const active = await this.gateway.execute(
+      this.sandbox,
+      createUnprivilegedRepositoryCommand(command),
+      {
+        cwd: workspacePath,
+        env: {},
+        timeoutMs: cloneTimeoutMs,
+      },
+    );
     this.active = active;
     try {
       const result = await active.result();
@@ -177,4 +234,16 @@ function createCloneCommand(input: RepoSecurityInputLoadInput): string {
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function createUnprivilegedRepositoryCommand(command: string): string {
+  const encoded = Buffer.from(command, "utf8").toString("base64");
+  return [
+    `printf %s ${shellQuote(encoded)} | base64 --decode`,
+    `| runuser -u ${shellQuote(repositoryUser)} -- env -i`,
+    `HOME=${shellQuote(repositoryHome)}`,
+    `TMPDIR=${shellQuote(repositoryTemp)}`,
+    `PATH=${shellQuote(repositoryPath)}`,
+    "/bin/bash --noprofile --norc",
+  ].join(" ");
 }

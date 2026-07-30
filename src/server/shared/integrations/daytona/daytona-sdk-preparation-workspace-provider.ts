@@ -31,6 +31,7 @@ import {
   submittedCodeToolchainCatalog,
 } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
 import { resolveSubmittedProjectCwd } from "../../../pipeline/03-repo-preparation/submitted-project-root";
+import { isApprovedSubmittedRuntimeEnvironmentKey } from "../../../pipeline/03-repo-preparation/submitted-runtime-environment";
 import {
   type PipelineEventLogger,
   type PipelineLogSink,
@@ -1753,10 +1754,7 @@ function createSubmittedRuntimeEnv(
     Object.entries(requested ?? {}).filter(
       ([key]) =>
         key === "COREPACK_HOME" ||
-        key === "NODE_ENV" ||
-        key.startsWith("PUBLIC_") ||
-        key.startsWith("VITE_") ||
-        key.startsWith("NEXT_PUBLIC_"),
+        isApprovedSubmittedRuntimeEnvironmentKey(key),
     ),
   );
   return {

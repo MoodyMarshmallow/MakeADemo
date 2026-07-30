@@ -3,9 +3,17 @@ import { railwaySpikeTemplateRecipe } from "./railway-spike-template-recipe";
 const nodeBin = "/opt/makeademo/toolchains/node/versions/22.23.1/bin/node";
 const npmBin = "/opt/makeademo/toolchains/node/versions/22.23.1/bin/npm";
 const captureRoot = "/opt/makeademo/capture-runtime";
+const systemNodeLink =
+  '; ln -sfn "/opt/makeademo/toolchains/node/versions/${node_version}/bin/node" /usr/local/bin/node; ln -sfn "/opt/makeademo/toolchains/node/versions/${node_version}/bin/npm" /usr/local/bin/npm';
 
 const productionBaseCommands = railwaySpikeTemplateRecipe.commands.map(
   (command) => {
+    if (command.startsWith("apt-get install -y --no-install-recommends")) {
+      return command.replace("gpgv tar", "gpgv ripgrep tar");
+    }
+    if (command.includes(systemNodeLink)) {
+      return command.replace(systemNodeLink, "");
+    }
     if (command.startsWith(`${npmBin} install --global`)) {
       return createPinnedNpmHydrationCommand();
     }
@@ -27,7 +35,11 @@ const productionBaseCommands = railwaySpikeTemplateRecipe.commands.map(
  */
 export const railwayProductionTemplateRecipe = {
   ...railwaySpikeTemplateRecipe,
-  revision: "makeademo-railway-pipeline-v2",
+  revision: "makeademo-railway-pipeline-v4",
+  packages: {
+    ...railwaySpikeTemplateRecipe.packages,
+    system: [...railwaySpikeTemplateRecipe.packages.system, "ripgrep"],
+  },
   runtimePaths: {
     ...railwaySpikeTemplateRecipe.runtimePaths,
     immutable: [
@@ -42,6 +54,7 @@ export const railwayProductionTemplateRecipe = {
   },
   commands: [
     ...productionBaseCommands,
+    "command -v rg >/dev/null && rg --version | grep -E '^ripgrep [0-9]+\\.[0-9]+\\.[0-9]+' >/dev/null",
     // Capture tooling is independent from submitted project toolchains. Every
     // npm artifact below has an exact version, direct tarball URL, and pinned
     // sha512. Bun uses GitHub's exact tagged asset plus provider digest/size.

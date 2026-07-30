@@ -2,6 +2,7 @@ import { SandboxNotFoundError } from "railway";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  RailwaySandboxDestroySettlementError,
   type RailwaySandboxInventoryError,
   RailwaySdkSandboxGateway,
 } from "./railway-sdk-sandbox-gateway";
@@ -416,7 +417,9 @@ describe("RailwaySdkSandboxGateway", () => {
       create: {
         authType: "project-token",
         endpoint: "https://backboard.railway.com/graphql/v2",
-        env: {},
+        env: {
+          MAKEADEMO_RAILWAY_SANDBOX_INSTANCE_NONCE: expect.any(String),
+        },
         environmentId: "env_canary",
         idleTimeoutMinutes: 15,
         networkIsolation: "ISOLATED",
@@ -441,6 +444,110 @@ describe("RailwaySdkSandboxGateway", () => {
     });
     expect(calls).toContainEqual({ destroy: "created-id" });
     expect(calls).toContainEqual({ refresh: "created-id" });
+  });
+
+  it("gives every create a distinct instance nonce while preserving caller variables", async () => {
+    const calls: unknown[] = [];
+    const gateway = new RailwaySdkSandboxGateway({
+      environmentId: "env_canary",
+      projectToken: "project-token",
+      sandboxApi: fakeSandboxApi(calls) as never,
+    });
+
+    await gateway.createSandbox({
+      env: { CALLER_VALUE: "preserved" },
+      idleTimeoutMinutes: 15,
+      networkIsolation: "ISOLATED",
+      timeoutMs: 60_000,
+    });
+    await Promise.all([
+      gateway.createSandbox({
+        env: { CALLER_VALUE: "preserved" },
+        idleTimeoutMinutes: 15,
+        networkIsolation: "ISOLATED",
+        timeoutMs: 60_000,
+      }),
+      gateway.createSandbox({
+        env: { CALLER_VALUE: "preserved" },
+        idleTimeoutMinutes: 15,
+        networkIsolation: "ISOLATED",
+        timeoutMs: 60_000,
+      }),
+    ]);
+
+    const createEnvironments = calls.flatMap((call) => {
+      if (typeof call !== "object" || call === null || !("create" in call)) {
+        return [];
+      }
+      return [(call as { create: { env: Record<string, string> } }).create.env];
+    });
+    expect(createEnvironments).toHaveLength(3);
+    expect(createEnvironments).toEqual([
+      expect.objectContaining({ CALLER_VALUE: "preserved" }),
+      expect.objectContaining({ CALLER_VALUE: "preserved" }),
+      expect.objectContaining({ CALLER_VALUE: "preserved" }),
+    ]);
+    const nonces = createEnvironments.map(
+      (environment) => environment.MAKEADEMO_RAILWAY_SANDBOX_INSTANCE_NONCE,
+    );
+    expect(
+      nonces.every((nonce) => typeof nonce === "string" && nonce !== ""),
+    ).toBe(true);
+    expect(new Set(nonces).size).toBe(3);
+  });
+
+  it("rejects a caller-supplied instance nonce before invoking the SDK create", async () => {
+    const calls: unknown[] = [];
+    const gateway = new RailwaySdkSandboxGateway({
+      environmentId: "env_canary",
+      projectToken: "project-token",
+      sandboxApi: fakeSandboxApi(calls) as never,
+    });
+
+    await expect(
+      gateway.createSandbox({
+        env: { MAKEADEMO_RAILWAY_SANDBOX_INSTANCE_NONCE: "caller-value" },
+        idleTimeoutMinutes: 15,
+        networkIsolation: "ISOLATED",
+        timeoutMs: 60_000,
+      }),
+    ).rejects.toThrow("reserved instance nonce");
+    expect(calls).not.toContainEqual(
+      expect.objectContaining({ create: expect.anything() }),
+    );
+  });
+
+  it("does not expose the instance nonce when the SDK create fails", async () => {
+    let capturedNonce = "";
+    const api = fakeSandboxApi([]);
+    api.create = async (_template: unknown, options: unknown) => {
+      capturedNonce =
+        (options as { env: Record<string, string> }).env
+          .MAKEADEMO_RAILWAY_SANDBOX_INSTANCE_NONCE ?? "";
+      const reflected = new Error(`provider reflected ${capturedNonce}`);
+      reflected.name = `ProviderFailure-${capturedNonce}`;
+      throw reflected;
+    };
+    const gateway = new RailwaySdkSandboxGateway({
+      environmentId: "env_canary",
+      projectToken: "project-token",
+      sandboxApi: api as never,
+    });
+
+    const failure = await gateway
+      .createSandbox({
+        env: {},
+        idleTimeoutMinutes: 15,
+        networkIsolation: "ISOLATED",
+        timeoutMs: 60_000,
+      })
+      .catch((error: unknown) => error);
+
+    expect(capturedNonce).not.toBe("");
+    expect(String(failure)).toContain(
+      "provider reflected [redacted-instance-nonce]",
+    );
+    expect(String(failure)).not.toContain(capturedNonce);
   });
 
   it("adds explicit agent attribution to real SDK GraphQL requests without retaining auth in diagnostics", async () => {
@@ -708,6 +815,102 @@ describe("RailwaySdkSandboxGateway", () => {
     });
 
     await expect(gateway.destroySandbox(sandbox)).resolves.toBeUndefined();
+  });
+
+  it("reconciles an accepted exact destroy when refresh fails but authoritative inventory proves absence", async () => {
+    const calls: unknown[] = [];
+    const api = fakeSandboxApi(calls);
+    api.connect = (async (id: string) => ({
+      async destroy() {
+        calls.push({ destroy: id });
+      },
+      exec() {
+        throw new Error("not used");
+      },
+      files: {
+        read: async () => new ReadableStream(),
+        write: async () => {},
+      },
+      id,
+      async refresh() {
+        throw new Error("token=sensitive-project-token sandbox=owned-sandbox");
+      },
+      status: "RUNNING",
+    })) as never;
+    const inventoryFetch = vi.fn(async () =>
+      Response.json({
+        data: {
+          sandboxes: {
+            edges: [],
+            pageInfo: { endCursor: null, hasNextPage: false },
+          },
+        },
+      }),
+    );
+    const gateway = new RailwaySdkSandboxGateway({
+      destroyTimeoutMs: 1_000,
+      environmentId: "env_canary",
+      fetch: inventoryFetch as never,
+      projectToken: "sensitive-project-token",
+      sandboxApi: api as never,
+    });
+    const sandbox = await gateway.createSandbox({
+      env: {},
+      idleTimeoutMinutes: 15,
+      networkIsolation: "ISOLATED",
+      timeoutMs: 60_000,
+    });
+
+    await expect(gateway.destroySandbox(sandbox)).resolves.toBeUndefined();
+    expect(inventoryFetch).toHaveBeenCalledOnce();
+    await expect(gateway.destroySandbox(sandbox)).rejects.toThrow(
+      "is not owned by this run",
+    );
+  });
+
+  it("fails closed with a safe settlement error when authoritative inventory still contains the exact owned sandbox", async () => {
+    const api = fakeSandboxApi([]);
+    api.connect = (async (id: string) => ({
+      async destroy() {},
+      exec() {
+        throw new Error("not used");
+      },
+      files: {
+        read: async () => new ReadableStream(),
+        write: async () => {},
+      },
+      id,
+      async refresh() {
+        throw new Error("token=sensitive-project-token sandbox=owned-sandbox");
+      },
+      status: "RUNNING",
+    })) as never;
+    const gateway = new RailwaySdkSandboxGateway({
+      destroyTimeoutMs: 1_000,
+      environmentId: "env_canary",
+      fetch: (async () =>
+        Response.json({
+          data: {
+            sandboxes: {
+              edges: [{ node: { id: "created-id", status: "PAUSING" } }],
+              pageInfo: { endCursor: null, hasNextPage: false },
+            },
+          },
+        })) as never,
+      projectToken: "sensitive-project-token",
+      sandboxApi: api as never,
+    });
+    const sandbox = await gateway.createSandbox({
+      env: {},
+      idleTimeoutMinutes: 15,
+      networkIsolation: "ISOLATED",
+      timeoutMs: 60_000,
+    });
+
+    const error = await gateway.destroySandbox(sandbox).catch((error) => error);
+    expect(error).toBeInstanceOf(RailwaySandboxDestroySettlementError);
+    expect(String(error)).not.toContain("sensitive-project-token");
+    expect(String(error)).not.toContain("created-id");
   });
 
   it("bounds a never-settling exact connect during destruction", async () => {

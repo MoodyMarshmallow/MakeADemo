@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { Sandbox, SandboxNotFoundError } from "railway";
 
 import type {
@@ -93,6 +95,8 @@ const defaultDestroyTimeoutMs = 30_000;
 const defaultInventoryRpcTimeoutMs = 10_000;
 const defaultInventoryTotalTimeoutMs = 30_000;
 const defaultTerminalPollIntervalMs = 250;
+const railwaySandboxInstanceNonceVariable =
+  "MAKEADEMO_RAILWAY_SANDBOX_INSTANCE_NONCE";
 const officialRailwayGraphqlEndpoint =
   "https://backboard.railway.com/graphql/v2";
 const officialRailwayExecEndpoint = "wss://ssh.railway.com:2226/ws/exec";
@@ -122,6 +126,19 @@ export class RailwaySandboxInventoryError extends Error {
     options: ErrorOptions = {},
   ) {
     super(message, options);
+  }
+}
+
+/** A safe failure when an accepted exact destroy cannot be verified. */
+export class RailwaySandboxDestroySettlementError extends Error {
+  override readonly name = "RailwaySandboxDestroySettlementError";
+
+  constructor(readonly causeCode: "inventory" | "refresh") {
+    super(
+      causeCode === "inventory"
+        ? "Railway sandbox destroy settlement could not be verified by authoritative inventory."
+        : "Railway sandbox destroy settlement remained unverified after the provider accepted destruction.",
+    );
   }
 }
 
@@ -167,13 +184,34 @@ export class RailwaySdkSandboxGateway implements RailwaySandboxGateway {
   async createSandbox(
     options: Parameters<RailwaySandboxGateway["createSandbox"]>[0],
   ): Promise<RailwaySandboxGatewaySandbox> {
+    if (Object.hasOwn(options.env, railwaySandboxInstanceNonceVariable)) {
+      throw new Error(
+        "Railway sandbox variables contain the reserved instance nonce key.",
+      );
+    }
+    // This non-secret value exists only to make every SDK create input unique.
+    // Railway currently exposes no caller-controlled idempotency key, and may
+    // otherwise coalesce byte-identical concurrent create mutations.
+    const instanceNonce = randomUUID();
     let abandoned = false;
-    const sdkCreation = this.sandboxApi.create(this.getTemplate(), {
-      ...this.sdkOptions(),
-      env: options.env,
-      idleTimeoutMinutes: options.idleTimeoutMinutes,
-      networkIsolation: options.networkIsolation,
-    });
+    let sdkCreation: Promise<RailwaySdkSandbox>;
+    try {
+      sdkCreation = this.sandboxApi
+        .create(this.getTemplate(), {
+          ...this.sdkOptions(),
+          env: {
+            ...options.env,
+            [railwaySandboxInstanceNonceVariable]: instanceNonce,
+          },
+          idleTimeoutMinutes: options.idleTimeoutMinutes,
+          networkIsolation: options.networkIsolation,
+        })
+        .catch((error: unknown) => {
+          throw sanitizeSandboxCreationError(error, instanceNonce);
+        });
+    } catch (error) {
+      throw sanitizeSandboxCreationError(error, instanceNonce);
+    }
     const reconciliation = sdkCreation.then(
       async (sandbox) => {
         if (!abandoned) return;
@@ -318,6 +356,7 @@ export class RailwaySdkSandboxGateway implements RailwaySandboxGateway {
       );
     }
     const deadline = Date.now() + this.destroyTimeoutMs;
+    let destroyAccepted = false;
     try {
       const connected = await this.connect(
         sandbox,
@@ -328,6 +367,7 @@ export class RailwaySdkSandboxGateway implements RailwaySandboxGateway {
         remainingMilliseconds(deadline),
         `Railway sandbox ${sandbox.id} destroy timed out.`,
       );
+      destroyAccepted = true;
       for (;;) {
         const current = await withDeadline(
           connected.refresh(),
@@ -338,10 +378,12 @@ export class RailwaySdkSandboxGateway implements RailwaySandboxGateway {
           this.ownedSandboxIds.delete(sandbox.id);
           return;
         }
+        if (await this.reconcileAcceptedDestroy(sandbox.id, deadline)) {
+          this.ownedSandboxIds.delete(sandbox.id);
+          return;
+        }
         if (Date.now() >= deadline) {
-          throw new Error(
-            `Railway sandbox ${sandbox.id} remained ${current.status} after destroy.`,
-          );
+          throw new RailwaySandboxDestroySettlementError("refresh");
         }
         await delay(
           Math.min(
@@ -355,8 +397,46 @@ export class RailwaySdkSandboxGateway implements RailwaySandboxGateway {
         this.ownedSandboxIds.delete(sandbox.id);
         return;
       }
+      if (destroyAccepted && this.canVerifyAuthoritativeInventory()) {
+        try {
+          if (await this.reconcileAcceptedDestroy(sandbox.id, deadline)) {
+            this.ownedSandboxIds.delete(sandbox.id);
+            return;
+          }
+        } catch {
+          throw new RailwaySandboxDestroySettlementError("inventory");
+        }
+        throw new RailwaySandboxDestroySettlementError("refresh");
+      }
       throw error;
     }
+  }
+
+  /**
+   * Confirms only whether this exact owned id remains active. The shared
+   * inventory implementation uses the configured project/environment scope,
+   * exhaustive cursor pagination, and its remaining lifecycle deadline.
+   */
+  private async reconcileAcceptedDestroy(
+    sandboxId: string,
+    deadline: number,
+  ): Promise<boolean> {
+    if (!this.canVerifyAuthoritativeInventory()) return false;
+    const remaining = remainingMilliseconds(deadline);
+    if (remaining <= 0) {
+      throw new RailwaySandboxDestroySettlementError("inventory");
+    }
+    const active = await this.listActiveSandboxes({ timeoutMs: remaining });
+    return !active.some((candidate) => candidate.id === sandboxId);
+  }
+
+  private canVerifyAuthoritativeInventory(): boolean {
+    // Production uses the real SDK plus the platform GraphQL inventory. Tests
+    // must opt in with an explicit transport rather than unexpectedly calling
+    // the network from a fake SDK lifecycle.
+    return (
+      this.options.sandboxApi === undefined || this.options.fetch !== undefined
+    );
   }
 
   async execute(
@@ -733,6 +813,29 @@ function knownCreatedSandboxId(error: unknown): string | undefined {
   return typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id)
     ? id
     : undefined;
+}
+
+function sanitizeSandboxCreationError(error: unknown, nonce: string): Error {
+  const redact = (value: string) =>
+    value.split(nonce).join("[redacted-instance-nonce]");
+  let sanitized: Error;
+  if (error instanceof AggregateError) {
+    sanitized = new AggregateError(
+      error.errors.map((nested) => sanitizeSandboxCreationError(nested, nonce)),
+      redact(error.message),
+    );
+  } else if (error instanceof Error) {
+    sanitized = new Error(redact(error.message));
+    sanitized.name = redact(error.name);
+  } else {
+    sanitized = new Error("Railway sandbox creation failed.");
+  }
+
+  const sandboxId = knownCreatedSandboxId(error);
+  if (sandboxId !== undefined && sandboxId !== nonce) {
+    Object.assign(sanitized, { id: sandboxId, resource: "sandbox" });
+  }
+  return sanitized;
 }
 
 async function settleProviderOwnedCommand(

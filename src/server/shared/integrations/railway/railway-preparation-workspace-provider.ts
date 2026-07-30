@@ -29,6 +29,8 @@ import {
   submittedCodeToolchainCatalog,
 } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
 import { resolveSubmittedProjectCwd } from "../../../pipeline/03-repo-preparation/submitted-project-root";
+import { isApprovedSubmittedRuntimeEnvironmentKey } from "../../../pipeline/03-repo-preparation/submitted-runtime-environment";
+import { railwayProductionTemplateRecipe } from "./railway-production-template-recipe";
 import type {
   RailwaySandboxGateway,
   RailwaySandboxGatewayCommand,
@@ -50,6 +52,12 @@ const defaultTransferTimeoutMs = 10 * 60_000;
 const defaultTransferMaxBytes = 2 * 1024 * 1024 * 1024;
 const defaultIdleTimeoutMinutes = 15;
 const defaultRuntimeDetachTimeoutMs = 5_000;
+const trustedNodeBinDirectory =
+  railwayProductionTemplateRecipe.runtimePaths.nodeBin.slice(
+    0,
+    -"/node".length,
+  );
+const trustedCommandPath = `${trustedNodeBinDirectory}:/usr/local/bin:/usr/bin:/bin`;
 
 export type RailwayPreparationWorkspaceProviderOptions = {
   commandTimeoutMs?: number;
@@ -166,6 +174,7 @@ class RailwayPreparationWorkspace implements PreparationWorkspace {
   readonly activeCommands = new Set<RailwaySandboxGatewayCommand>();
   private readonly activeTransfers = new Set<Promise<void>>();
   private readonly pendingStarts = new Set<Promise<void>>();
+  private installedPlanIdentity: string | undefined;
   private releasing = false;
   private lifecycle:
     | { state: "unprovisioned" }
@@ -191,12 +200,26 @@ class RailwayPreparationWorkspace implements PreparationWorkspace {
     command: string,
     options: PreparationWorkspaceExecuteOptions = {},
   ): Promise<PreparationWorkspaceCommandResult> {
-    return this.executeIn(this.input.parent, command, options);
+    return this.executeIn(this.input.parent, command, {
+      ...options,
+      env: { ...options.env, PATH: trustedCommandPath },
+    });
   }
 
   async executeAgentCommand(
     command: string,
     options: Omit<PreparationWorkspaceExecuteOptions, "env"> = {},
+  ): Promise<PreparationWorkspaceCommandResult> {
+    return this.executeIn(
+      this.input.parent,
+      unprivilegedCommand(command, agentEnvironment()),
+      { ...options, env: {} },
+    );
+  }
+
+  async executeRepositoryCommand(
+    command: string,
+    options: PreparationWorkspaceExecuteOptions = {},
   ): Promise<PreparationWorkspaceCommandResult> {
     return this.executeIn(
       this.input.parent,
@@ -274,6 +297,7 @@ class RailwayPreparationWorkspace implements PreparationWorkspace {
           "Railway submitted-code child is bound to a different exact runtime; use a fresh child sandbox.",
         );
       }
+      this.installedPlanIdentity = undefined;
       this.lifecycle = { state: "provisioned", toolchain };
       return;
     }
@@ -323,7 +347,10 @@ class RailwayPreparationWorkspace implements PreparationWorkspace {
       );
       const extract = await this.executeIn(
         this.input.child,
-        createWorkspaceExtractCommand(remoteArchive),
+        createWorkspaceExtractCommand(
+          remoteArchive,
+          this.installedPlanIdentity === lifecycle.toolchain.planIdentity,
+        ),
         {},
       );
       if (extract.exitCode !== 0)
@@ -383,7 +410,8 @@ class RailwayPreparationWorkspace implements PreparationWorkspace {
         : undefined,
       toolchain,
     );
-    return this.executeIn(
+    this.installedPlanIdentity = undefined;
+    const result = await this.executeIn(
       this.input.child,
       unprivilegedCommand(
         `cd ${shellQuote(toolchain.projectDirectory)} && ${[request.executable, ...request.argv].map(shellQuote).join(" ")}`,
@@ -391,6 +419,10 @@ class RailwayPreparationWorkspace implements PreparationWorkspace {
       ),
       { ...options, env: {} },
     );
+    if (result.exitCode === 0) {
+      this.installedPlanIdentity = toolchain.planIdentity;
+    }
+    return result;
   }
 
   async executeSubmittedRuntime(
@@ -522,10 +554,7 @@ class RailwayPreparationWorkspace implements PreparationWorkspace {
       MAKEADEMO_PLAYWRIGHT_MODULE_ROOT: capturePlaywrightModules,
       PATH: [
         ...(toolchain === undefined
-          ? [
-              captureRuntimeBin,
-              "/opt/makeademo/toolchains/node/versions/22.23.1/bin",
-            ]
+          ? [captureRuntimeBin]
           : [
               toolchain.packageManagerBinDirectory,
               toolchain.nodeBinDirectory,
@@ -859,6 +888,7 @@ function createToolchainProvisionCommand(
   const managerDirectory = `${root}/manager`;
   const architecture =
     '$(case "$(dpkg --print-architecture)" in amd64) printf x64 ;; arm64) printf arm64 ;; *) exit 64 ;; esac)';
+  const exactNodePath = '"$node_dir/bin:/usr/local/bin:/usr/bin:/bin"';
   const managerInstall =
     manager.name === "bun"
       ? [
@@ -866,8 +896,8 @@ function createToolchainProvisionCommand(
           `install -o root -g root -m 0555 ${shellQuote(`${captureRuntimeBin}/bun`)} ${shellQuote(`${managerDirectory}/bin/bun`)}`,
         ]
       : [
-          `\"$node_dir/bin/npm\" install --global --prefix ${shellQuote(managerDirectory)} --ignore-scripts --no-audit --no-fund ${shellQuote(`${manager.name}@${manager.version}`)}`,
-          `test \"$(${shellQuote(`${managerDirectory}/bin/${manager.name}`)} --version)\" = ${shellQuote(manager.version)}`,
+          `PATH=${exactNodePath} "$node_dir/bin/node" "$node_dir/lib/node_modules/npm/bin/npm-cli.js" install --global --prefix ${shellQuote(managerDirectory)} --ignore-scripts --no-audit --no-fund ${shellQuote(`${manager.name}@${manager.version}`)}`,
+          `test "$(PATH=${exactNodePath} ${shellQuote(`${managerDirectory}/bin/${manager.name}`)} --version)" = ${shellQuote(manager.version)}`,
         ];
   return [
     "set -eu",
@@ -907,10 +937,28 @@ function createWorkspaceArchiveCommand(destination: string): string {
   ].join(" && ");
 }
 
-function createWorkspaceExtractCommand(archive: string): string {
+function createWorkspaceExtractCommand(
+  archive: string,
+  preserveInstalledDependencies: boolean,
+): string {
+  const staging = `${archive}.workspace`;
   return [
+    "set -eu",
+    `staging=${shellQuote(staging)}`,
+    "trap 'rm -rf -- \"$staging\"' EXIT",
+    'rm -rf -- "$staging"',
+    'install -d -o root -g root -m 0700 "$staging"',
+    `tar --no-same-owner --no-same-permissions -xzf ${shellQuote(archive)} -C "$staging"`,
+    ...(preserveInstalledDependencies
+      ? [
+          ": MAKEADEMO_PRESERVE_INSTALLED_DEPENDENCIES",
+          `workspace=${shellQuote(workspacePath)}`,
+          'preserve_dependency_path() { source=$1; relative=${source#"$workspace/"}; destination="$staging/$relative"; if ! test -e "$destination" && ! test -L "$destination"; then mkdir -p -- "$(dirname -- "$destination")"; mv -- "$source" "$destination"; fi; }',
+          "find \"$workspace\" -xdev \\( -type d \\( -name node_modules -o -path '*/.yarn/cache' -o -path '*/.yarn/unplugged' \\) -prune -print0 -o -type f \\( -name .pnp.cjs -o -name .pnp.loader.mjs -o -path '*/.yarn/install-state.gz' \\) -print0 \\) | while IFS= read -r -d '' dependency; do preserve_dependency_path \"$dependency\"; done",
+        ]
+      : []),
     `find ${shellQuote(workspacePath)} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +`,
-    `tar --no-same-owner --no-same-permissions -xzf ${shellQuote(archive)} -C ${shellQuote(workspacePath)}`,
+    `find "$staging" -mindepth 1 -maxdepth 1 -exec mv -t ${shellQuote(workspacePath)} -- {} +`,
     `chown -R ${shellQuote(`${agentUser}:${agentUser}`)} ${shellQuote(workspacePath)}`,
   ].join(" && ");
 }
@@ -929,7 +977,7 @@ function unprivilegedCommand(
 function agentEnvironment(): Record<string, string> {
   return {
     HOME: agentHome,
-    PATH: `${captureRuntimeBin}:/opt/makeademo/toolchains/node/versions/22.23.1/bin:/usr/local/bin:/usr/bin:/bin`,
+    PATH: `${captureRuntimeBin}:/usr/local/bin:/usr/bin:/bin`,
     TMPDIR: agentTemp,
   };
 }
@@ -941,9 +989,7 @@ function allowSubmittedEnvironment(
   const allowed: Record<string, string> = {};
   for (const [key, value] of Object.entries(environment)) {
     if (
-      !/^(?:VITE_[A-Z0-9_]+|NEXT_PUBLIC_[A-Z0-9_]+|PLAYWRIGHT_[A-Z0-9_]+|NO_UPDATE_NOTIFIER|NODE_ENV|CI|HOST|PORT)$/.test(
-        key,
-      ) ||
+      !isApprovedSubmittedRuntimeEnvironmentKey(key) ||
       value.length > 8 * 1024
     ) {
       throw new Error(

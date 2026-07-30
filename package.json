@@ -19,6 +19,7 @@
     "preview": "vite preview",
     "pipeline:run": "bun src/server/composition/full-pipeline-cli.mts",
     "railway:preflight-spike": "bun scripts/run-railway-preflight-spike.mts",
+    "railway:sandbox-cross-process-isolation": "bun scripts/run-railway-sandbox-cross-process-isolation.mts",
     "railway:sandbox-latency-benchmark": "bun scripts/run-railway-sandbox-latency-benchmark.mts",
     "start": "bun src/server/api/server.mts",
     "worker:demo-generation": "bun src/server/composition/project-demo-generation-worker.mts",

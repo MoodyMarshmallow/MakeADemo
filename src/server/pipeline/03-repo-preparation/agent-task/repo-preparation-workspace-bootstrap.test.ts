@@ -25,6 +25,43 @@ afterEach(async () => {
 });
 
 describe("bootstrapRepoPreparationWorkspace", () => {
+  it("uses the provider's repository-command boundary for the parent clone and Git inventory", async () => {
+    const repositoryCommands: string[] = [];
+    const trustedCommands: string[] = [];
+    const workspace: PreparationWorkspace = {
+      async execute(command) {
+        trustedCommands.push(command);
+        return { exitCode: 0, stderr: "", stdout: "" };
+      },
+      async executeRepositoryCommand(command) {
+        repositoryCommands.push(command);
+        return {
+          exitCode: 0,
+          stderr: "",
+          stdout:
+            command === "git -C /workspace ls-files -z"
+              ? "README.md\0package.json\0"
+              : "cloned",
+        };
+      },
+      async uploadFiles() {},
+    };
+
+    const result = await bootstrapRepoPreparationWorkspace({
+      logger: createPipelineEventLogger({ sinks: [] }),
+      repoUrl: "https://github.com/example/app",
+      workspace,
+    });
+
+    expect(result).toEqual({
+      baselineSourceControlledPaths: ["README.md", "package.json"],
+    });
+    expect(repositoryCommands).toHaveLength(2);
+    expect(repositoryCommands[0]).toContain("git clone");
+    expect(repositoryCommands[1]).toBe("git -C /workspace ls-files -z");
+    expect(trustedCommands).toEqual([]);
+  });
+
   it("preserves committed dotenv files and Git history in both workspaces", async () => {
     const sentinel = "DOTENV_CANARY_ORIGINAL";
     const root = await createTemporaryDirectory();
