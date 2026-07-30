@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { PreparationWorkspaceHandle } from "../03-repo-preparation/preparation-workspace-runner";
 import { assertDemoScriptCaptureSdkContract } from "../04-script-generation/demo-script/capture-sdk-contract";
 import { parseDemoScript } from "../04-script-generation/demo-script/demo-script.schema";
+import type { RuntimeNetworkPolicy } from "../05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
 import { PreparedWorkspacePlaywrightSceneRecorder } from "./playwright-scene-recorder";
 import type { SceneClipTrimLogger } from "./scene-clip-trimmer";
 import type { SceneRecorder } from "./scene-recorder.interface";
@@ -37,6 +38,7 @@ export type CaptureScenesFromScriptInput = {
   preparationWorkspace?: PreparationWorkspaceHandle;
   recorder?: SceneRecorder;
   runId?: string;
+  runtimeNetworkPolicy?: RuntimeNetworkPolicy;
   demoScript?: unknown;
   scriptPath?: string;
   tempRoot?: string;
@@ -113,6 +115,9 @@ function createPreparedWorkspaceRecorder(input: CaptureScenesFromScriptInput) {
   return new PreparedWorkspacePlaywrightSceneRecorder({
     ...(input.log === undefined ? {} : { log: input.log }),
     preparationWorkspace: input.preparationWorkspace,
+    ...(input.runtimeNetworkPolicy === undefined
+      ? {}
+      : { runtimeNetworkPolicy: input.runtimeNetworkPolicy }),
   });
 }
 

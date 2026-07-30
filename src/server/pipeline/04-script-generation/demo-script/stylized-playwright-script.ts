@@ -1,8 +1,14 @@
+import {
+  type RuntimeNetworkPolicy,
+  defaultRuntimeNetworkPolicy,
+} from "../../05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
+
 export type PrepareStylizedPlaywrightScriptInput = {
   baseUrl: string;
   headed: boolean;
   mode?: "recording" | "validation";
   pauseAfterSceneMs: number;
+  runtimeNetworkPolicy?: RuntimeNetworkPolicy;
   videoDirectory?: string;
 };
 
@@ -72,7 +78,7 @@ const context = await browser.newContext({
     size: { width: 1280, height: 720 },
   },
 });
-${runtimeNetworkLockdownSource()}
+${runtimeNetworkSource(input.runtimeNetworkPolicy)}
 const page = await context.newPage();
 const makeADemoCaptureStartedAt = performance.now();
 const makeADemoCaptureContext = { page, baseUrl, expect };
@@ -109,7 +115,7 @@ const browser = await chromium.launch(${launchOptions});
 const context = await browser.newContext({
   viewport: { width: 1280, height: 720 },
 });
-${runtimeNetworkLockdownSource()}
+${runtimeNetworkSource(input.runtimeNetworkPolicy)}
 const page = await context.newPage();
 const makeADemoCaptureStartedAt = performance.now();
 const makeADemoCaptureContext = { page, baseUrl, expect };
@@ -151,7 +157,8 @@ void scene;
 `;
 }
 
-function runtimeNetworkLockdownSource() {
+function runtimeNetworkSource(policy = defaultRuntimeNetworkPolicy) {
+  if (policy === "unrestricted-public") return "";
   return `const makeADemoAllowedRuntimeOrigin = new URL(baseUrl).origin;
 const makeADemoOriginalFetch = globalThis.fetch?.bind(globalThis);
 if (makeADemoOriginalFetch !== undefined) {

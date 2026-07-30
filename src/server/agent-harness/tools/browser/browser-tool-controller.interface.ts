@@ -1,4 +1,5 @@
 import type { PreparationWorkspace } from "../../../pipeline/03-repo-preparation/preparation-workspace.interface";
+import type { RuntimeNetworkPolicy } from "../../../pipeline/05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
 
 export type BrowserAction =
   | { kind: "check" | "click" | "hover" | "uncheck"; ref: string }
@@ -54,5 +55,6 @@ type BrowserToolControllerContext = {
 };
 
 export type BrowserToolControllerInput = BrowserToolControllerContext & {
+  runtimeNetworkPolicy?: RuntimeNetworkPolicy;
   workspace: PreparationWorkspace;
 };

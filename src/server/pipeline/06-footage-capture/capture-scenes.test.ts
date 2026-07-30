@@ -221,7 +221,8 @@ describe("captureScenesFromScript", () => {
           if (command.includes("bun ")) {
             return {
               exitCode: 0,
-              stderr: "",
+              stderr:
+                '[makeademo:network-blocked] {"direction":"outbound","host":"assets.example.com","phase":"runtime"}',
               stdout: [
                 '[makeademo:scene] {"elapsedMs":100,"event":"started","sceneId":"scene-001"}',
                 '[makeademo:scene] {"elapsedMs":900,"event":"succeeded","sceneId":"scene-001"}',
@@ -252,6 +253,7 @@ describe("captureScenesFromScript", () => {
       },
       preparationWorkspace,
       runId: "capture-sandbox",
+      runtimeNetworkPolicy: "unrestricted-public",
       demoScript: validDemoScript(),
       tempRoot,
     });

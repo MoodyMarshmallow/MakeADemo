@@ -15,6 +15,10 @@ import {
   pipelineCancellationFromSignal,
   throwIfPipelineCancelled,
 } from "../../00-orchestration/job/pipeline-cancellation";
+import {
+  type RuntimeNetworkPolicy,
+  defaultRuntimeNetworkPolicy,
+} from "../../05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
 import { classifyDependencyInstallFailure } from "../dependency-install-failure-classifier";
 import { runPlannedDependencyInstall } from "../planned-dependency-install";
 import {
@@ -96,6 +100,7 @@ export type AgenticRepoPreparationOptions = {
     manifest: ReturnType<typeof readPreparationManifest>;
     workspace: PreparationWorkspaceHandle;
   }) => Promise<RepoPreparationPreflightResult>;
+  runtimeNetworkPolicy?: RuntimeNetworkPolicy;
 };
 
 export class AgenticRepoPreparation implements RepoPreparationAgent {
@@ -117,12 +122,15 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         workspace: PreparationWorkspaceHandle;
       }) => Promise<RepoPreparationPreflightResult>)
     | undefined;
+  private readonly runtimeNetworkPolicy: RuntimeNetworkPolicy;
 
   constructor(options: AgenticRepoPreparationOptions) {
     this.browserToolControllerProvider = options.browserToolControllerProvider;
     this.cloneFailureDiagnosticsContext =
       options.cloneFailureDiagnosticsContext;
     this.logger = options.logger ?? createRepoPreparationLogger();
+    this.runtimeNetworkPolicy =
+      options.runtimeNetworkPolicy ?? defaultRuntimeNetworkPolicy;
     this.nodeReleaseCatalog = options.nodeReleaseCatalog;
     this.provider = options.provider;
     this.runner = options.runner;
@@ -343,6 +351,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     return {
       baselineSourceControlledPaths: bootstrap.baselineSourceControlledPaths,
       prompt: createDaytonaRepoPreparationPrompt(input, {
+        runtimeNetworkPolicy: this.runtimeNetworkPolicy,
         ...(toolchainAdvisory === undefined ? {} : { toolchainAdvisory }),
       }),
       status: "ready",

@@ -1,3 +1,4 @@
+import type { RuntimeNetworkPolicy } from "../../05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
 import type { readPreparationManifest } from "../preparation-manifest";
 import type { PreparationWorkspaceCommandResult } from "../preparation-workspace.interface";
 import type { RepoPreparationInput } from "../repo-preparation-agent.interface";
@@ -16,6 +17,7 @@ const dependencyInstallOutputTailMaxLength = 1_500;
 export function createDaytonaRepoPreparationPrompt(
   input: RepoPreparationInput,
   options: {
+    runtimeNetworkPolicy?: RuntimeNetworkPolicy;
     toolchainAdvisory?: { code: string; reason: string };
   } = {},
 ): string {
@@ -23,7 +25,9 @@ export function createDaytonaRepoPreparationPrompt(
     "# MakeADemo Repo Preparation",
     "",
     "## Goal",
-    "Prepare the submitted repo inside `/workspace` so MakeADemo preparation preflight can start a deterministic, browser-accessible demo without secrets, hosted services, OAuth, or external APIs after setup.",
+    options.runtimeNetworkPolicy === "unrestricted-public"
+      ? "Prepare the submitted repo inside `/workspace` so MakeADemo preparation preflight can start a deterministic, browser-accessible demo without secrets or OAuth. Public network access remains available during setup and demo runtime."
+      : "Prepare the submitted repo inside `/workspace` so MakeADemo preparation preflight can start a deterministic, browser-accessible demo without secrets, hosted services, OAuth, or external APIs after setup.",
     "",
     "- Leave prepared files in `/workspace` on success.",
     "",
@@ -38,7 +42,9 @@ export function createDaytonaRepoPreparationPrompt(
     "- The visible interface must remain the submitted repository's native source-controlled UI. Do not create a replacement frontend, standalone simulation, walkthrough, or HTML entrypoint.",
     "- You may add fixtures, mock adapters, configuration, and small glue/demo routes only when the rendered screens import native source-controlled UI components, styles, or assets.",
     "- If the native visible interface cannot be prepared, submit status failed with a clear blocker instead of substituting a new UI.",
-    "- Prefer local mock data, fixture data, or frontend-only demo modes over hosted services.",
+    options.runtimeNetworkPolicy === "unrestricted-public"
+      ? "- Public APIs and assets may be used when the native app requires them; prefer deterministic local fixtures when remote state would make the demo flaky."
+      : "- Prefer local mock data, fixture data, or frontend-only demo modes over hosted services.",
     "- Keep existing project conventions where practical.",
     "- If the repo already has a suitable demo command, use it rather than creating a new one.",
     ...(options.toolchainAdvisory === undefined

@@ -94,6 +94,37 @@ describe("PlaywrightBrowserValidator", () => {
     });
   });
 
+  it("permits public browser requests when composition selects unrestricted public networking", async () => {
+    const abortedUrls: string[] = [];
+    const continuedUrls: string[] = [];
+    const validator = new PlaywrightBrowserValidator({
+      pageFactory: async () =>
+        fakePage({
+          bodyText: "Demo app loaded",
+          onAbort: (url) => abortedUrls.push(url),
+          onContinue: (url) => continuedUrls.push(url),
+          requestedUrls: [
+            "http://localhost:3000/assets/app.js",
+            "https://api.example.com/portfolio",
+          ],
+        }),
+      runtimeNetworkPolicy: "unrestricted-public",
+    });
+
+    await expect(
+      validator.validate({ url: "http://localhost:3000" }),
+    ).resolves.toEqual({
+      interactable: true,
+      logs: ["Loaded http://localhost:3000", "Captured screenshot proof."],
+      screenshotArtifactId: "artifact_screenshot",
+    });
+    expect(abortedUrls).toEqual([]);
+    expect(continuedUrls).toEqual([
+      "http://localhost:3000/assets/app.js",
+      "https://api.example.com/portfolio",
+    ]);
+  });
+
   it("aborts forbidden browser requests during page navigation", async () => {
     const abortedUrls: string[] = [];
     const continuedUrls: string[] = [];

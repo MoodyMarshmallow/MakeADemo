@@ -1,6 +1,7 @@
 import type { RepoSecurityInput } from "../../02-repo-security-screen/repo-security-screen";
 import { readRepoSecurityInput } from "../../02-repo-security-screen/repository-loading/repo-security-input";
 import type { RepoSecurityInputLoader } from "../../02-repo-security-screen/repository-loading/repo-security-input-loader.interface";
+import { readRepoSecurityInputInfrastructureDiagnostic } from "../../02-repo-security-screen/repository-loading/repo-security-input-loader.interface";
 import {
   type FullPipelineResult,
   type FullPipelineRunnerOptions,
@@ -15,6 +16,7 @@ type ControllerOwnedRunnerOptions = Pick<
   | "prepareFreshCaptureState"
   | "repoSecurityInputFailure"
   | "reviewDraftComposite"
+  | "runtimeNetworkPolicy"
   | "sandboxProvider"
 >;
 
@@ -72,6 +74,9 @@ export function createMakeADemoPipeline(
       const { runOptions = {}, ...jobInput } = input;
       let repoSecurity = emptyRepoSecurityInput();
       let repoSecurityInputFailure = false;
+      let repoSecurityInputDiagnostic: ReturnType<
+        typeof readRepoSecurityInputInfrastructureDiagnostic
+      >;
       if (runOptions.signal?.aborted !== true) {
         try {
           repoSecurity = await readRepoSecurityInput(
@@ -94,6 +99,8 @@ export function createMakeADemoPipeline(
             // The full runner owns the durable terminal cancellation artifact.
           } else {
             repoSecurityInputFailure = true;
+            repoSecurityInputDiagnostic =
+              readRepoSecurityInputInfrastructureDiagnostic(error);
           }
         }
       }
@@ -104,7 +111,10 @@ export function createMakeADemoPipeline(
         {
           ...runOptions,
           ...(repoSecurityInputFailure
-            ? { repoSecurityInputFailure: true as const }
+            ? {
+                repoSecurityInputFailure:
+                  repoSecurityInputDiagnostic ?? (true as const),
+              }
             : {}),
           ...(options.prepareFreshCaptureState === undefined
             ? {}
@@ -112,6 +122,9 @@ export function createMakeADemoPipeline(
           ...(options.reviewDraftComposite === undefined
             ? {}
             : { reviewDraftComposite: options.reviewDraftComposite }),
+          ...(options.runtimeNetworkPolicy === undefined
+            ? {}
+            : { runtimeNetworkPolicy: options.runtimeNetworkPolicy }),
           ...(options.sandboxProvider === undefined
             ? {}
             : { sandboxProvider: options.sandboxProvider }),

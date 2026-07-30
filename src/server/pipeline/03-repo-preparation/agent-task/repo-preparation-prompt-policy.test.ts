@@ -15,6 +15,17 @@ const promptInput = {
 };
 
 describe("dependency install prompt policy", () => {
+  it("tells the preparation agent when public runtime networking is available", () => {
+    const prompt = createDaytonaRepoPreparationPrompt(promptInput, {
+      runtimeNetworkPolicy: "unrestricted-public",
+    });
+
+    expect(prompt).toContain(
+      "Public network access remains available during setup and demo runtime",
+    );
+    expect(prompt).not.toContain("or external APIs after setup");
+  });
+
   it("describes the argumentless backend-selected install tool truthfully", () => {
     const prompts = [
       createDaytonaRepoPreparationPrompt(promptInput),

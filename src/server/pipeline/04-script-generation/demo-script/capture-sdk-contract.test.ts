@@ -81,6 +81,23 @@ describe("Capture SDK Contract", () => {
     expect(instructions).toContain("page.evaluate");
   });
 
+  it("documents public network availability in an unrestricted capture harness", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "makeademo-sdk-public-"));
+
+    await writeGeneratedCaptureSdkHarness(workspace, {
+      runtimeNetworkPolicy: "unrestricted-public",
+    });
+
+    const instructions = await readFile(
+      join(workspace, "makeademo-capture-sdk.instructions.md"),
+      "utf8",
+    );
+    expect(instructions).toContain(
+      "Public network access is available to the prepared app and browser",
+    );
+    expect(instructions).not.toContain("Do not use real-time network access");
+  });
+
   it("requires Demo Scripts to import both setup and scene from the SDK", () => {
     expect(() =>
       assertDemoScriptCaptureSdkContract(

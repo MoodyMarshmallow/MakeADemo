@@ -9,6 +9,8 @@ import { inspectSubmittedCodeToolchain } from "../../03-repo-preparation/submitt
 import type { BrowserValidator } from "./browser-validator.interface";
 import {
   type NetworkAttempt,
+  type RuntimeNetworkPolicy,
+  defaultRuntimeNetworkPolicy,
   findRuntimeBoundaryViolations,
 } from "./network-isolation-policy";
 import type { SandboxRunner } from "./sandbox-runner.interface";
@@ -29,6 +31,7 @@ export type DemoRuntimePreflightDependencies = {
   browserValidationTimeoutMs?: number;
   browserValidator: BrowserValidator;
   nodeReleaseCatalog: SubmittedCodeNodeReleaseCatalog;
+  runtimeNetworkPolicy?: RuntimeNetworkPolicy;
   sandboxRunner: SandboxRunner;
 };
 
@@ -91,9 +94,12 @@ export async function runDemoRuntimePreflight(
       ({ reason, source, value }) =>
         boundToolchainWarning(`${reason} (${source}: ${value})`),
     ) ?? [];
-  const blockedNetworkAttempts = findRuntimeBoundaryViolations(
-    sandboxResult.blockedNetworkAttempts,
-  );
+  const runtimeNetworkPolicy =
+    dependencies.runtimeNetworkPolicy ?? defaultRuntimeNetworkPolicy;
+  const blockedNetworkAttempts =
+    runtimeNetworkPolicy === "loopback-only"
+      ? findRuntimeBoundaryViolations(sandboxResult.blockedNetworkAttempts)
+      : [];
 
   try {
     if (blockedNetworkAttempts.length > 0) {
@@ -197,9 +203,12 @@ export async function runDemoRuntimePreflight(
       });
       throw error;
     }
-    const browserNetworkAttempts = findRuntimeBoundaryViolations(
-      browserResult.blockedNetworkAttempts ?? [],
-    );
+    const browserNetworkAttempts =
+      runtimeNetworkPolicy === "loopback-only"
+        ? findRuntimeBoundaryViolations(
+            browserResult.blockedNetworkAttempts ?? [],
+          )
+        : [];
 
     if (browserNetworkAttempts.length > 0) {
       const failureReason = formatRuntimeNetworkFailureReason(

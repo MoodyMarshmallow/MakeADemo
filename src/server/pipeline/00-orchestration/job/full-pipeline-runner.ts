@@ -6,7 +6,9 @@ import {
   createFilePipelineLogSink,
   createPipelineEventLogger,
 } from "../../../shared/logging/pipeline-event-logger";
+import type { RepoSecurityInputInfrastructureDiagnostic } from "../../02-repo-security-screen/repository-loading/repo-security-input-loader.interface";
 import type { DemoRequestScriptStore } from "../../04-script-generation/demo-request-script-store.interface";
+import type { RuntimeNetworkPolicy } from "../../05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
 import type {
   CaptureManifest,
   CaptureScenesFromScriptInput,
@@ -154,10 +156,12 @@ export type FullPipelineRunnerOptions = PipelineOrchestratorOptions & {
     preparedDemo: PreparedDemoResult;
   }) => Promise<{ browserUrl?: string }>;
   /** Controller-owned marker for a failed Repo Security input infrastructure load. */
-  repoSecurityInputFailure?: true;
+  repoSecurityInputFailure?: true | RepoSecurityInputInfrastructureDiagnostic;
   runId?: string;
   /** Controller-owned provider provenance persisted in terminal summaries. */
   sandboxProvider?: "daytona" | "railway";
+  /** Composition-owned browser/runtime public-egress policy. */
+  runtimeNetworkPolicy?: RuntimeNetworkPolicy;
   sandboxLogPath?: string;
   scriptGenerationAuditLogPath?: string;
 };
@@ -221,7 +225,7 @@ export async function runFullPipelineJob(
     });
     throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
 
-    if (options.repoSecurityInputFailure === true) {
+    if (options.repoSecurityInputFailure !== undefined) {
       const resultPath = join(runDirectory, "full-pipeline-result.json");
       const failureSummary = createRepoSecurityInputFailureSummary({
         agentAuditLogPath: options.agentAuditLogPath,
@@ -231,6 +235,9 @@ export async function runFullPipelineJob(
         sandboxLogPath,
         sandboxProvider: options.sandboxProvider,
         scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
+        ...(options.repoSecurityInputFailure === true
+          ? {}
+          : { diagnostic: options.repoSecurityInputFailure }),
       });
       await reportPipelineProgress({
         stage: "repo-security-screen",
@@ -539,6 +546,7 @@ function createRepoSecurityInputFailureSummary(input: {
   sandboxLogPath: string | undefined;
   sandboxProvider: "daytona" | "railway" | undefined;
   scriptGenerationAuditLogPath: string | undefined;
+  diagnostic?: RepoSecurityInputInfrastructureDiagnostic;
 }) {
   return {
     artifacts: {
@@ -558,6 +566,11 @@ function createRepoSecurityInputFailureSummary(input: {
     failure: {
       blockers: [
         "Repo Security Screen input could not be loaded because sandbox infrastructure was unavailable.",
+        ...(input.diagnostic === undefined
+          ? []
+          : [
+              `Railway Repo Security infrastructure failed during ${input.diagnostic.phase.replaceAll("-", " ")}.`,
+            ]),
       ],
       suggestedChanges: [],
     },

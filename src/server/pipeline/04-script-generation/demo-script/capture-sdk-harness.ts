@@ -2,9 +2,14 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  type RuntimeNetworkPolicy,
+  defaultRuntimeNetworkPolicy,
+} from "../../05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
 
 export async function writeGeneratedCaptureSdkHarness(
   directory: string,
+  options: { runtimeNetworkPolicy?: RuntimeNetworkPolicy } = {},
 ): Promise<void> {
   await Promise.all([
     writeFile(join(directory, "makeademo-capture-sdk.js"), runtimeSource()),
@@ -14,7 +19,9 @@ export async function writeGeneratedCaptureSdkHarness(
     ),
     writeFile(
       join(directory, "makeademo-capture-sdk.instructions.md"),
-      instructionsSource(),
+      instructionsSource(
+        options.runtimeNetworkPolicy ?? defaultRuntimeNetworkPolicy,
+      ),
     ),
   ]);
 }
@@ -479,14 +486,18 @@ export declare function scene(
 `;
 }
 
-function instructionsSource() {
+function instructionsSource(runtimeNetworkPolicy: RuntimeNetworkPolicy) {
+  const networkGuidance =
+    runtimeNetworkPolicy === "unrestricted-public"
+      ? "Public network access is available to the prepared app and browser. Keep interactions user-visible and deterministic; do not navigate the controlled page away from the prepared app."
+      : "Do not use real-time network access from the Demo Script. Do not call fetch, XMLHttpRequest, WebSocket, EventSource, navigator.sendBeacon, page.waitForRequest, page.waitForResponse, page.route, page.unroute, or Node network modules.";
   return `# MakeADemo Capture SDK Contract
 
 Import setup and scene from './makeademo-capture-sdk'. Put off-camera login, seeding, and navigation in setup. Put each on-camera product moment in scene(id, async ({ page, baseUrl, expect }) => { ... }). Each scene must assert a visible outcome with Playwright expect before it ends.
 
 Do not launch browsers, create contexts, configure recordVideo, write marker logs, print [makeademo:scene] lines, or provide timestamps/durations.
 
-Do not use real-time network access from the Demo Script. Do not call fetch, XMLHttpRequest, WebSocket, EventSource, navigator.sendBeacon, page.waitForRequest, page.waitForResponse, page.route, page.unroute, or Node network modules.
+${networkGuidance}
 
 Do not bypass the prepared app UI with app-internal JavaScript such as page.evaluate, page.addScriptTag, page.addInitScript, page.exposeFunction, or page.exposeBinding. Demo Scripts must use user-visible navigation, interactions, and locator assertions against the prepared app.
 `;

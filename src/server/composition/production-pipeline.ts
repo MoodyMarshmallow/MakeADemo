@@ -21,6 +21,7 @@ import {
 } from "../pipeline/05-capture-path-validation/capture-path-validator";
 import type { BrowserValidator } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/browser-validator.interface";
 import { runDemoRuntimePreflight } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/demo-runtime-preflight";
+import type { RuntimeNetworkPolicy } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
 import type { SandboxRunner } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/sandbox-runner.interface";
 import type { DemoRuntimePreflightResult } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/validation-result";
 import { DefaultCapturePathSceneValidator } from "../pipeline/05-capture-path-validation/playwright-capture-path-scene-validator";
@@ -52,6 +53,7 @@ export type ProductionPipelineDependencyOptions = {
   sandboxRunner: SandboxRunner;
   sceneValidator?: CapturePathSceneValidator;
   scriptGenerationAgent?: ScriptGenerationAgent;
+  runtimeNetworkPolicy?: RuntimeNetworkPolicy;
 };
 
 /**
@@ -63,9 +65,19 @@ export function createProductionPipelineDependencies(
   options: ProductionPipelineDependencyOptions,
 ): PipelineOrchestratorDependencies {
   const browserValidator =
-    options.browserValidator ?? new PlaywrightBrowserValidator();
+    options.browserValidator ??
+    new PlaywrightBrowserValidator({
+      ...(options.runtimeNetworkPolicy === undefined
+        ? {}
+        : { runtimeNetworkPolicy: options.runtimeNetworkPolicy }),
+    });
   const sceneValidator =
-    options.sceneValidator ?? new DefaultCapturePathSceneValidator();
+    options.sceneValidator ??
+    new DefaultCapturePathSceneValidator({
+      ...(options.runtimeNetworkPolicy === undefined
+        ? {}
+        : { runtimeNetworkPolicy: options.runtimeNetworkPolicy }),
+    });
 
   return {
     generateDemoScript(input) {
@@ -94,6 +106,9 @@ export function createProductionPipelineDependencies(
           return runDemoRuntimePreflight(projectInput, {
             browserValidator,
             nodeReleaseCatalog: options.nodeReleaseCatalog,
+            ...(options.runtimeNetworkPolicy === undefined
+              ? {}
+              : { runtimeNetworkPolicy: options.runtimeNetworkPolicy }),
             sandboxRunner: options.sandboxRunner,
           });
         },
@@ -225,7 +240,13 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
     configuredRepoPreparationTimeoutMs,
   );
   const onAgentStatus = options.onAgentStandard ?? (() => {});
-  const browserToolControllerProvider = createBrowserToolControllerProvider();
+  const runtimeNetworkPolicy: RuntimeNetworkPolicy =
+    sandboxConfig.provider === "railway"
+      ? "unrestricted-public"
+      : "loopback-only";
+  const browserToolControllerProvider = createBrowserToolControllerProvider({
+    runtimeNetworkPolicy,
+  });
   const repoPreparationAgent = new AgenticRepoPreparation({
     browserToolControllerProvider,
     ...(sandboxConfig.provider === "railway" ||
@@ -248,6 +269,7 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
     ...(logger === undefined ? {} : { logger }),
     nodeReleaseCatalog,
     provider: sandboxProvider.repoPreparationWorkspaceProvider,
+    runtimeNetworkPolicy,
     runner: agentHarness.agentTaskRunners.repoPreparation,
     ...(repoPreparationTimeoutMs === undefined
       ? {}
@@ -257,8 +279,11 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
         await runDemoRuntimePreflight(
           { preparationManifest: manifest, preparationWorkspace: workspace },
           {
-            browserValidator: new PlaywrightBrowserValidator(),
+            browserValidator: new PlaywrightBrowserValidator({
+              runtimeNetworkPolicy,
+            }),
             nodeReleaseCatalog,
+            runtimeNetworkPolicy,
             sandboxRunner: sandboxProvider.createSandboxRunner({
               releaseWorkspaceOnCleanup: false,
             }),
@@ -307,12 +332,14 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
         releaseWorkspaceOnCleanup: false,
       }),
       scriptGenerationAgent,
+      runtimeNetworkPolicy,
     }),
     prepareFreshCaptureState: sandboxProvider.prepareFreshCaptureState,
     repoSecurityInputLoader: sandboxProvider.repoSecurityInputLoader,
     reviewDraftComposite: draftCompositeReviewer.review.bind(
       draftCompositeReviewer,
     ),
+    runtimeNetworkPolicy,
     sandboxProvider: sandboxConfig.provider ?? "daytona",
   });
 }

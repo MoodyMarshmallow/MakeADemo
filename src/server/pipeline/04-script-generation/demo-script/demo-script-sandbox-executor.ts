@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { uploadSubmittedCodeWorkspaceFiles } from "../../03-repo-preparation/preparation-workspace-upload";
 import type { PreparationWorkspace } from "../../03-repo-preparation/preparation-workspace.interface";
 import { executeSubmittedCode } from "../../03-repo-preparation/submitted-code-execution";
+import type { RuntimeNetworkPolicy } from "../../05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
 import {
   type CaptureSdkBlockedNetworkEvent,
   parseCaptureSdkBlockedNetworkEvents,
@@ -26,6 +27,7 @@ export type DemoScriptSandboxExecutionInput = {
   mode: "recording" | "validation";
   pauseAfterSceneMs?: number;
   remoteRunDirectory: string;
+  runtimeNetworkPolicy?: RuntimeNetworkPolicy;
   scriptFilename: string;
   timeoutMs: number;
   videoDirectory?: string;
@@ -72,7 +74,11 @@ export async function executeDemoScriptInSandbox(
   const remoteStderrPath = `${input.remoteRunDirectory}/${artifactName}.stderr.log`;
 
   try {
-    await writeGeneratedCaptureSdkHarness(localRunDirectory);
+    await writeGeneratedCaptureSdkHarness(localRunDirectory, {
+      ...(input.runtimeNetworkPolicy === undefined
+        ? {}
+        : { runtimeNetworkPolicy: input.runtimeNetworkPolicy }),
+    });
     try {
       await validateDemoScriptCaptureSdkTypes({
         demoPlaywrightScript: input.demoPlaywrightScript,
@@ -88,6 +94,9 @@ export async function executeDemoScriptInSandbox(
         headed: input.headed ?? false,
         mode: input.mode,
         pauseAfterSceneMs: input.pauseAfterSceneMs ?? 0,
+        ...(input.runtimeNetworkPolicy === undefined
+          ? {}
+          : { runtimeNetworkPolicy: input.runtimeNetworkPolicy }),
         ...(input.videoDirectory === undefined
           ? {}
           : { videoDirectory: input.videoDirectory }),

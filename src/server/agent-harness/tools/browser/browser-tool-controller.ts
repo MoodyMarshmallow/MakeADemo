@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 
 import type { PreparationWorkspace } from "../../../pipeline/03-repo-preparation/preparation-workspace.interface";
 import { executeSubmittedCode } from "../../../pipeline/03-repo-preparation/submitted-code-execution";
+import {
+  type RuntimeNetworkPolicy,
+  defaultRuntimeNetworkPolicy,
+} from "../../../pipeline/05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
 import { transferBrowserScreenshot } from "../../../shared/integrations/browser/browser-screenshot-transfer";
 import type {
   BrowserAction,
@@ -35,11 +39,19 @@ export function createBrowserToolController(
     localUrl: input.localUrl,
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   };
+  const runtimeNetworkPolicy =
+    input.runtimeNetworkPolicy ?? defaultRuntimeNetworkPolicy;
+  const runCommand = (
+    commandInput: Omit<
+      Parameters<typeof runBrowserCommand>[0],
+      "runtimeNetworkPolicy"
+    >,
+  ) => runBrowserCommand({ ...commandInput, runtimeNetworkPolicy });
 
   return {
     async act(action) {
       await ensureOpen();
-      const output = await runBrowserCommand({
+      const output = await runCommand({
         command: commandForAction(action),
         configure: false,
         deadlineAt: context.deadlineAt,
@@ -55,7 +67,7 @@ export function createBrowserToolController(
       await ensureOpen();
       await assertAuthorizedOrigin();
       const command = kind === "snapshot" ? "snapshot --depth=8" : kind;
-      const output = await runBrowserCommand({
+      const output = await runCommand({
         command,
         configure: false,
         deadlineAt: context.deadlineAt,
@@ -73,7 +85,7 @@ export function createBrowserToolController(
     async navigate({ path }) {
       await ensureOpen();
       const url = resolveRelativeUrl(context.localUrl, path);
-      const output = await runBrowserCommand({
+      const output = await runCommand({
         command: `goto ${shellQuote(url)}`,
         configure: false,
         deadlineAt: context.deadlineAt,
@@ -100,7 +112,7 @@ export function createBrowserToolController(
         `--filename=${shellQuote(sourcePath)}`,
         ...(options.fullPage === true ? ["--full-page"] : []),
       ].join(" ");
-      await runBrowserCommand({
+      await runCommand({
         command,
         configure: false,
         deadlineAt: context.deadlineAt,
@@ -146,7 +158,7 @@ export function createBrowserToolController(
     if (opened) return;
     maybeStarted = true;
     try {
-      await runBrowserCommand({
+      await runCommand({
         command: `open ${shellQuote(new URL(context.localUrl).toString())}`,
         configure: true,
         deadlineAt: context.deadlineAt,
@@ -166,7 +178,7 @@ export function createBrowserToolController(
   async function assertAuthorizedOrigin(): Promise<void> {
     let observedOrigin: string | undefined;
     try {
-      const output = await runBrowserCommand({
+      const output = await runCommand({
         command: `eval ${shellQuote("() => location.origin")}`,
         configure: false,
         deadlineAt: context.deadlineAt,
@@ -199,7 +211,7 @@ export function createBrowserToolController(
   async function cleanupSession(): Promise<void> {
     const cleanupDeadlineAt = Date.now() + 5_000;
     try {
-      await runBrowserCommand({
+      await runCommand({
         command: "close",
         configure: false,
         deadlineAt: cleanupDeadlineAt,
@@ -209,7 +221,7 @@ export function createBrowserToolController(
         workspace: input.workspace,
       });
     } catch {
-      await runBrowserCommand({
+      await runCommand({
         command: "kill-all",
         configure: false,
         deadlineAt: cleanupDeadlineAt,
@@ -261,6 +273,7 @@ async function runBrowserCommand(input: {
   session: string;
   signal: AbortSignal | undefined;
   localUrl: string;
+  runtimeNetworkPolicy: RuntimeNetworkPolicy;
   workspace: PreparationWorkspace;
 }): Promise<unknown> {
   throwIfCancelled(input.signal, input.deadlineAt);
@@ -274,7 +287,9 @@ async function runBrowserCommand(input: {
       isolated: true,
       launchOptions: { chromiumSandbox: false, headless: true },
     },
-    network: { allowedOrigins: [new URL(input.localUrl).origin] },
+    ...(input.runtimeNetworkPolicy === "loopback-only"
+      ? { network: { allowedOrigins: [new URL(input.localUrl).origin] } }
+      : {}),
     outputDir: outputDirectory,
     outputMode: "stdout",
   });
@@ -310,8 +325,12 @@ async function runBrowserCommand(input: {
       env: {
         NO_UPDATE_NOTIFIER: "1",
         PLAYWRIGHT_CLI_SESSION: input.session,
-        PLAYWRIGHT_MCP_ALLOWED_ORIGINS: new URL(input.localUrl).origin,
         PLAYWRIGHT_MCP_OUTPUT_DIR: outputDirectory,
+        ...(input.runtimeNetworkPolicy === "loopback-only"
+          ? {
+              PLAYWRIGHT_MCP_ALLOWED_ORIGINS: new URL(input.localUrl).origin,
+            }
+          : {}),
       },
       timeoutMs: remainingTimeout(input.deadlineAt),
     },

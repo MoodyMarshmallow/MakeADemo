@@ -7,6 +7,23 @@ import { writeGeneratedCaptureSdkHarness } from "./capture-sdk-harness";
 import { prepareStylizedPlaywrightScript } from "./stylized-playwright-script";
 
 describe("prepareStylizedPlaywrightScript", () => {
+  it("leaves public browser requests available when composition selects unrestricted public networking", () => {
+    const prepared = prepareStylizedPlaywrightScript(
+      "await page.goto(baseUrl);",
+      {
+        baseUrl: "http://localhost:3000",
+        headed: false,
+        mode: "validation",
+        pauseAfterSceneMs: 0,
+        runtimeNetworkPolicy: "unrestricted-public",
+      },
+    );
+
+    expect(prepared).not.toContain('context.route("**/*"');
+    expect(prepared).not.toContain("makeADemoOriginalFetch");
+    expect(prepared).not.toContain("[makeademo:network-blocked]");
+  });
+
   it("keeps validation dry runs fast and free of recording-only behavior", () => {
     const prepared = prepareStylizedPlaywrightScript(
       "await page.getByLabel(/message/i).fill('Show me the launch plan');\nawait page.getByRole('button', { name: /send/i }).click();",

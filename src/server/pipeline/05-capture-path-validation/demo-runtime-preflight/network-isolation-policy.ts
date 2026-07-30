@@ -6,6 +6,16 @@ export type NetworkAttempt = {
   url?: string;
 };
 
+/**
+ * Browser/runtime egress contract selected by production composition.
+ * `unrestricted-public` permits public destinations but does not change the
+ * sandbox provider's private-network isolation or secret-scoping rules.
+ */
+export type RuntimeNetworkPolicy = "loopback-only" | "unrestricted-public";
+
+export const defaultRuntimeNetworkPolicy: RuntimeNetworkPolicy =
+  "loopback-only";
+
 export function findRuntimeBoundaryViolations(
   attempts: readonly NetworkAttempt[],
 ): NetworkAttempt[] {

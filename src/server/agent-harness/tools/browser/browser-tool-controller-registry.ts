@@ -1,4 +1,5 @@
 import type { PreparationWorkspace } from "../../../pipeline/03-repo-preparation/preparation-workspace.interface";
+import type { RuntimeNetworkPolicy } from "../../../pipeline/05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
 import {
   type BrowserToolController,
   createBrowserToolController,
@@ -24,7 +25,11 @@ export interface BrowserToolControllerProvider {
  * workspaces. A WeakMap preserves controller identity across Pipeline Stages
  * while allowing workspace release to determine its lifetime.
  */
-export function createBrowserToolControllerProvider(): BrowserToolControllerProvider {
+export function createBrowserToolControllerProvider(
+  options: {
+    runtimeNetworkPolicy?: RuntimeNetworkPolicy;
+  } = {},
+): BrowserToolControllerProvider {
   const controllers = new WeakMap<
     PreparationWorkspace,
     BrowserToolController
@@ -34,7 +39,12 @@ export function createBrowserToolControllerProvider(): BrowserToolControllerProv
     forWorkspace(input) {
       let controller = controllers.get(input.workspace);
       if (controller === undefined) {
-        controller = createBrowserToolController(input);
+        controller = createBrowserToolController({
+          ...input,
+          ...(options.runtimeNetworkPolicy === undefined
+            ? {}
+            : { runtimeNetworkPolicy: options.runtimeNetworkPolicy }),
+        });
         controllers.set(input.workspace, controller);
       } else {
         controller.updateContext(input);

@@ -1,5 +1,6 @@
 import { join } from "node:path";
 
+import type { RuntimeNetworkPolicy } from "../../05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
 import type {
   CaptureManifest,
   CaptureScenesFromScriptInput,
@@ -74,6 +75,7 @@ type DraftCompositeReviewLoopOptions = PipelineOrchestratorOptions & {
     preparedDemo: PreparedDemoResult;
   }) => Promise<{ browserUrl?: string }>;
   reviewDraftComposite?: DraftCompositeReviewer;
+  runtimeNetworkPolicy?: RuntimeNetworkPolicy;
 };
 
 export type DraftCompositeReviewLoopInput = {
@@ -188,6 +190,11 @@ export async function runDraftCompositeReviewLoop(
           keepTemp: true,
           log: input.log,
           runId: `capture-${runSuffix}`,
+          ...(input.options.runtimeNetworkPolicy === undefined
+            ? {}
+            : {
+                runtimeNetworkPolicy: input.options.runtimeNetworkPolicy,
+              }),
           demoScript: preparedDemo.demoScript,
           ...(scriptPersistence.scriptPath === undefined
             ? {}

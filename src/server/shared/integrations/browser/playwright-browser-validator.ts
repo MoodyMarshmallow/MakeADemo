@@ -8,6 +8,8 @@ import type {
 } from "../../../pipeline/05-capture-path-validation/demo-runtime-preflight/browser-validator.interface";
 import {
   type NetworkAttempt,
+  type RuntimeNetworkPolicy,
+  defaultRuntimeNetworkPolicy,
   sanitizeNetworkAttemptUrl,
   sanitizeNetworkAttempts,
 } from "../../../pipeline/05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
@@ -42,15 +44,19 @@ type BrowserValidationPageFactory = () => Promise<BrowserValidationPage>;
 
 export type PlaywrightBrowserValidatorOptions = {
   pageFactory?: BrowserValidationPageFactory;
+  runtimeNetworkPolicy?: RuntimeNetworkPolicy;
   validationTimeoutMs?: number;
 };
 
 export class PlaywrightBrowserValidator implements BrowserValidator {
   private readonly pageFactory: BrowserValidationPageFactory;
+  private readonly runtimeNetworkPolicy: RuntimeNetworkPolicy;
   private readonly validationTimeoutMs: number;
 
   constructor(options: PlaywrightBrowserValidatorOptions = {}) {
     this.pageFactory = options.pageFactory ?? createPlaywrightPage;
+    this.runtimeNetworkPolicy =
+      options.runtimeNetworkPolicy ?? defaultRuntimeNetworkPolicy;
     this.validationTimeoutMs = options.validationTimeoutMs ?? 30_000;
   }
 
@@ -103,7 +109,10 @@ export class PlaywrightBrowserValidator implements BrowserValidator {
 
     const result = await executeSubmittedCode(
       preparationWorkspace.workspace,
-      createSubmittedCodeBrowserValidationCommand(input.url),
+      createSubmittedCodeBrowserValidationCommand(
+        input.url,
+        this.runtimeNetworkPolicy,
+      ),
     );
     if (result.exitCode !== 0) {
       const logs = [result.stdout, result.stderr].filter(
@@ -201,6 +210,10 @@ export class PlaywrightBrowserValidator implements BrowserValidator {
     const localHost = new URL(input.url).hostname;
     const blockedRequests: NetworkAttempt[] = [];
     await page.route?.("**/*", async (route) => {
+      if (this.runtimeNetworkPolicy === "unrestricted-public") {
+        await route.continue();
+        return;
+      }
       const blockedRequest = readForbiddenBrowserRequest(
         route.request().url(),
         localHost,
@@ -237,10 +250,13 @@ export class PlaywrightBrowserValidator implements BrowserValidator {
     const screenshotArtifactId = await page.screenshot();
     const interactable =
       bodyText.trim().length > 0 && !looksLikeRuntimeError(bodyText);
-    const blockedNetworkAttempts = findBlockedBrowserRequests(
-      input.url,
-      page.requestedUrls === undefined ? [] : await page.requestedUrls(),
-    );
+    const blockedNetworkAttempts =
+      this.runtimeNetworkPolicy === "unrestricted-public"
+        ? []
+        : findBlockedBrowserRequests(
+            input.url,
+            page.requestedUrls === undefined ? [] : await page.requestedUrls(),
+          );
 
     return {
       ...(blockedNetworkAttempts.length === 0
@@ -304,9 +320,12 @@ async function copyScreenshotToRepairWorkspace(
   }
 }
 
-function createSubmittedCodeBrowserValidationCommand(url: string): string {
+function createSubmittedCodeBrowserValidationCommand(
+  url: string,
+  runtimeNetworkPolicy: RuntimeNetworkPolicy,
+): string {
   return [
-    `node - ${shellQuote(url)} <<'MAKEADEMO_BROWSER_VALIDATION'`,
+    `node - ${shellQuote(url)} ${shellQuote(runtimeNetworkPolicy)} <<'MAKEADEMO_BROWSER_VALIDATION'`,
     submittedCodeBrowserValidationScript,
     "MAKEADEMO_BROWSER_VALIDATION",
   ].join("\n");
@@ -314,6 +333,7 @@ function createSubmittedCodeBrowserValidationCommand(url: string): string {
 
 const submittedCodeBrowserValidationScript = String.raw`
 const targetUrl = process.argv[2];
+const runtimeNetworkPolicy = process.argv[3];
 const localHost = new URL(targetUrl).hostname;
 const blockedRequests = [];
 let browser;
@@ -363,6 +383,10 @@ async function main() {
   });
   page.on?.("pageerror", (error) => pageErrors.push(error instanceof Error ? error.message : String(error)));
   await page.route("**/*", async (route) => {
+    if (runtimeNetworkPolicy === "unrestricted-public") {
+      await route.continue();
+      return;
+    }
     const requestUrl = route.request().url();
     const host = new URL(requestUrl).hostname;
     if (host !== localHost && host !== "localhost" && host !== "127.0.0.1" && host !== "::1") {

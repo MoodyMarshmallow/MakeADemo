@@ -943,6 +943,49 @@ describe("BrowserToolController", () => {
     ).toBe(true);
   });
 
+  it("leaves page subresource origins unrestricted under the public network policy", async () => {
+    const calls: Array<{
+      command: string;
+      allowedOrigins: string | undefined;
+    }> = [];
+    const controller = createBrowserToolController({
+      deadlineAt: Date.now() + 5_000,
+      localUrl: "http://127.0.0.1:3000",
+      runtimeNetworkPolicy: "unrestricted-public",
+      workspace: {
+        async execute() {
+          throw new Error("The browser controller must use submitted code.");
+        },
+        async executeSubmittedCode(command, options) {
+          calls.push({
+            allowedOrigins: options?.env?.PLAYWRIGHT_MCP_ALLOWED_ORIGINS,
+            command,
+          });
+          return {
+            exitCode: 0,
+            stderr: "",
+            stdout: command.includes(" eval ")
+              ? pinnedCliResultStdout("http://127.0.0.1:3000")
+              : "{}",
+          };
+        },
+        async getPreviewUrl() {
+          return "https://preview.example.test";
+        },
+        async uploadFiles() {},
+      },
+    });
+
+    await controller.navigate({ path: "/" });
+
+    expect(
+      calls.some(({ command }) => command.includes("allowedOrigins")),
+    ).toBe(false);
+    expect(
+      calls.every(({ allowedOrigins }) => allowedOrigins === undefined),
+    ).toBe(true);
+  });
+
   it("closes and reopens before using a retained controller at a different authorized origin", async () => {
     const actions: string[] = [];
     let authorizedOrigin = "http://127.0.0.1:3000";

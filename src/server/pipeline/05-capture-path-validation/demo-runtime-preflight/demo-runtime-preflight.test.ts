@@ -346,6 +346,61 @@ describe("runDemoRuntimePreflight", () => {
     expect(cleanedUp).toBe(true);
   });
 
+  it("does not fail on public runtime attempts under the unrestricted policy", async () => {
+    const sandboxRunner: SandboxRunner = {
+      async runValidation() {
+        return {
+          blockedNetworkAttempts: [
+            {
+              direction: "outbound",
+              host: "api.example.com",
+              phase: "runtime",
+            },
+          ],
+          logs: ["started demo"],
+          repoFiles: ["package.json"],
+          runtimeExitCode: 0,
+        };
+      },
+    };
+    const browserValidator: BrowserValidator = {
+      async validate() {
+        return {
+          blockedNetworkAttempts: [
+            {
+              direction: "outbound",
+              host: "cdn.example.com",
+              phase: "runtime",
+            },
+          ],
+          interactable: true,
+          logs: ["loaded app"],
+          screenshotArtifactId: "artifact_screenshot",
+        };
+      },
+    };
+
+    const result = await runDemoRuntimePreflight(
+      {
+        preparationManifest: manifest({
+          demoCommand: "npm run demo",
+          url: "http://localhost:5173",
+        }),
+        preparationWorkspace: workspaceHandle([]),
+      },
+      {
+        browserValidator,
+        runtimeNetworkPolicy: "unrestricted-public",
+        sandboxRunner,
+      },
+    );
+
+    expect(result).toMatchObject({
+      blockedNetworkAttempts: [],
+      status: "succeeded",
+    });
+  });
+
   it("returns a failed validation result when sandbox validation throws", async () => {
     const sandboxRunner: SandboxRunner = {
       async runValidation() {

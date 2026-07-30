@@ -10,6 +10,10 @@ import {
 } from "../04-script-generation/demo-script/capture-sdk-event.schema";
 import { executeDemoScriptInSandbox } from "../04-script-generation/demo-script/demo-script-sandbox-executor";
 import {
+  type RuntimeNetworkPolicy,
+  defaultRuntimeNetworkPolicy,
+} from "../05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
+import {
   type SceneClipTrimLogger,
   type SceneClipTrimmer,
   createSceneClipTrimmer,
@@ -34,6 +38,7 @@ export class PreparedWorkspacePlaywrightSceneRecorder implements SceneRecorder {
   private readonly postRollMs: number;
   private readonly preRollMs: number;
   private readonly sceneTimeoutMs: number;
+  private readonly runtimeNetworkPolicy: RuntimeNetworkPolicy;
   private readonly clipTrimmer: SceneClipTrimmer;
 
   constructor(
@@ -45,6 +50,7 @@ export class PreparedWorkspacePlaywrightSceneRecorder implements SceneRecorder {
       preparationWorkspace: PreparationWorkspaceHandle;
       log?: SceneClipTrimLogger;
       sceneTimeoutMs?: number;
+      runtimeNetworkPolicy?: RuntimeNetworkPolicy;
     },
   ) {
     this.headed = options.headed ?? false;
@@ -52,6 +58,8 @@ export class PreparedWorkspacePlaywrightSceneRecorder implements SceneRecorder {
     this.postRollMs = options.postRollMs ?? 350;
     this.preRollMs = options.preRollMs ?? 250;
     this.sceneTimeoutMs = options.sceneTimeoutMs ?? 120_000;
+    this.runtimeNetworkPolicy =
+      options.runtimeNetworkPolicy ?? defaultRuntimeNetworkPolicy;
     this.clipTrimmer = createSubmittedCodeSceneClipTrimmer({
       ...(options.log === undefined ? {} : { log: options.log }),
       workspace: options.preparationWorkspace.workspace,
@@ -95,13 +103,17 @@ export class PreparedWorkspacePlaywrightSceneRecorder implements SceneRecorder {
       mode: "recording",
       pauseAfterSceneMs: this.pauseAfterSceneMs,
       remoteRunDirectory: remoteSceneWorkspace,
+      runtimeNetworkPolicy: this.runtimeNetworkPolicy,
       scriptFilename: "demo-script.ts",
       timeoutMs: this.sceneTimeoutMs,
       videoDirectory: remoteVideoScratchDirectory,
       workspace,
     });
     await writeFile(markerLogPath, extractMarkerLog(result.stdout));
-    if (result.blockedNetworkAttempts.length > 0) {
+    if (
+      this.runtimeNetworkPolicy === "loopback-only" &&
+      result.blockedNetworkAttempts.length > 0
+    ) {
       throw new Error(
         `Footage Capture blocked runtime network access from the generated Demo Script: ${result.blockedNetworkAttempts.map((attempt) => attempt.host).join(", ")}`,
       );

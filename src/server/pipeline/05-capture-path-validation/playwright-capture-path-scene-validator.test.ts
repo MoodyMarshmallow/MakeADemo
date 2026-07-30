@@ -139,6 +139,25 @@ describe("DefaultCapturePathSceneValidator", () => {
     });
   });
 
+  it("does not reject public runtime evidence under the unrestricted policy", async () => {
+    const validator = new DefaultCapturePathSceneValidator({
+      runtimeNetworkPolicy: "unrestricted-public",
+    });
+    const result = await validator.validateScene(
+      validationInput(
+        "scene_network",
+        preparedWorkspaceReturning({
+          exitCode: 0,
+          stderr:
+            '[makeademo:network-blocked] {"direction":"outbound","host":"analytics.example.com","phase":"runtime"}',
+          stdout: "",
+        }),
+      ),
+    );
+
+    expect(result).toMatchObject({ status: "succeeded" });
+  });
+
   it("maps an exit-124 timeout to bounded dry-run failure evidence", async () => {
     const validator = new DefaultCapturePathSceneValidator();
     const result = await validator.validateScene(

@@ -10,6 +10,10 @@ import type {
   CapturePathSceneValidationResult,
   CapturePathSceneValidator,
 } from "./capture-path-validator";
+import {
+  type RuntimeNetworkPolicy,
+  defaultRuntimeNetworkPolicy,
+} from "./demo-runtime-preflight/network-isolation-policy";
 
 const missingSandboxPlaywrightFailureReason =
   "MakeADemo validator dependency failure: Playwright is not available inside the submitted-code sandbox.";
@@ -18,6 +22,13 @@ const capturePathDemoScriptTimeoutMs = 120_000;
 export class DefaultCapturePathSceneValidator
   implements CapturePathSceneValidator
 {
+  private readonly runtimeNetworkPolicy: RuntimeNetworkPolicy;
+
+  constructor(options: { runtimeNetworkPolicy?: RuntimeNetworkPolicy } = {}) {
+    this.runtimeNetworkPolicy =
+      options.runtimeNetworkPolicy ?? defaultRuntimeNetworkPolicy;
+  }
+
   async validateScene(
     input: CapturePathSceneValidationInput,
   ): Promise<CapturePathSceneValidationResult> {
@@ -31,6 +42,7 @@ export class DefaultCapturePathSceneValidator
         mode: "validation",
         pauseAfterSceneMs: 0,
         remoteRunDirectory: runDirectory,
+        runtimeNetworkPolicy: this.runtimeNetworkPolicy,
         scriptFilename: `${input.scene.id}.ts`,
         timeoutMs: capturePathDemoScriptTimeoutMs,
         workspace: input.preparationWorkspace.workspace,
@@ -52,7 +64,10 @@ export class DefaultCapturePathSceneValidator
       (output) => output.length > 0,
     );
     const blockedNetworkAttempts = result.blockedNetworkAttempts;
-    if (blockedNetworkAttempts.length > 0) {
+    if (
+      this.runtimeNetworkPolicy === "loopback-only" &&
+      blockedNetworkAttempts.length > 0
+    ) {
       return {
         blockedNetworkAttempts,
         failureReason:
