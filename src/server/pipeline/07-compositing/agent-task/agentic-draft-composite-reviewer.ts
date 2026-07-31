@@ -48,7 +48,7 @@ export class AgenticDraftCompositeReviewer {
     }
 
     const workspace = input.preparationWorkspace;
-    const hardDeadlineAt = Math.min(
+    let hardDeadlineAt = Math.min(
       Date.now() + this.options.hardTimeoutMs,
       input.deadlineAt ?? Number.POSITIVE_INFINITY,
     );
@@ -101,6 +101,12 @@ export class AgenticDraftCompositeReviewer {
       ...(input.deadlineAt === undefined
         ? {}
         : { deadlineCeilingAt: input.deadlineAt }),
+      onHardDeadlineExtended: ({ hardDeadlineAt: extendedAt }) => {
+        hardDeadlineAt = Math.max(
+          hardDeadlineAt,
+          Math.min(extendedAt, input.deadlineAt ?? Number.POSITIVE_INFINITY),
+        );
+      },
       taskPrompt: createDraftCompositeReviewPrompt(input),
       session: input.agentSession,
       ...(input.signal === undefined ? {} : { signal: input.signal }),
@@ -111,6 +117,11 @@ export class AgenticDraftCompositeReviewer {
       workspace: createRepoPreparationAgentWorkspace(workspace.workspace),
     });
     throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
+    if (Date.now() >= hardDeadlineAt) {
+      throw new Error(
+        `Draft Composite review exceeded its hard cap of ${this.options.hardTimeoutMs}ms.`,
+      );
+    }
     if (result.exitCode !== 0) {
       throw new Error(
         `Draft Composite review agent task exited with ${result.exitCode}: ${result.failure?.message ?? "agent task failed before artifact validation."}`,

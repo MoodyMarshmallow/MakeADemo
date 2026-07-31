@@ -73,6 +73,8 @@ export function bindAgentTaskRunner(
           ...input,
           onAudit: (event, metadata) =>
             recordEvent({ event, kind: "audit", metadata }),
+          onHardDeadlineExtended: (extension) =>
+            input.onHardDeadlineExtended?.(extension),
           onReasoning: (content) =>
             emitOutput("standard", formatReasoning(content), "reasoning"),
           onStderr: (chunk) => emitOutput("diagnostic", chunk, "diagnostic"),

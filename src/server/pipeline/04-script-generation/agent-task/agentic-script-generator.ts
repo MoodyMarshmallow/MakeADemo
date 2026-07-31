@@ -68,7 +68,7 @@ export class AgenticScriptGenerator implements ScriptGenerationAgent {
   async generateDemoScript(
     input: AgenticScriptGenerationInput,
   ): Promise<DemoScript> {
-    const hardDeadlineAt = Math.min(
+    let hardDeadlineAt = Math.min(
       Date.now() + this.hardTimeoutMs,
       input.deadlineAt ?? Number.POSITIVE_INFINITY,
     );
@@ -90,13 +90,32 @@ export class AgenticScriptGenerator implements ScriptGenerationAgent {
         agentSession: input.agentSession,
       });
       await removePreviousDemoScript(input);
-      const browserController =
-        this.browserToolControllerProvider?.forWorkspace({
+      let browserController:
+        | ReturnType<
+            NonNullable<
+              AgenticScriptGeneratorOptions["browserToolControllerProvider"]
+            >["forWorkspace"]
+          >
+        | undefined;
+      const onHardDeadlineExtended = ({
+        hardDeadlineAt: extendedAt,
+      }: { hardDeadlineAt: number }) => {
+        hardDeadlineAt = Math.max(
+          hardDeadlineAt,
+          Math.min(extendedAt, input.deadlineAt ?? Number.POSITIVE_INFINITY),
+        );
+        browserController?.updateContext({
           deadlineAt: hardDeadlineAt,
-          ...(input.signal === undefined ? {} : { signal: input.signal }),
           localUrl: input.preparationManifest.url,
-          workspace: input.preparationWorkspace.workspace,
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
         });
+      };
+      browserController = this.browserToolControllerProvider?.forWorkspace({
+        deadlineAt: hardDeadlineAt,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+        localUrl: input.preparationManifest.url,
+        workspace: input.preparationWorkspace.workspace,
+      });
       const result = await (async () => {
         try {
           return await this.runner.run({
@@ -104,6 +123,7 @@ export class AgenticScriptGenerator implements ScriptGenerationAgent {
             ...(input.deadlineAt === undefined
               ? {}
               : { deadlineCeilingAt: input.deadlineAt }),
+            onHardDeadlineExtended,
             taskPrompt: prompt,
             session: input.agentSession,
             ...(input.signal === undefined ? {} : { signal: input.signal }),
@@ -123,6 +143,11 @@ export class AgenticScriptGenerator implements ScriptGenerationAgent {
         }
       })();
       throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
+      if (Date.now() >= hardDeadlineAt) {
+        throw new Error(
+          `Script Generation exceeded its hard cap of ${this.hardTimeoutMs}ms.`,
+        );
+      }
 
       if (result.exitCode !== 0) {
         const retryReason = `Script Generation agent task exited with ${result.exitCode}.`;

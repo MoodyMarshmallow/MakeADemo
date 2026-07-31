@@ -59,6 +59,16 @@ export type AgentToolDefinition = {
   name: string;
 };
 
+/**
+ * Provider-neutral hard-timeout extension applied during a retry backoff.
+ * Consumers must apply `hardDeadlineAt` synchronously, monotonically, and
+ * never beyond their immutable Pipeline deadline ceiling.
+ */
+export type AgentHardDeadlineExtension = {
+  appliedExtensionMs: number;
+  hardDeadlineAt: number;
+};
+
 type AgentToolDecodeResult<T> =
   | { status: "ignored" }
   | { reason: string; status: "invalid" }
@@ -87,6 +97,12 @@ export type AgentSessionRunInput<T = never> = {
   tools?: readonly AgentToolDefinition[];
   /** Receives reasoning text or summaries explicitly exposed by the provider. */
   onReasoning?: (content: string) => void;
+  /**
+   * Receives each applied provider retry extension synchronously while the
+   * runner is still in the retry turn; consumers must clamp and apply it
+   * monotonically before returning control to the Pipeline Stage.
+   */
+  onHardDeadlineExtended?: (extension: AgentHardDeadlineExtension) => void;
   /**
    * Receives bounded, provider-neutral audit metadata for a harness lifecycle
    * event. Implementations must never include provider error text or secrets.

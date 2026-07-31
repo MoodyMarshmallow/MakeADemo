@@ -9,6 +9,7 @@ import {
 
 import type { AgentSession } from "../agent-session";
 import type {
+  AgentHardDeadlineExtension,
   AgentSessionProfile,
   AgentSessionRunInput,
   AgentSessionRunResult,
@@ -42,9 +43,12 @@ const context7ToolNames = ["resolve-library-id", "query-docs"] as const;
 const retryPolicy = {
   baseDelayMs: 2_000,
   enabled: true,
-  maxRetries: 3,
+  maxRetries: 5,
 } as const;
-const maxRetryTimeoutExtensionMs = 30_000;
+// Reserve enough hard-timeout extension for every provider-owned exponential
+// backoff sleep configured above: base * (1 + 2 + ... + 2^(retries - 1)).
+const maxRetryTimeoutExtensionMs =
+  retryPolicy.baseDelayMs * (2 ** retryPolicy.maxRetries - 1);
 
 /** Minimal provider runtime methods used by the harness. */
 export type PiModelRuntime = Pick<ModelRuntime, "getModel"> & {
@@ -296,6 +300,11 @@ export class PiAgentSession implements AgentSessionRunner {
             hardExtensionMs: appliedDelayMs,
             sleepDelayMs: requestedDelayMs,
           });
+          const extension: AgentHardDeadlineExtension = {
+            appliedExtensionMs: appliedDelayMs,
+            hardDeadlineAt: retryBackoff.hardDeadlineAt(),
+          };
+          input.onHardDeadlineExtended?.(extension);
           const metadata = {
             appliedDelayMs,
             appliedHardTimeoutExtensionMs: appliedDelayMs,

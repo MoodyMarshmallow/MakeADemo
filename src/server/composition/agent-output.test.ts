@@ -90,7 +90,7 @@ describe("createAgentOutputRouter", () => {
         capped: false,
         cumulativeDelayMs: 2_000,
         delayMs: 2_000,
-        maxAttempts: 3,
+        maxAttempts: 5,
         reason: "rate-limit",
         requestedDelayMs: 2_000,
       },

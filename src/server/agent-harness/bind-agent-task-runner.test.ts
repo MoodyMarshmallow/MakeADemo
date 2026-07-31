@@ -67,6 +67,30 @@ describe("bindAgentTaskRunner", () => {
     },
   );
 
+  it("forwards provider hard-deadline extensions through the task seam", async () => {
+    const extension = {
+      appliedExtensionMs: 2_000,
+      hardDeadlineAt: Date.now() + 3_000,
+    };
+    const run = vi.fn(async (input) => {
+      input.onHardDeadlineExtended?.(extension);
+      return { exitCode: 0, stderr: "", stdout: "" };
+    });
+    const onHardDeadlineExtended = vi.fn();
+    const runner = bindAgentTaskRunner({ run } as never, {
+      profile: {
+        label: "test",
+        modelID: "model",
+        providerID: "provider",
+        thinkingLevel: "medium",
+      },
+    });
+
+    await runner.run({ ...taskInput(), onHardDeadlineExtended });
+
+    expect(onHardDeadlineExtended).toHaveBeenCalledWith(extension);
+  });
+
   it("keeps provider settings in the bound runner and emits semantic output events", async () => {
     const run = vi.fn(async (input): Promise<AgentSessionRunResult> => {
       input.onStdout?.("provider text");

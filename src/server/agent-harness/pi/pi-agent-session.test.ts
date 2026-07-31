@@ -210,7 +210,7 @@ describe("PiAgentSession", () => {
 
       expect(settings).toHaveBeenCalledWith(
         expect.objectContaining({
-          retry: { baseDelayMs: 2_000, enabled: true, maxRetries: 3 },
+          retry: { baseDelayMs: 2_000, enabled: true, maxRetries: 5 },
         }),
       );
     } finally {
@@ -1222,7 +1222,7 @@ describe("PiAgentSession", () => {
       attempt: 1,
       delayMs: 2_000,
       errorMessage: "rate limit for org_123 at https://example.test",
-      maxAttempts: 3,
+      maxAttempts: 5,
       type: "auto_retry_start",
     });
     session.state.messages = [
@@ -1265,7 +1265,7 @@ describe("PiAgentSession", () => {
         capped: false,
         cumulativeDelayMs: 2_000,
         delayMs: 2_000,
-        maxAttempts: 3,
+        maxAttempts: 5,
         reason: "rate-limit",
         requestedDelayMs: 2_000,
       }),
@@ -1306,7 +1306,7 @@ describe("PiAgentSession", () => {
       attempt: 1,
       delayMs: 2_000,
       errorMessage: "rate limit exceeded",
-      maxAttempts: 3,
+      maxAttempts: 5,
       type: "auto_retry_start",
     });
 
@@ -1342,7 +1342,7 @@ describe("PiAgentSession", () => {
     await vi.waitFor(() => expect(sessions[0]?.subscribe).toHaveBeenCalled());
     const finalError = "429 retry budget exhausted";
     sessions[0]?.emit({
-      attempt: 3,
+      attempt: 5,
       finalError,
       success: false,
       type: "auto_retry_end",
@@ -1368,12 +1368,18 @@ describe("PiAgentSession", () => {
       resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
     });
     const audits: Array<Record<string, boolean | number | string>> = [];
+    const deadlineExtensions: Array<{
+      appliedExtensionMs: number;
+      hardDeadlineAt: number;
+    }> = [];
+    const hardDeadlineAt = Date.now() + 1_000;
     const resultPromise = runner.run({
       attempt: 1,
-      hardDeadlineAt: Date.now() + 1_000,
+      hardDeadlineAt,
       hardTimeoutMs: 1_000,
       inactivityTimeoutMs: 1_000,
       onAudit: (_event, metadata) => audits.push(metadata),
+      onHardDeadlineExtended: (extension) => deadlineExtensions.push(extension),
       profile,
       stage: "test",
       taskPrompt: "retry",
@@ -1384,21 +1390,40 @@ describe("PiAgentSession", () => {
       [1, 2_000],
       [2, 4_000],
       [3, 8_000],
+      [4, 16_000],
+      [5, 32_000],
     ] as const) {
       sessions[0]?.emit({
         attempt,
         delayMs,
         errorMessage: "temporary upstream failure",
-        maxAttempts: 3,
+        maxAttempts: 5,
         type: "auto_retry_start",
       });
     }
 
     await expect(resultPromise).resolves.toMatchObject({ exitCode: 0 });
     expect(audits.map((entry) => entry.cumulativeDelayMs)).toEqual([
-      2_000, 6_000, 14_000,
+      2_000, 6_000, 14_000, 30_000, 62_000,
     ]);
+    expect(audits.map((entry) => entry.appliedDelayMs)).toEqual([
+      2_000, 4_000, 8_000, 16_000, 32_000,
+    ]);
+    expect(audits.map((entry) => entry.maxAttempts)).toEqual([5, 5, 5, 5, 5]);
+    expect(deadlineExtensions).toEqual([
+      { appliedExtensionMs: 2_000, hardDeadlineAt: hardDeadlineAt + 2_000 },
+      { appliedExtensionMs: 4_000, hardDeadlineAt: hardDeadlineAt + 6_000 },
+      { appliedExtensionMs: 8_000, hardDeadlineAt: hardDeadlineAt + 14_000 },
+      { appliedExtensionMs: 16_000, hardDeadlineAt: hardDeadlineAt + 30_000 },
+      { appliedExtensionMs: 32_000, hardDeadlineAt: hardDeadlineAt + 62_000 },
+    ]);
+    expect(audits.at(-1)).toMatchObject({
+      capped: false,
+      requestedDelayMs: 32_000,
+    });
     expect(audits.map((entry) => entry.reason)).toEqual([
+      "transient-provider-failure",
+      "transient-provider-failure",
       "transient-provider-failure",
       "transient-provider-failure",
       "transient-provider-failure",
@@ -1430,7 +1455,7 @@ describe("PiAgentSession", () => {
       attempt: 1,
       delayMs: 40_000,
       errorMessage: "rate_limit response 429",
-      maxAttempts: 3,
+      maxAttempts: 5,
       type: "auto_retry_start",
     });
 

@@ -7,3 +7,9 @@ The Agent Harness combines Global Agent Tools with only the active Pipeline Stag
 The embedded Pi SDK is private to the Agent Harness. Pi models, events, native sessions, resource loading, and MCP clients remain behind the harness interface. The Harness disables normal Pi project and user discovery, supplies an in-memory configuration, and explicitly loads only MakeADemo policy and approved integrations. Daytona remains an External Seam because it provisions and operates workspaces and submitted-code sandboxes for both agent and deterministic Pipeline behavior; Pi delegates all model-invocable filesystem and command operations to that seam rather than the backend host.
 
 This refines ADR 0011 rather than replacing it: runtime call direction is Pipeline to Agent Harness, while the user-visible MakeADemo Pipeline remains the product core. It also preserves ADRs 0012 and 0017: one Agent Session may continue across stages, but agent output never replaces authoritative Capture Path Validation.
+
+The Harness owns provider retry policy: at most five retries (six total provider
+requests) with exponential backoff waits of 2, 4, 8, 16, and 32 seconds. Each
+applied wait emits a sanitized warning audit and synchronously extends the
+stage's mutable hard deadline. Extensions are capped by, and never move, an
+immutable Pipeline deadline supplied by the caller.

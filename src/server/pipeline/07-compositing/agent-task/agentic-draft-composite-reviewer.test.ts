@@ -1,7 +1,7 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { PipelineEventLogger } from "../../../shared/logging/pipeline-event-logger";
 import { createPipelineEventLogger } from "../../../shared/logging/pipeline-event-logger";
@@ -179,6 +179,41 @@ describe("AgenticDraftCompositeReviewer", () => {
     });
     expect(agent.runner.calls[0]?.hardDeadlineAt).toBe(deadlineAt);
     expect(agent.runner.calls[0]?.taskPrompt.length).toBeLessThan(35_000);
+  });
+
+  it("uses a retry-extended hard deadline for the review artifact read", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const reviewDirectory = await mkdtemp(
+        join(tmpdir(), "makeademo-review-"),
+      );
+      const agent = new DraftCompositeReviewAgentFixture({});
+      const originalRun = agent.runner.run.bind(agent.runner);
+      vi.spyOn(agent.runner, "run").mockImplementation(async (input) => {
+        const result = await originalRun(input);
+        input.onHardDeadlineExtended?.({
+          appliedExtensionMs: 100,
+          hardDeadlineAt: input.hardDeadlineAt + 100,
+        });
+        vi.setSystemTime(input.hardDeadlineAt + 50);
+        return result;
+      });
+
+      await expect(
+        agent.reviewDraftComposite({
+          ...draftCompositeReviewInput(reviewDirectory, {
+            contactSheetPaths: [],
+            sampledFramePaths: [],
+          }),
+          preparationWorkspace: createAgentWorkspaceFixture({
+            artifacts: [{ decision: "accept", reason: "Looks good." }],
+          }).preparationWorkspace,
+        }),
+      ).resolves.toEqual({ decision: "accept", reason: "Looks good." });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("retries a transient Daytona socket closure while uploading Draft Composite evidence", async () => {

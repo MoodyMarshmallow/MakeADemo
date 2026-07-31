@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { BrowserToolController } from "../../../agent-harness/tools/browser/browser-tool-controller.interface";
 import type { PipelineEventLogger } from "../../../shared/logging/pipeline-event-logger";
@@ -103,6 +103,30 @@ describe("AgenticCapturePathRepairer", () => {
       }),
     ]);
     expect(controller.resets).toBe(1);
+  });
+
+  it("uses a retry-extended hard deadline for post-repair artifact reads", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const agent = new CapturePathRepairAgentFixture({});
+      const originalRun = agent.runner.run.bind(agent.runner);
+      vi.spyOn(agent.runner, "run").mockImplementation(async (input) => {
+        const result = await originalRun(input);
+        input.onHardDeadlineExtended?.({
+          appliedExtensionMs: 100,
+          hardDeadlineAt: input.hardDeadlineAt + 100,
+        });
+        vi.setSystemTime(input.hardDeadlineAt + 50);
+        return result;
+      });
+
+      await expect(
+        agent.repairCapturePathFailure(capturePathRepairInput()),
+      ).resolves.toMatchObject({ demoScript: { scriptId: "script_conduit" } });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("sends Capture Path Validation failure evidence back to the same Agent Session for repair", async () => {

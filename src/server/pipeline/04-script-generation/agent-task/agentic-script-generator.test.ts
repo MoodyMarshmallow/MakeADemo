@@ -173,6 +173,40 @@ describe("AgenticScriptGenerator", () => {
     ).rejects.toThrow(/Initial Script Generation artifact read .*timed out/);
   });
 
+  it("uses a retry-extended hard deadline for the post-agent artifact read", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const agent = new ScriptGenerationAgentFixture({
+        hardTimeoutMs: 100,
+        maxAttempts: 1,
+        timeoutMs: 100,
+      });
+      const originalRun = agent.runner.run.bind(agent.runner);
+      vi.spyOn(agent.runner, "run").mockImplementation(async (input) => {
+        const result = await originalRun(input);
+        input.onHardDeadlineExtended?.({
+          appliedExtensionMs: 100,
+          hardDeadlineAt: input.hardDeadlineAt + 100,
+        });
+        vi.setSystemTime(input.hardDeadlineAt + 50);
+        return result;
+      });
+
+      await expect(
+        agent.generateDemoScript({
+          ...scriptGenerationInput(),
+          agentSession: createAgentSession(),
+          preparationWorkspace: createAgentWorkspaceFixture({
+            artifacts: [canonicalDemoScript()],
+          }).preparationWorkspace,
+        }),
+      ).resolves.toMatchObject({ scriptId: "script_conduit" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("retries transient Daytona socket closures while reading the initial Demo Script artifact", async () => {
     const events: unknown[] = [];
     const agent = new ScriptGenerationAgentFixture({});

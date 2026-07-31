@@ -57,7 +57,7 @@ export class AgenticCapturePathRepairer {
       throw new Error("Capture Path repair requires the prepared workspace.");
     }
     const preparationWorkspace = input.preparationWorkspace;
-    const hardDeadlineAt = Math.min(
+    let hardDeadlineAt = Math.min(
       Date.now() + this.options.hardTimeoutMs,
       input.deadlineAt ?? Number.POSITIVE_INFINITY,
     );
@@ -80,6 +80,20 @@ export class AgenticCapturePathRepairer {
       try {
         return await this.options.runner.run({
           attempt: input.attempt,
+          onHardDeadlineExtended: ({ hardDeadlineAt: extendedAt }) => {
+            hardDeadlineAt = Math.max(
+              hardDeadlineAt,
+              Math.min(
+                extendedAt,
+                input.deadlineAt ?? Number.POSITIVE_INFINITY,
+              ),
+            );
+            browserController?.updateContext({
+              deadlineAt: hardDeadlineAt,
+              localUrl: input.preparationManifest.url,
+              ...(input.signal === undefined ? {} : { signal: input.signal }),
+            });
+          },
           ...(input.deadlineAt === undefined
             ? {}
             : { deadlineCeilingAt: input.deadlineAt }),
@@ -105,6 +119,11 @@ export class AgenticCapturePathRepairer {
       }
     })();
     throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
+    if (Date.now() >= hardDeadlineAt) {
+      throw new Error(
+        `Capture Path repair exceeded its hard cap of ${this.options.hardTimeoutMs}ms.`,
+      );
+    }
     if (result.exitCode !== 0) {
       const reason = `Capture Path repair agent task exited with ${result.exitCode}: ${result.failure?.message ?? "agent task failed before artifact validation."}`;
       await writeRepairSandboxLog(this.options.logger, input, {

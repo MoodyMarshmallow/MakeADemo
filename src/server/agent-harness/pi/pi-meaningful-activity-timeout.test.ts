@@ -62,7 +62,7 @@ describe("Pi meaningful activity timeout", () => {
     });
   });
 
-  it("accumulates retry extensions on the harness hard timer", async () => {
+  it("accumulates all five exponential retry extensions on the harness hard timer", async () => {
     vi.useFakeTimers();
     const activity = createPiActivityTracker();
     const backoff = createPiRetryBackoff(activity, Date.now() + 100);
@@ -80,8 +80,10 @@ describe("Pi meaningful activity timeout", () => {
     backoff.start({ hardExtensionMs: 2, sleepDelayMs: 2 });
     backoff.start({ hardExtensionMs: 4, sleepDelayMs: 4 });
     backoff.start({ hardExtensionMs: 8, sleepDelayMs: 8 });
-    expect(backoff.cumulativeDelayMs()).toBe(14);
-    await vi.advanceTimersByTimeAsync(113);
+    backoff.start({ hardExtensionMs: 16, sleepDelayMs: 16 });
+    backoff.start({ hardExtensionMs: 32, sleepDelayMs: 32 });
+    expect(backoff.cumulativeDelayMs()).toBe(62);
+    await vi.advanceTimersByTimeAsync(161);
     let settled = false;
     void result.catch(() => {
       settled = true;
