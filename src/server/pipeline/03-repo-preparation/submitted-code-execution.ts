@@ -1,3 +1,7 @@
+import {
+  type PreparationWorkspaceInfrastructureDiagnostic,
+  readPreparationWorkspaceInfrastructureDiagnostic,
+} from "./preparation-workspace-infrastructure.interface";
 import type {
   PreparationWorkspace,
   PreparationWorkspaceCommandResult,
@@ -6,6 +10,24 @@ import type {
   SubmittedProjectRuntimeRequest,
 } from "./preparation-workspace.interface";
 import type { SubmittedCodeToolchainPlan } from "./submitted-code-toolchain.schema";
+
+/**
+ * Raised when trusted package-manager metadata proves that the repository's
+ * exact toolchain declaration must be repaired before provisioning can run.
+ */
+export class SubmittedCodeToolchainRepairRequiredError extends Error {
+  constructor(
+    readonly code:
+      | "deprecated_release"
+      | "incompatible_node_package_manager"
+      | "package_manager_integrity_mismatch"
+      | "package_manager_release_unavailable",
+    reason: string,
+  ) {
+    super(reason);
+    this.name = "SubmittedCodeToolchainRepairRequiredError";
+  }
+}
 
 /**
  * Raised when MakeADemo cannot copy the prepared workspace into the
@@ -31,6 +53,9 @@ export class SubmittedCodeWorkspaceSyncError extends Error {
 export class SubmittedCodeToolchainProvisioningError extends Error {
   readonly failureKind =
     "submitted-code-toolchain-provisioning-failed" as const;
+  readonly preparationWorkspaceInfrastructureDiagnostic:
+    | PreparationWorkspaceInfrastructureDiagnostic
+    | undefined;
 
   constructor(cause: unknown) {
     super(
@@ -43,6 +68,8 @@ export class SubmittedCodeToolchainProvisioningError extends Error {
       },
     );
     this.name = "SubmittedCodeToolchainProvisioningError";
+    this.preparationWorkspaceInfrastructureDiagnostic =
+      readPreparationWorkspaceInfrastructureDiagnostic(cause);
   }
 }
 
@@ -115,6 +142,7 @@ export async function provisionSubmittedCodeToolchain(
     }
     await workspace.provisionSubmittedCodeToolchain(plan);
   } catch (error) {
+    if (error instanceof SubmittedCodeToolchainRepairRequiredError) throw error;
     throw new SubmittedCodeToolchainProvisioningError(error);
   }
 }

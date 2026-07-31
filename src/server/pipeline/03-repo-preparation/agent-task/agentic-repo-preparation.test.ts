@@ -11,6 +11,7 @@ import type { BrowserToolController } from "../../../agent-harness/tools/browser
 import { createPipelineEventLogger } from "../../../shared/logging/pipeline-event-logger";
 import { createAgentSession } from "../../../test-support/create-agent-session";
 import { PipelineCancellationError } from "../../00-orchestration/job/pipeline-cancellation";
+import { PreparationWorkspaceInfrastructureError } from "../preparation-workspace-infrastructure.interface";
 import type { PreparationWorkspaceProvider } from "../preparation-workspace-runner";
 import type {
   PreparationWorkspace,
@@ -18,6 +19,7 @@ import type {
   SubmittedProjectExecutionRequest,
 } from "../preparation-workspace.interface";
 import { prepareRepo } from "../repo-preparer";
+import { SubmittedCodeToolchainRepairRequiredError } from "../submitted-code-execution";
 import {
   SubmittedCodeNodeReleaseCatalogError,
   submittedCodeKnownGoodNodeReleaseCatalog,
@@ -202,6 +204,39 @@ describe("AgenticRepoPreparation", () => {
     ]);
   });
 
+  it("shares the preparation cancellation budget with workspace creation", async () => {
+    const events: unknown[] = [];
+    const received: Array<
+      { deadlineAt?: number; signal?: AbortSignal } | undefined
+    > = [];
+    const baseProvider = fakeProvider(events);
+    const provider: PreparationWorkspaceProvider = {
+      async create(options?: { deadlineAt?: number; signal?: AbortSignal }) {
+        received.push(options);
+        return baseProvider.create();
+      },
+    };
+    const deadlineAt = Date.now() + 30_000;
+    const agent = createRepoPreparationAgent({ provider, timeoutMs: 1_000 });
+
+    await expect(
+      agent.prepare({
+        deadlineAt,
+        normalizedSupportingDocuments: [],
+        repoUrl: "https://github.com/example/app",
+        structuredDemoIntent: { keyProductFeatures: ["validation"] },
+        workspaceId: "workspace_123",
+      }),
+    ).resolves.toMatchObject({ status: "succeeded" });
+
+    expect(received).toEqual([
+      {
+        deadlineAt,
+        signal: expect.any(AbortSignal),
+      },
+    ]);
+  });
+
   it("cancels and settles setup before releasing when the shared signal aborts", async () => {
     const events: unknown[] = [];
     const baseProvider = fakeProvider(events);
@@ -246,6 +281,96 @@ describe("AgenticRepoPreparation", () => {
     expect(events.filter(isReleaseEvent)).toEqual([
       { release: "daytona_workspace" },
     ]);
+  });
+
+  it("preserves cancellation while carrying safe infrastructure when cancellation cleanup cannot settle", async () => {
+    const events: unknown[] = [];
+    const baseProvider = fakeProvider(events, {
+      releaseError: new PreparationWorkspaceInfrastructureError({
+        phase: "release-settlement",
+        provider: "daytona",
+      }),
+    });
+    const provider: PreparationWorkspaceProvider = {
+      async create() {
+        const handle = await baseProvider.create();
+        const execute = handle.workspace.execute.bind(handle.workspace);
+        let settleClone: (() => void) | undefined;
+        handle.workspace.execute = async (command, options) => {
+          if (command.includes("git clone")) {
+            await new Promise<void>((resolve) => {
+              settleClone = resolve;
+            });
+          }
+          return execute(command, options);
+        };
+        handle.workspace.cancelActiveCommands = async () => {
+          settleClone?.();
+        };
+        return handle;
+      },
+    };
+    const controller = new AbortController();
+    const agent = createRepoPreparationAgent({ provider, timeoutMs: 1_000 });
+    const preparation = agent.prepare({
+      deadlineAt: Date.now() + 30_000,
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      signal: controller.signal,
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    await waitFor(() => events.some((event) => "sandboxLog" in Object(event)));
+    controller.abort(new PipelineCancellationError("signal"));
+
+    await expect(preparation).rejects.toMatchObject({
+      preparationWorkspaceInfrastructureDiagnostic: {
+        phase: "release-settlement",
+        provider: "daytona",
+      },
+      reason: "signal",
+    });
+  });
+
+  it("preserves late Daytona creation cleanup infrastructure on cancellation", async () => {
+    const controller = new AbortController();
+    const provider: PreparationWorkspaceProvider = {
+      async create(options) {
+        return new Promise((_, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () =>
+              reject(
+                new PreparationWorkspaceInfrastructureError({
+                  phase: "release-settlement",
+                  provider: "daytona",
+                }),
+              ),
+            { once: true },
+          );
+        });
+      },
+    };
+    const agent = createRepoPreparationAgent({ provider, timeoutMs: 1_000 });
+    const preparation = agent.prepare({
+      deadlineAt: Date.now() + 30_000,
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      signal: controller.signal,
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    controller.abort(new PipelineCancellationError("signal"));
+
+    await expect(preparation).rejects.toMatchObject({
+      preparationWorkspaceInfrastructureDiagnostic: {
+        phase: "release-settlement",
+        provider: "daytona",
+      },
+      reason: "signal",
+    });
   });
 
   it("keeps cancelling setup commands that start after the shared signal aborts", async () => {
@@ -421,6 +546,54 @@ describe("AgenticRepoPreparation", () => {
         "makeademo_submit_preparation_result",
       ]),
     });
+  });
+
+  it("uses a retry-extended hard deadline after a provider backoff", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const events: unknown[] = [];
+      const runner = new RecordingAgentTaskRunner();
+      const originalRun = runner.run.bind(runner);
+      vi.spyOn(runner, "run").mockImplementation(async (input) => {
+        const result = await originalRun(input);
+        input.onHardDeadlineExtended?.({
+          appliedExtensionMs: 20_000,
+          hardDeadlineAt: input.hardDeadlineAt + 20_000,
+        });
+        vi.setSystemTime(input.hardDeadlineAt + 50);
+        return {
+          ...result,
+          handoff: {
+            input: {
+              manifestPath: "/workspace/.makeademo/preparation-manifest.json",
+            },
+            toolName: "makeademo_validate_preparation" as const,
+          },
+        };
+      });
+      const agent = createRepoPreparationAgent({
+        hardTimeoutMs: 20_000,
+        provider: fakeProvider(events, {
+          commandStdout: ["Submitted preparation result."],
+          preparationResult: successResult(),
+          validationResult: validationArtifact(),
+        }),
+        runner,
+        timeoutMs: 20_000,
+      });
+
+      const result = await agent.prepare({
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
+        normalizedSupportingDocuments: [],
+        repoUrl: "https://github.com/example/app",
+        structuredDemoIntent: { keyProductFeatures: ["validation"] },
+        workspaceId: "workspace_123",
+      });
+      expect(result).toMatchObject({ status: "succeeded" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("continues Repo Preparation when sandbox progress logging fails", async () => {
@@ -620,6 +793,68 @@ describe("AgenticRepoPreparation", () => {
 
     expect(result).toMatchObject({
       blockers: ["PTY connection timeout"],
+      status: "failed",
+      suggestedChanges: [
+        "Retry Repo Preparation in a fresh Preparation Workspace.",
+      ],
+    });
+  });
+
+  it("preserves a safe preparation workspace infrastructure diagnostic as terminal infrastructure failure", async () => {
+    const agent = createRepoPreparationAgent({
+      provider: {
+        async create() {
+          throw new PreparationWorkspaceInfrastructureError({
+            phase: "creation-settlement",
+            provider: "daytona",
+          });
+        },
+      },
+      timeoutMs: 1_000,
+    });
+
+    await expect(
+      agent.prepare({
+        normalizedSupportingDocuments: [],
+        repoUrl: "https://github.com/example/app",
+        structuredDemoIntent: { keyProductFeatures: ["validation"] },
+        workspaceId: "workspace_123",
+      }),
+    ).resolves.toMatchObject({
+      failureKind: "sandbox-infrastructure-failed",
+      infrastructure: {
+        phase: "creation-settlement",
+        provider: "daytona",
+      },
+      status: "failed",
+    });
+  });
+
+  it("preserves release-settlement infrastructure when an otherwise ordinary preparation failure is cleaned up", async () => {
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider([], {
+        agentResults: [new Error("agent execution failed")],
+        releaseError: new PreparationWorkspaceInfrastructureError({
+          phase: "release-settlement",
+          provider: "daytona",
+        }),
+      }),
+      timeoutMs: 1_000,
+    });
+
+    await expect(
+      agent.prepare({
+        normalizedSupportingDocuments: [],
+        repoUrl: "https://github.com/example/app",
+        structuredDemoIntent: { keyProductFeatures: ["validation"] },
+        workspaceId: "workspace_123",
+      }),
+    ).resolves.toMatchObject({
+      failureKind: "sandbox-infrastructure-failed",
+      infrastructure: {
+        phase: "release-settlement",
+        provider: "daytona",
+      },
       status: "failed",
     });
   });
@@ -1880,6 +2115,66 @@ describe("AgenticRepoPreparation", () => {
     expect(runner.calls).toHaveLength(3);
   });
 
+  it("lets the agent repair a package-manager release rejected by trusted metadata", async () => {
+    const runner = new RecordingAgentTaskRunner();
+    const events: unknown[] = [];
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider(events, {
+        agentResults: [
+          dependencyInstallHandoff(),
+          dependencyInstallHandoff(),
+          validationHandoff(),
+        ],
+        toolchainMetadataResults: [
+          supportedToolchainMetadata(),
+          supportedToolchainMetadata(),
+          supportedToolchainMetadata("11.13.1"),
+        ],
+        toolchainProvisioningErrors: [
+          new SubmittedCodeToolchainRepairRequiredError(
+            "deprecated_release",
+            "Trusted registry metadata marks pnpm@11.13.0 as deprecated.",
+          ),
+        ],
+      }),
+      runner,
+      timeoutMs: 1_000,
+    });
+
+    const result = await agent.prepare({
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result).toMatchObject({ status: "succeeded" });
+    expect(runner.calls).toHaveLength(3);
+    expect(runner.calls[1]?.taskPrompt).toContain("deprecated_release");
+    expect(
+      events.flatMap((event) =>
+        typeof event === "object" &&
+        event !== null &&
+        "sandboxLog" in event &&
+        typeof event.sandboxLog === "object" &&
+        event.sandboxLog !== null &&
+        "event" in event.sandboxLog &&
+        event.sandboxLog.event === "dependency-install-catalog-command-selected"
+          ? [event.sandboxLog]
+          : [],
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        declaredPackageManagerIntegrity: false,
+        packageManager: "pnpm@11.13.0",
+      }),
+      expect.objectContaining({
+        declaredPackageManagerIntegrity: false,
+        packageManager: "pnpm@11.13.1",
+      }),
+    ]);
+  });
+
   it("continues after an authoritative dependency rescan finds a missing lockfile", async () => {
     const runner = new RecordingAgentTaskRunner();
     const agent = createRepoPreparationAgent({
@@ -2431,6 +2726,7 @@ function fakeProvider(
           AgentTaskRunResult<RepoPreparationToolHandoff> | Error
         >;
         preparationResult?: ReturnType<typeof successResult>;
+        releaseError?: Error;
         queuedSandboxLogWrites?: boolean;
         sandboxLogFailureEvent?: string;
         sandboxLogDelayMs?: number;
@@ -2450,6 +2746,7 @@ function fakeProvider(
         toolchainMetadataResults?: unknown[];
         toolchainInspectionResult?: PreparationWorkspaceCommandResult | Error;
         toolchainProvisioningError?: Error;
+        toolchainProvisioningErrors?: Error[];
       } = [JSON.stringify(successResult())],
 ): PreparationWorkspaceProvider {
   const workspaceInput = Array.isArray(input)
@@ -2484,6 +2781,8 @@ function fakeProvider(
       return {
         async release() {
           events.push({ release: "daytona_workspace" });
+          if (workspaceInput.releaseError !== undefined)
+            throw workspaceInput.releaseError;
         },
         id: "daytona_workspace",
         workspace,
@@ -2506,6 +2805,7 @@ function fakeWorkspace(
       AgentTaskRunResult<RepoPreparationToolHandoff> | Error
     >;
     preparationResult?: ReturnType<typeof successResult>;
+    releaseError?: Error;
     queuedSandboxLogWrites?: boolean;
     sandboxLogFailureEvent?: string;
     sandboxLogDelayMs?: number;
@@ -2525,6 +2825,7 @@ function fakeWorkspace(
     toolchainMetadataResults?: unknown[];
     toolchainInspectionResult?: PreparationWorkspaceCommandResult | Error;
     toolchainProvisioningError?: Error;
+    toolchainProvisioningErrors?: Error[];
   },
 ): PreparationWorkspace {
   const commandStdout = input.commandStdout ?? [
@@ -2538,6 +2839,9 @@ function fakeWorkspace(
   let validationRequest = input.validationRequest;
   let validationResult = input.validationResult;
   const toolchainMetadataResults = [...(input.toolchainMetadataResults ?? [])];
+  const toolchainProvisioningErrors = [
+    ...(input.toolchainProvisioningErrors ?? []),
+  ];
 
   return {
     async executeAgentCommand(command) {
@@ -2764,6 +3068,8 @@ function fakeWorkspace(
       return { exitCode: 0, stderr: "", stdout: "installed" };
     },
     async provisionSubmittedCodeToolchain() {
+      const error = toolchainProvisioningErrors.shift();
+      if (error !== undefined) throw error;
       if (input.toolchainProvisioningError !== undefined) {
         throw input.toolchainProvisioningError;
       }
@@ -2875,14 +3181,14 @@ function validationHandoff(): AgentTaskRunResult<RepoPreparationToolHandoff> {
   };
 }
 
-function supportedToolchainMetadata() {
+function supportedToolchainMetadata(packageManagerVersion = "11.13.0") {
   return {
     candidates: [
       {
         files: {
           "package.json": JSON.stringify({
             engines: { node: "22" },
-            packageManager: "pnpm@11.13.0",
+            packageManager: `pnpm@${packageManagerVersion}`,
           }),
           "pnpm-lock.yaml": "",
         },

@@ -133,7 +133,8 @@ export class PreparedWorkspaceSandboxRunner implements SandboxRunner {
         url: input.url,
       });
       const readinessResult = await waitForDemoReadiness({
-        execute: (command) => executeSubmittedCode(handle.workspace, command),
+        execute: (command, options) =>
+          executeSubmittedCode(handle.workspace, command, options),
         pollIntervalMs: this.readinessPollIntervalMs,
         timeoutMs: this.readinessTimeoutMs,
         url: input.url,
@@ -361,8 +362,12 @@ export async function restartPreparedDemoForFreshCapture(input: {
     stdout: runtimeResult.stdout,
   });
   const readinessResult = await waitForDemoReadiness({
-    execute: (command) =>
-      executeSubmittedCode(input.preparationWorkspace.workspace, command),
+    execute: (command, options) =>
+      executeSubmittedCode(
+        input.preparationWorkspace.workspace,
+        command,
+        options,
+      ),
     pollIntervalMs: input.readinessPollIntervalMs ?? 1_000,
     timeoutMs: input.readinessTimeoutMs ?? 30_000,
     url: input.preparationManifest.url,
@@ -674,9 +679,11 @@ async function waitForDemoReadiness(input: {
   timeoutMs: number;
   url: string;
 }) {
+  const budgetMs = Math.max(1, input.timeoutMs);
+  const deadlineAt = Date.now() + budgetMs;
   const attempts = Math.max(
     1,
-    Math.ceil(input.timeoutMs / Math.max(1, input.pollIntervalMs)),
+    Math.ceil(budgetMs / Math.max(1, input.pollIntervalMs)),
   );
   let lastResult = {
     exitCode: 1,
@@ -685,13 +692,28 @@ async function waitForDemoReadiness(input: {
   };
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    lastResult = await input.execute(createDemoReadinessCommand(input.url));
+    const remainingBeforeProbeMs = deadlineAt - Date.now();
+    if (attempt > 0 && remainingBeforeProbeMs <= 0) {
+      break;
+    }
+    const remainingMs = Math.max(1, remainingBeforeProbeMs);
+    lastResult = await input.execute(
+      createDemoReadinessCommand(
+        input.url,
+        readinessFetchTimeoutMs(remainingMs),
+      ),
+      { timeoutMs: remainingMs },
+    );
     if (lastResult.exitCode === 0) {
       return lastResult;
     }
 
+    const remainingAfterProbeMs = deadlineAt - Date.now();
+    if (remainingAfterProbeMs <= 0) {
+      break;
+    }
     if (input.pollIntervalMs > 0 && attempt < attempts - 1) {
-      await delay(input.pollIntervalMs);
+      await delay(Math.min(input.pollIntervalMs, remainingAfterProbeMs));
     }
   }
 
@@ -705,8 +727,16 @@ async function waitForDemoReadiness(input: {
   };
 }
 
-function createDemoReadinessCommand(url: string): string {
-  return `node -e ${shellQuote("fetch(process.argv[1]).then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1));")} ${shellQuote(url)}`;
+function readinessFetchTimeoutMs(commandTimeoutMs: number): number {
+  const providerSettlementMarginMs = Math.min(
+    1_000,
+    Math.max(1, Math.floor(commandTimeoutMs / 10)),
+  );
+  return Math.max(1, commandTimeoutMs - providerSettlementMarginMs);
+}
+
+function createDemoReadinessCommand(url: string, timeoutMs: number): string {
+  return `node -e ${shellQuote("fetch(process.argv[1], { signal: AbortSignal.timeout(Number(process.argv[2])) }).then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1));")} ${shellQuote(url)} ${shellQuote(String(timeoutMs))}`;
 }
 
 function readPortFromLocalUrl(url: string): number {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { PreparationWorkspaceInfrastructureError } from "./preparation-workspace-infrastructure.interface";
 import type { PreparationWorkspace } from "./preparation-workspace.interface";
 import {
   SubmittedCodeToolchainProvisioningError,
@@ -62,6 +63,45 @@ describe("submitted-code execution helpers", () => {
       cause,
       failureKind: "submitted-code-toolchain-provisioning-failed",
       message: "trusted provisioning unavailable",
+    });
+  });
+
+  it("preserves safe infrastructure attribution through the provisioning wrapper", async () => {
+    const cause = new PreparationWorkspaceInfrastructureError({
+      phase: "trusted-provisioning",
+      provider: "daytona",
+    });
+
+    await expect(
+      provisionSubmittedCodeToolchain(
+        {
+          ...fakeWorkspace(),
+          async provisionSubmittedCodeToolchain() {
+            throw cause;
+          },
+        },
+        {
+          catalogRevision: "submitted-js-2026-07-26.1",
+          evidence: [],
+          node: {
+            family: 22,
+            lifecycle: "supported",
+            version: "22.23.1",
+          },
+          packageManager: {
+            generation: "bun-1",
+            name: "bun",
+            version: "1.2.22",
+          },
+          projectRoot: ".",
+        },
+      ),
+    ).rejects.toMatchObject({
+      failureKind: "submitted-code-toolchain-provisioning-failed",
+      preparationWorkspaceInfrastructureDiagnostic: {
+        phase: "trusted-provisioning",
+        provider: "daytona",
+      },
     });
   });
 

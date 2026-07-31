@@ -15,12 +15,25 @@ export type PreparationWorkspaceHandle = {
 };
 
 /**
+ * Cooperative budget for provisioning a Repo Preparation workspace.
+ * Providers must stop provisioning when `signal` aborts and must not start or
+ * wait beyond `deadlineAt`; callers retain responsibility for releasing a
+ * successfully returned handle.
+ */
+type PreparationWorkspaceCreateOptions = {
+  deadlineAt?: number;
+  signal?: AbortSignal;
+};
+
+/**
  * Provisions isolated workspaces for Repo Preparation.
  * Implementations should hide provider-specific lifecycle, execution, logging,
  * and teardown details behind this product-level seam.
  */
 export interface PreparationWorkspaceProvider {
-  create(): Promise<PreparationWorkspaceHandle>;
+  create(
+    options?: PreparationWorkspaceCreateOptions,
+  ): Promise<PreparationWorkspaceHandle>;
 }
 
 export type PreparationWorkspaceRunResult<T> =

@@ -4,7 +4,7 @@
  * bindings such as PATH, HOME, browser stores, and credential variables are
  * deliberately absent and must remain non-overridable at provider seams.
  */
-export const makeADemoSubmittedRuntimeEnvironmentKeys = [
+const makeADemoSubmittedRuntimeEnvironmentKeys = [
   "CHILD_CONCURRENCY",
   "CI",
   "CMAKE_BUILD_PARALLEL_LEVEL",

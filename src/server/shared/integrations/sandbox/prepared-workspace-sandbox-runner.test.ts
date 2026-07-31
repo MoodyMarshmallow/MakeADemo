@@ -584,6 +584,39 @@ describe("DaytonaSandboxRunner", () => {
     expect(result.logs).not.toContain("demo server failed");
   });
 
+  it("bounds a stalled demo readiness probe by the readiness deadline", async () => {
+    const workspace = new FakePreparationWorkspaceHandle(new Map(), undefined, {
+      hangUnboundedReadiness: true,
+    });
+    workspace.readinessResults = [1];
+    const runner = new DaytonaSandboxRunner({
+      readinessPollIntervalMs: 0,
+      readinessTimeoutMs: 10,
+    });
+
+    const outcome = await Promise.race([
+      runner
+        .runValidation({
+          demoCommand: "npm run demo",
+          preparationManifest: manifest("workspace_123"),
+          preparationWorkspace: workspace,
+          repoUrl: "https://github.com/example/app",
+          url: "http://localhost:3000",
+        })
+        .then(() => "settled" as const),
+      new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 50)),
+    ]);
+
+    expect(outcome).toBe("settled");
+    expect(workspace.readinessTimeouts.length).toBeGreaterThan(0);
+    expect(
+      workspace.readinessTimeouts.every(
+        (timeoutMs) =>
+          timeoutMs !== undefined && timeoutMs > 0 && timeoutMs <= 10,
+      ),
+    ).toBe(true);
+  });
+
   it("returns a Daytona preview URL for the submitted-code browser URL", async () => {
     const workspace = new FakePreparationWorkspaceHandle();
     const runner = new DaytonaSandboxRunner();
@@ -693,9 +726,13 @@ describe("DaytonaSandboxRunner", () => {
         command: expect.stringContaining("exec npm run demo:makeademo"),
       }),
     ]);
-    expect(workspace.submittedCommands[2]).toBe(
-      "node -e 'fetch(process.argv[1]).then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1));' 'http://localhost:3000'",
+    expect(workspace.submittedCommands[2]).toContain(
+      "signal: AbortSignal.timeout",
     );
+    expect(workspace.submittedCommands[2]).toContain("'http://localhost:3000'");
+    expect(workspace.readinessTimeouts).toHaveLength(1);
+    expect(workspace.readinessTimeouts[0]).toBeGreaterThan(0);
+    expect(workspace.readinessTimeouts[0]).toBeLessThanOrEqual(30_000);
     expect(result.browserUrl).toBe("https://preview.example.test:3000/");
     expect(workspace.sandboxLogs).toEqual(
       expect.arrayContaining([
@@ -864,6 +901,7 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
   plannedRuntimes: Array<{ command: string; nodeVersion: string }> = [];
   provisionedToolchains: string[] = [];
   readinessResults: number[] = [];
+  readinessTimeouts: Array<number | undefined> = [];
   sandboxLogs: Record<string, unknown>[] = [];
   submittedCommands: string[] = [];
   toolchainPlan: ReturnType<typeof supportedPlan> = supportedPlan();
@@ -872,6 +910,7 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
   private readonly options: {
     failFreshCaptureRestore?: boolean;
     failSandboxLogWrites?: boolean;
+    hangUnboundedReadiness?: boolean;
     neverSettleSandboxLogWrites?: boolean;
     repoFilesOutput?: string;
   };
@@ -882,6 +921,7 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
     options: {
       failFreshCaptureRestore?: boolean;
       failSandboxLogWrites?: boolean;
+      hangUnboundedReadiness?: boolean;
       neverSettleSandboxLogWrites?: boolean;
       repoFilesOutput?: string;
     } = {},
@@ -901,9 +941,21 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
       }
       return { exitCode: 0, stderr: "", stdout: `outer ${command}` };
     },
-    executeSubmittedCode: async (command: string) => {
+    executeSubmittedCode: async (
+      command: string,
+      options: { timeoutMs?: number } = {},
+    ) => {
       this.submittedCommands.push(command);
       this.events.push(command);
+      if (command.includes("fetch")) {
+        this.readinessTimeouts.push(options.timeoutMs);
+        if (
+          this.options.hangUnboundedReadiness === true &&
+          options.timeoutMs === undefined
+        ) {
+          return await new Promise<never>(() => undefined);
+        }
+      }
       return this.runCommand(command);
     },
     executeSubmittedProject: async (request: {

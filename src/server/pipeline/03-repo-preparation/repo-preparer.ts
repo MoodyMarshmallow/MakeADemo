@@ -26,6 +26,9 @@ export async function prepareRepo(
       ...(result.failureKind === undefined
         ? {}
         : { failureKind: result.failureKind }),
+      ...(result.infrastructure === undefined
+        ? {}
+        : { infrastructure: result.infrastructure }),
       status: "failed",
     };
   }

@@ -2,6 +2,7 @@ import type { AgentSession } from "../../agent-harness/agent-session";
 import type { DemoBrief } from "../01-context-gathering/intake/demo-brief.schema";
 import type { NormalizedSupportingDocument } from "../01-context-gathering/supporting-documents";
 import type { PreparationManifest } from "./preparation-manifest";
+import type { PreparationWorkspaceInfrastructureDiagnostic } from "./preparation-workspace-infrastructure.interface";
 import type { PreparationWorkspaceHandle } from "./preparation-workspace-runner";
 import type { RepoPreparationPreflightResult } from "./repo-preparation-preflight.interface";
 
@@ -19,7 +20,8 @@ export type RepoPreparationInput = {
 
 export type RepoPreparationFailureKind =
   | "dependency-install-sigkill"
-  | "repository_node_dependency_incompatible";
+  | "repository_node_dependency_incompatible"
+  | "sandbox-infrastructure-failed";
 
 type RepoPreparationAgentResult =
   | {
@@ -39,6 +41,8 @@ type RepoPreparationAgentResult =
       blockers: string[];
       /** Stable infrastructure classification for failures the agent cannot repair. */
       failureKind?: RepoPreparationFailureKind;
+      /** Explicitly safe provider and phase attribution for an infrastructure failure. */
+      infrastructure?: PreparationWorkspaceInfrastructureDiagnostic;
       status: "failed";
       suggestedChanges: string[];
       /** The final bounded preflight verdict, when Repo Preparation exhausted repairs. */
@@ -67,5 +71,6 @@ export type RepoPreparationResult =
   | {
       fallbackPrompt: string;
       failureKind?: RepoPreparationFailureKind;
+      infrastructure?: PreparationWorkspaceInfrastructureDiagnostic;
       status: "failed";
     };

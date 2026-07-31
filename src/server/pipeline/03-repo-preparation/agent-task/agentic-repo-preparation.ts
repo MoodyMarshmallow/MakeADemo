@@ -25,6 +25,10 @@ import {
   type readPreparationManifest,
   validateNativeVisibleInterfaceProvenance,
 } from "../preparation-manifest";
+import {
+  type PreparationWorkspaceInfrastructureDiagnostic,
+  readPreparationWorkspaceInfrastructureDiagnostic,
+} from "../preparation-workspace-infrastructure.interface";
 import type {
   PreparationWorkspaceHandle,
   PreparationWorkspaceProvider,
@@ -36,6 +40,7 @@ import type {
 } from "../repo-preparation-agent.interface";
 import type { RepoPreparationPreflightResult } from "../repo-preparation-preflight.interface";
 import {
+  SubmittedCodeToolchainRepairRequiredError,
   provisionSubmittedCodeToolchain,
   syncSubmittedCodeWorkspace,
 } from "../submitted-code-execution";
@@ -153,26 +158,48 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
   ): Promise<RepoPreparationResult> {
     const deadlineAt = input.deadlineAt ?? Date.now() + this.hardTimeoutMs;
     this.throwIfCancelled(input, deadlineAt);
-    const creation = this.provider.create();
+    const creation = this.provider.create({
+      deadlineAt,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    });
     let handle: PreparationWorkspaceHandle;
     try {
       handle = await waitForPreparationOperation(creation, input.signal);
     } catch (error) {
       if (pipelineCancellationFromSignal(input.signal) !== undefined) {
         const lateHandle = await creation.catch(() => undefined);
+        let releaseInfrastructure =
+          readPreparationWorkspaceInfrastructureDiagnostic(error);
         if (lateHandle !== undefined) {
           await cancelActiveCommandsQuietly(lateHandle);
-          await releaseQuietly(lateHandle);
+          releaseInfrastructure ??=
+            await releaseInfrastructureQuietly(lateHandle);
         }
+        if (releaseInfrastructure !== undefined)
+          throw preparationCancellationWithCleanup(
+            error,
+            input.signal,
+            releaseInfrastructure,
+          );
         throw preparationCancellation(error, input.signal);
       }
+      const infrastructure =
+        readPreparationWorkspaceInfrastructureDiagnostic(error);
+      if (infrastructure !== undefined)
+        return preparationInfrastructureFailure(infrastructure);
       throw error;
     }
     try {
       this.throwIfCancelled(input, deadlineAt);
     } catch (error) {
       await cancelActiveCommandsQuietly(handle);
-      await releaseQuietly(handle);
+      const releaseInfrastructure = await releaseInfrastructureQuietly(handle);
+      if (releaseInfrastructure !== undefined)
+        throw preparationCancellationWithCleanup(
+          error,
+          input.signal,
+          releaseInfrastructure,
+        );
       throw error;
     }
     await this.writeSandboxLog(handle.workspace, {
@@ -194,7 +221,14 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     } catch (error) {
       if (isPreparationCancellation(error, input.signal)) {
         await cancelActiveCommandsQuietly(handle);
-        await releaseQuietly(handle);
+        const releaseInfrastructure =
+          await releaseInfrastructureQuietly(handle);
+        if (releaseInfrastructure !== undefined)
+          throw preparationCancellationWithCleanup(
+            error,
+            input.signal,
+            releaseInfrastructure,
+          );
         throw preparationCancellation(error, input.signal);
       }
       await this.writeSandboxLog(handle.workspace, {
@@ -202,13 +236,18 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         event: "preparation-error",
       });
       await cancelActiveCommandsQuietly(handle);
-      await releaseQuietly(handle);
+      const releaseInfrastructure = await releaseInfrastructureQuietly(handle);
+      const infrastructure =
+        readPreparationWorkspaceInfrastructureDiagnostic(error) ??
+        releaseInfrastructure;
+      if (infrastructure !== undefined)
+        return preparationInfrastructureFailure(infrastructure);
       return {
         assumptions: [],
         blockers: [readErrorMessage(error)],
         status: "failed" as const,
         suggestedChanges: [
-          "Retry Repo Preparation in a fresh Daytona workspace.",
+          "Retry Repo Preparation in a fresh Preparation Workspace.",
         ],
       };
     }
@@ -228,7 +267,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         blockers: [result.reason],
         status: "failed" as const,
         suggestedChanges: [
-          "Retry Repo Preparation in a fresh Daytona workspace.",
+          "Retry Repo Preparation in a fresh Preparation Workspace.",
         ],
       };
     }
@@ -246,7 +285,14 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
       } catch (error) {
         if (isPreparationCancellation(error, input.signal)) {
           await cancelActiveCommandsQuietly(handle);
-          await releaseQuietly(handle);
+          const releaseInfrastructure =
+            await releaseInfrastructureQuietly(handle);
+          if (releaseInfrastructure !== undefined)
+            throw preparationCancellationWithCleanup(
+              error,
+              input.signal,
+              releaseInfrastructure,
+            );
           throw preparationCancellation(error, input.signal);
         }
         await this.writeSandboxLog(handle.workspace, {
@@ -254,18 +300,27 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
           event: "preparation-error",
         });
         await cancelActiveCommandsQuietly(handle);
-        await releaseQuietly(handle);
+        const releaseInfrastructure =
+          await releaseInfrastructureQuietly(handle);
+        const infrastructure =
+          readPreparationWorkspaceInfrastructureDiagnostic(error) ??
+          releaseInfrastructure;
+        if (infrastructure !== undefined)
+          return preparationInfrastructureFailure(infrastructure);
         return {
           assumptions: [],
           blockers: [readErrorMessage(error)],
           status: "failed" as const,
           suggestedChanges: [
-            "Retry Repo Preparation in a fresh Daytona workspace.",
+            "Retry Repo Preparation in a fresh Preparation Workspace.",
           ],
         };
       }
       if (loopResult.status === "failed") {
-        await releaseQuietly(handle);
+        const releaseInfrastructure =
+          await releaseInfrastructureQuietly(handle);
+        if (releaseInfrastructure !== undefined)
+          return preparationInfrastructureFailure(releaseInfrastructure);
       }
 
       return loopResult;
@@ -273,7 +328,9 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
 
     const setupResult = result.value.result;
     if (setupResult.status === "failed") {
-      await releaseQuietly(handle);
+      const releaseInfrastructure = await releaseInfrastructureQuietly(handle);
+      if (releaseInfrastructure !== undefined)
+        return preparationInfrastructureFailure(releaseInfrastructure);
     }
 
     return setupResult;
@@ -363,8 +420,9 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     input: RepoPreparationInput,
     initialPrompt: string,
     baselineSourceControlledPaths: string[],
-    hardDeadlineAt: number,
+    initialHardDeadlineAt: number,
   ): Promise<AgentTaskLoopResult> {
+    let hardDeadlineAt = initialHardDeadlineAt;
     let prompt = initialPrompt;
     let repairLocalUrl: string | undefined;
     let agentSession: AgentSession | undefined;
@@ -401,6 +459,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         remainingMs: deadlineAt - Date.now(),
       });
       let agentTaskResult: AgentTaskRunResult<RepoPreparationToolHandoff>;
+      const turnHardDeadlineAt = hardDeadlineAt;
       const browserController =
         repairLocalUrl === undefined
           ? undefined
@@ -410,6 +469,19 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
               localUrl: repairLocalUrl,
               workspace: handle.workspace,
             });
+      const onHardDeadlineExtended = ({
+        hardDeadlineAt: extendedAt,
+      }: { hardDeadlineAt: number }) => {
+        hardDeadlineAt = Math.max(
+          hardDeadlineAt,
+          Math.min(extendedAt, input.deadlineAt ?? Number.POSITIVE_INFINITY),
+        );
+        browserController?.updateContext({
+          deadlineAt: hardDeadlineAt,
+          localUrl: repairLocalUrl ?? "",
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+        });
+      };
       agentTaskResult = await (async () => {
         try {
           return await this.runner.run({
@@ -417,6 +489,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
             ...(input.deadlineAt === undefined
               ? {}
               : { deadlineCeilingAt: input.deadlineAt }),
+            onHardDeadlineExtended,
             hardDeadlineAt,
             hardTimeoutMs: this.hardTimeoutMs,
             inactivityLabel: "Repo Preparation agent",
@@ -456,6 +529,9 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         throw new PipelineCancellationError("deadline-exceeded");
       }
       throwIfPipelineCancelled(input.signal);
+      if (hardDeadlineAt > turnHardDeadlineAt) {
+        deadlineAt = Math.min(Date.now() + this.timeoutMs, hardDeadlineAt);
+      }
       if (
         Date.now() > initialDeadlineAt &&
         agentTaskResult.lastMeaningfulActivity !== undefined
@@ -579,16 +655,33 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
               };
             }
             await this.writeSandboxLog(handle.workspace, {
+              declaredPackageManagerIntegrity:
+                plannedInstall.packageManager?.corepackHash !== undefined,
               event: "dependency-install-catalog-command-selected",
               executedArgv: plannedInstall.install.argv,
               executedExecutable: plannedInstall.install.executable,
               installProfile: "bounded",
+              packageManager:
+                plannedInstall.packageManager === undefined
+                  ? "none"
+                  : `${plannedInstall.packageManager.name}@${plannedInstall.packageManager.version}`,
             });
             throwIfDependencyOperationCancelled();
-            await provisionSubmittedCodeToolchain(
-              handle.workspace,
-              plannedInstall,
-            );
+            try {
+              await provisionSubmittedCodeToolchain(
+                handle.workspace,
+                plannedInstall,
+              );
+            } catch (error) {
+              if (error instanceof SubmittedCodeToolchainRepairRequiredError) {
+                return {
+                  code: error.code,
+                  reason: error.message,
+                  status: "repair" as const,
+                };
+              }
+              throw error;
+            }
             throwIfDependencyOperationCancelled();
             await syncSubmittedCodeWorkspace(handle.workspace);
             throwIfDependencyOperationCancelled();
@@ -715,7 +808,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
             ],
             status: "failed" as const,
             suggestedChanges: [
-              "Retry Repo Preparation in a fresh Daytona workspace.",
+              "Retry Repo Preparation in a fresh Preparation Workspace.",
             ],
           };
         }
@@ -794,7 +887,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
       blockers: [reason],
       status: "failed" as const,
       suggestedChanges: [
-        "Retry Repo Preparation in a fresh Daytona workspace.",
+        "Retry Repo Preparation in a fresh Preparation Workspace.",
       ],
     };
   }
@@ -1027,7 +1120,19 @@ function waitForPreparationOperation<T>(
       cancellationStarted = true;
       void operation.then(
         () => reject(preparationCancellation(undefined, signal)),
-        () => reject(preparationCancellation(undefined, signal)),
+        (error: unknown) => {
+          const infrastructure =
+            readPreparationWorkspaceInfrastructureDiagnostic(error);
+          reject(
+            infrastructure === undefined
+              ? preparationCancellation(undefined, signal)
+              : preparationCancellationWithCleanup(
+                  error,
+                  signal,
+                  infrastructure,
+                ),
+          );
+        },
       );
     };
     if (signal?.aborted === true) {
@@ -1170,6 +1275,19 @@ function preparationCancellation(
   );
 }
 
+function preparationCancellationWithCleanup(
+  error: unknown,
+  signal: AbortSignal | undefined,
+  infrastructure: PreparationWorkspaceInfrastructureDiagnostic,
+): PipelineCancellationError {
+  return new PipelineCancellationError(
+    preparationCancellation(error, signal).reason,
+    {
+      preparationWorkspaceInfrastructureDiagnostic: infrastructure,
+    },
+  );
+}
+
 async function releaseQuietly(
   handle: PreparationWorkspaceHandle,
 ): Promise<void> {
@@ -1177,6 +1295,17 @@ async function releaseQuietly(
     await handle.release();
   } catch {
     // Preserve the original Repo Preparation failure.
+  }
+}
+
+async function releaseInfrastructureQuietly(
+  handle: PreparationWorkspaceHandle,
+): Promise<PreparationWorkspaceInfrastructureDiagnostic | undefined> {
+  try {
+    await handle.release();
+    return undefined;
+  } catch (error) {
+    return readPreparationWorkspaceInfrastructureDiagnostic(error);
   }
 }
 
@@ -1302,6 +1431,24 @@ function readNonRetryablePreflightFailure(
   return `Preparation preflight failed with a non-retryable MakeADemo infrastructure failure: ${runtimePreflight.failureReason ?? runtimePreflight.failureKind}`;
 }
 
+function preparationInfrastructureFailure(
+  infrastructure: PreparationWorkspaceInfrastructureDiagnostic,
+): RepoPreparationResult {
+  return {
+    assumptions: [],
+    blockers: [
+      "Repo Preparation could not complete because sandbox infrastructure was unavailable.",
+      `Preparation Workspace infrastructure failed during ${infrastructure.phase.replaceAll("-", " ")}.`,
+    ],
+    failureKind: "sandbox-infrastructure-failed",
+    infrastructure,
+    status: "failed",
+    suggestedChanges: [
+      "Retry Repo Preparation later. Report this MakeADemo infrastructure failure if it repeats.",
+    ],
+  };
+}
+
 function backendToolDeadlineFailure(toolName: string) {
   return {
     assumptions: [],
@@ -1310,7 +1457,7 @@ function backendToolDeadlineFailure(toolName: string) {
     ],
     status: "failed" as const,
     suggestedChanges: [
-      "Retry Repo Preparation with a fresh Daytona workspace or a longer preparation timeout.",
+      "Retry Repo Preparation with a fresh Preparation Workspace or a longer preparation timeout.",
     ],
   };
 }
@@ -1323,7 +1470,7 @@ function toolPayloadProtocolFailure(reason: string) {
     ],
     status: "failed" as const,
     suggestedChanges: [
-      "Retry Repo Preparation in a fresh Daytona workspace; report this MakeADemo tool protocol failure if it repeats.",
+      "Retry Repo Preparation in a fresh Preparation Workspace; report this MakeADemo tool protocol failure if it repeats.",
     ],
   };
 }
@@ -1344,7 +1491,7 @@ function agentTaskFailureResult(
     blockers: [message],
     status: "failed",
     suggestedChanges: [
-      "Retry Repo Preparation in a fresh Daytona workspace; report this MakeADemo agent failure if it repeats.",
+      "Retry Repo Preparation in a fresh Preparation Workspace; report this MakeADemo agent failure if it repeats.",
     ],
   };
 }
