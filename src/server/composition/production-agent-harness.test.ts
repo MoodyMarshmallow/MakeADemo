@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentSessionRunner } from "../agent-harness/agent-session-runner.interface";
+import type {
+  AgentSessionRunner,
+  AgentTaskEvent,
+} from "../agent-harness/agent-session-runner.interface";
 import { createProductionAgentHarness } from "./production-agent-harness";
 import { resolveProductionAgentModelConfig } from "./production-agent-model-config";
 
@@ -162,5 +165,55 @@ describe("createProductionAgentHarness", () => {
         failure: { category: "provider" },
       });
     }
+  });
+
+  it("warns the production logger about provider retries without replacing the caller event sink", async () => {
+    const events: AgentTaskEvent[] = [];
+    const warn = vi.fn(async () => undefined);
+    const agentSessionRunner: AgentSessionRunner = {
+      async run(input) {
+        input.onAudit?.("agent-task.provider-retry", {
+          appliedDelayMs: 2_000,
+          providerError: "do-not-log-this",
+          reason: "rate-limit",
+        });
+        return { exitCode: 0, stderr: "", stdout: "" };
+      },
+    };
+    const harness = createProductionAgentHarness({
+      agentModel: resolveProductionAgentModelConfig({
+        modelID: "gpt-5.6",
+        providerID: "openai",
+      }),
+      agentSessionRunner,
+      logger: { warn },
+      onAgentEvent: (event) => events.push(event),
+    });
+
+    await harness.agentTaskRunners.scriptGeneration.run({
+      attempt: 1,
+      hardDeadlineAt: Date.now() + 1_000,
+      hardTimeoutMs: 1_000,
+      inactivityTimeoutMs: 1_000,
+      stage: "script-generation",
+      taskPrompt: "task",
+      workspace: {} as never,
+    });
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "agent-task.provider-retry",
+          kind: "audit",
+        }),
+      ]),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      {
+        event: "agent-task.provider-retry",
+        metadata: { appliedDelayMs: 2_000, reason: "rate-limit" },
+      },
+      "Agent provider retry extended its hard deadline.",
+    );
   });
 });

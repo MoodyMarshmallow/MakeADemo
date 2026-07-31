@@ -123,10 +123,10 @@ earlier 1.2 release omit that authority and are rejected before acquisition.
 Before submitted repository files are synchronized, a root-only trusted control
 command in the submitted-code Sandbox acquires the exact package-manager
 release from fixed official npm registry metadata. npm, pnpm, and Yarn Classic
-use their same-name official packages. The command validates the registry
-SHA-512 SRI, gives that integrity to Corepack, records the hydrated artifact
-SHA-512 digest, then places the resulting Corepack files in a root-owned,
-non-writable, sandbox-local trusted artifact directory.
+use their same-name official packages. The Daytona provider validates the
+registry SHA-512 SRI, gives that integrity to Corepack, records the hydrated
+artifact SHA-512 digest, then places the resulting Corepack files in a
+root-owned, non-writable, sandbox-local trusted artifact directory.
 
 Yarn Berry instead uses the official `@yarnpkg/cli-dist` package. The trusted
 control command validates that package's registry SHA-512 SRI, downloads its

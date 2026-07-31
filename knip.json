@@ -2,8 +2,7 @@
   "ignoreDependencies": ["@railway/cli"],
   "ignore": [
     "src/server/shared/integrations/remotion/makeademo-video.tsx",
-    "src/server/shared/integrations/remotion/remotion-entry.tsx",
-    "src/server/shared/integrations/railway/fixtures/localhost-app/server.mjs"
+    "src/server/shared/integrations/remotion/remotion-entry.tsx"
   ],
   "entry": ["demo/app/main.tsx"]
 }

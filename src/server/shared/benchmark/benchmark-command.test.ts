@@ -3,57 +3,57 @@ import { describe, expect, it } from "vitest";
 import { parseBenchmarkCommandArgs } from "./benchmark-command";
 
 describe("parseBenchmarkCommandArgs", () => {
-  it("defaults to Daytona and accepts the sandbox provider anywhere among repo ids", () => {
-    expect(
-      parseBenchmarkCommandArgs([
-        "midday",
-        "--sandbox-provider",
-        "railway",
-        "excalidraw",
-      ]),
-    ).toEqual({
-      repoIds: ["midday", "excalidraw"],
-      sandboxProvider: "railway",
-    });
+  it("accepts repository ids", () => {
     expect(parseBenchmarkCommandArgs(["midday"])).toEqual({
       repoIds: ["midday"],
-      sandboxProvider: "daytona",
     });
   });
 
-  it("rejects a missing sandbox provider value before the runner starts", () => {
-    expect(() =>
-      parseBenchmarkCommandArgs(["midday", "--sandbox-provider"]),
-    ).toThrow(
-      "Missing value for --sandbox-provider. Expected daytona or railway.",
-    );
+  it("parses a positive integer concurrency limit before the runner starts", () => {
+    expect(
+      parseBenchmarkCommandArgs(["midday", "--concurrency", "5", "excalidraw"]),
+    ).toMatchObject({
+      concurrency: 5,
+      repoIds: ["midday", "excalidraw"],
+    });
   });
 
-  it("rejects duplicate sandbox provider flags", () => {
+  it.each([
+    {
+      args: ["--concurrency"],
+      message: "Missing value for --concurrency. Expected a positive integer.",
+    },
+    {
+      args: ["--concurrency", "2.5"],
+      message:
+        'Invalid --concurrency value "2.5". Expected a positive integer.',
+    },
+    {
+      args: ["--concurrency", "0"],
+      message: 'Invalid --concurrency value "0". Expected a positive integer.',
+    },
+    {
+      args: ["--concurrency", "9007199254740992"],
+      message:
+        'Invalid --concurrency value "9007199254740992". Expected a positive integer.',
+    },
+    {
+      args: ["--concurrency", "--", "midday"],
+      message: "Missing value for --concurrency. Expected a positive integer.",
+    },
+  ])("rejects $args", ({ args, message }) => {
+    expect(() => parseBenchmarkCommandArgs(args)).toThrow(message);
+  });
+
+  it("rejects duplicate concurrency flags", () => {
     expect(() =>
       parseBenchmarkCommandArgs([
-        "--sandbox-provider",
-        "daytona",
+        "--concurrency",
+        "2",
         "midday",
-        "--sandbox-provider",
-        "railway",
+        "--concurrency",
+        "5",
       ]),
-    ).toThrow("Duplicate --sandbox-provider flag. Specify it at most once.");
-  });
-
-  it("rejects unsupported sandbox providers", () => {
-    expect(() =>
-      parseBenchmarkCommandArgs(["--sandbox-provider", "local", "midday"]),
-    ).toThrow(
-      'Unsupported sandbox provider "local". Expected daytona or railway.',
-    );
-  });
-
-  it("rejects a flag-like missing value instead of treating it as a repo id", () => {
-    expect(() =>
-      parseBenchmarkCommandArgs(["--sandbox-provider", "--", "midday"]),
-    ).toThrow(
-      "Missing value for --sandbox-provider. Expected daytona or railway.",
-    );
+    ).toThrow("Duplicate --concurrency flag. Specify it at most once.");
   });
 });

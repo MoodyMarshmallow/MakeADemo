@@ -4,7 +4,6 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { RailwayRepoSecurityInfrastructureError } from "../../../shared/integrations/railway/railway-repo-security-input-loader";
 import { screenRepoSecurity } from "../../02-repo-security-screen/repo-security-screen";
 import { formatFullPipelineFailure } from "../cli/full-pipeline-failure-output";
 import { FullPipelineStageFailure } from "./full-pipeline-runner";
@@ -144,7 +143,6 @@ describe("MakeADemo Pipeline controller", () => {
           throw new Error("provider connection refused");
         },
       },
-      sandboxProvider: "railway",
     });
 
     try {
@@ -166,7 +164,7 @@ describe("MakeADemo Pipeline controller", () => {
 
       expect(failure).toMatchObject({
         stage: "repo-security-screen",
-        status: "security-rejected",
+        status: "infrastructure-failed",
       });
       await expect(
         readFile(failure.resultPath, "utf8").then(JSON.parse),
@@ -175,54 +173,13 @@ describe("MakeADemo Pipeline controller", () => {
           blockers: [
             "Repo Security Screen input could not be loaded because sandbox infrastructure was unavailable.",
           ],
+          failureKind: "sandbox-infrastructure-failed",
         },
-        sandboxProvider: "railway",
-        status: "security-rejected",
+        status: "infrastructure-failed",
       });
       const terminalOutput = formatFullPipelineFailure(failure);
       expect(terminalOutput).toContain(`Result JSON: ${failure.resultPath}`);
       expect(terminalOutput).not.toContain("provider connection refused");
-    } finally {
-      await rm(outputRoot, { force: true, recursive: true });
-    }
-  });
-
-  it("persists an explicitly safe Railway Repo Security failure phase without provider details", async () => {
-    const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-controller-"));
-    const pipeline = createMakeADemoPipeline({
-      pipelineDependencies: rejectingPipelineDependencies(),
-      repoSecurityInputLoader: {
-        async load() {
-          throw new RailwayRepoSecurityInfrastructureError(
-            "release-settlement",
-          );
-        },
-      },
-      sandboxProvider: "railway",
-    });
-
-    try {
-      const failure = await pipeline
-        .run({
-          demoBrief: { keyProductFeatures: ["safe Railway diagnostic"] },
-          normalizedSupportingDocuments: [],
-          repoUrl: "https://github.com/example/safe-railway-diagnostic",
-          runOptions: { outputRoot, runId: "safe-railway-diagnostic" },
-          workspaceId: "workspace-safe-railway-diagnostic",
-        })
-        .catch((error: unknown) => error);
-      if (!(failure instanceof FullPipelineStageFailure)) throw failure;
-
-      await expect(
-        readFile(failure.resultPath, "utf8").then(JSON.parse),
-      ).resolves.toMatchObject({
-        failure: {
-          blockers: [
-            "Repo Security Screen input could not be loaded because sandbox infrastructure was unavailable.",
-            "Railway Repo Security infrastructure failed during release settlement.",
-          ],
-        },
-      });
     } finally {
       await rm(outputRoot, { force: true, recursive: true });
     }

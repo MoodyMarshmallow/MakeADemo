@@ -1,10 +1,24 @@
+import type { PreparationWorkspaceInfrastructureDiagnostic } from "../../03-repo-preparation/preparation-workspace-infrastructure.interface";
+
 export type PipelineCancellationReason = "deadline-exceeded" | "signal";
 
-/** A cooperative Pipeline Job stop requested by its CLI deadline or process signal. */
+/**
+ * A cooperative Pipeline Job stop requested by its CLI deadline or process
+ * signal. Optional cleanup context is restricted to safe provider and phase
+ * attribution, so it can be preserved in a durable terminal artifact.
+ */
 export class PipelineCancellationError extends Error {
   readonly reason: PipelineCancellationReason;
+  readonly preparationWorkspaceInfrastructureDiagnostic:
+    | PreparationWorkspaceInfrastructureDiagnostic
+    | undefined;
 
-  constructor(reason: PipelineCancellationReason) {
+  constructor(
+    reason: PipelineCancellationReason,
+    options: {
+      preparationWorkspaceInfrastructureDiagnostic?: PreparationWorkspaceInfrastructureDiagnostic;
+    } = {},
+  ) {
     super(
       reason === "deadline-exceeded"
         ? "Pipeline deadline exceeded."
@@ -12,6 +26,8 @@ export class PipelineCancellationError extends Error {
     );
     this.name = "PipelineCancellationError";
     this.reason = reason;
+    this.preparationWorkspaceInfrastructureDiagnostic =
+      options.preparationWorkspaceInfrastructureDiagnostic;
   }
 }
 

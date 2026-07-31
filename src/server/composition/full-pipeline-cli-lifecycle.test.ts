@@ -2,26 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import { PipelineCancellationError } from "../pipeline/00-orchestration/job/pipeline-cancellation";
 import {
-  addSandboxProviderToTerminalOutput,
   finalizeFullPipelineCli,
   runFullPipelineCliOperation,
 } from "./full-pipeline-cli-lifecycle";
 
 describe("full pipeline CLI lifecycle", () => {
-  it.each(["succeeded", "failed", "cancelled"])(
-    "includes the selected sandbox provider in %s terminal output",
-    (status) => {
-      const output = addSandboxProviderToTerminalOutput({
-        output: `Pipeline ${status}\nResult JSON: /runs/${status}.json\n`,
-        sandboxProvider: "railway",
-      });
-
-      expect(output).toContain("Sandbox provider: railway");
-      expect(output).toContain(`Pipeline ${status}`);
-      expect(output.match(/Result JSON:/g)).toHaveLength(1);
-    },
-  );
-
   it("emits one Result JSON marker only after output and agent disposal complete", async () => {
     const events: string[] = [];
 
@@ -41,6 +26,30 @@ describe("full pipeline CLI lifecycle", () => {
       "cleanup-finished",
       "handlers-removed",
       "output:Pipeline cancelled\nResult JSON: /runs/result.json\n",
+    ]);
+    expect(events.join("\n").match(/Result JSON:/g)).toHaveLength(1);
+  });
+
+  it("emits an already-written result marker when cleanup rejects, then preserves the cleanup error", async () => {
+    const events: string[] = [];
+    const cleanupError = new Error("agent output cleanup failed");
+
+    await expect(
+      finalizeFullPipelineCli({
+        cleanup: async () => {
+          events.push("cleanup-started");
+          throw cleanupError;
+        },
+        removeSignalHandlers: () => events.push("handlers-removed"),
+        terminalOutput: "Pipeline failed\nResult JSON: /runs/result.json\n",
+        write: (output) => events.push(`output:${output}`),
+      }),
+    ).rejects.toBe(cleanupError);
+
+    expect(events).toEqual([
+      "cleanup-started",
+      "handlers-removed",
+      "output:Pipeline failed\nResult JSON: /runs/result.json\n",
     ]);
     expect(events.join("\n").match(/Result JSON:/g)).toHaveLength(1);
   });

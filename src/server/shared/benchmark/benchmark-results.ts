@@ -11,6 +11,25 @@ type BenchmarkTokenUsage = {
   totalTokens: number;
 };
 
+type BenchmarkTerminalFailureKind =
+  | "dependency-install-sigkill"
+  | "repository_node_dependency_incompatible"
+  | "sandbox-infrastructure-failed"
+  | "unexpected-pipeline-error";
+
+type SandboxInfrastructureDiagnostic = {
+  phase:
+    | "template-build-or-create"
+    | "command-or-clone"
+    | "creation-settlement"
+    | "exec-transport"
+    | "inventory"
+    | "registry-acquisition"
+    | "release-settlement"
+    | "trusted-provisioning";
+  provider: BenchmarkSandboxProvider;
+};
+
 export type BenchmarkResult = {
   benchmarkRunId: string;
   benchmarkTimeoutMs?: number;
@@ -27,7 +46,10 @@ export type BenchmarkResult = {
     | "pipeline-cancelled"
     | "pipeline-deadline-exceeded"
     | "dependency-install-sigkill"
+    | "sandbox-infrastructure-failed"
+    | "unexpected-pipeline-error"
     | "process-terminated"
+    | "terminal-cleanup-failed"
     | "terminal-result-unavailable";
   logPath?: string;
   repoId: string;
@@ -50,9 +72,8 @@ export type BenchmarkTerminalPipelineResult = {
   };
   failure?: {
     blockers?: string[];
-    failureKind?:
-      | "dependency-install-sigkill"
-      | "repository_node_dependency_incompatible";
+    failureKind?: BenchmarkTerminalFailureKind;
+    infrastructure?: SandboxInfrastructureDiagnostic;
   };
   cancellationReason?: "deadline-exceeded" | "signal";
   resultPath: string;
@@ -62,6 +83,7 @@ export type BenchmarkTerminalPipelineResult = {
     | "preparation-failed"
     | "cancelled"
     | "security-rejected"
+    | "infrastructure-failed"
     | "succeeded";
 };
 
@@ -126,18 +148,27 @@ export function buildBenchmarkResult(
   input: BenchmarkResultBuildInput,
 ): BenchmarkResult {
   const terminalResult = input.fullPipelineResult;
-  const terminalInfrastructureFailureKind =
-    terminalResult?.failure?.failureKind === "dependency-install-sigkill"
-      ? terminalResult.failure.failureKind
-      : undefined;
+  const terminalInfrastructureFailureKind = isInfrastructureFailureKind(
+    terminalResult?.failure?.failureKind,
+  )
+    ? terminalResult?.failure?.failureKind
+    : undefined;
+  const terminalCleanupFailed =
+    terminalResult?.status === "succeeded" &&
+    input.lifecycle.exitCode !== 0 &&
+    input.lifecycle.terminationReason === undefined;
   const disposition =
     terminalResult === undefined ||
     terminalResult.status === "cancelled" ||
-    terminalInfrastructureFailureKind !== undefined
+    terminalResult.status === "infrastructure-failed" ||
+    terminalInfrastructureFailureKind !== undefined ||
+    terminalCleanupFailed
       ? "inconclusive"
       : "completed";
   const status =
-    terminalResult?.status === "succeeded" ? "succeeded" : "failed";
+    terminalResult?.status === "succeeded" && !terminalCleanupFailed
+      ? "succeeded"
+      : "failed";
   const latestStage =
     input.fullPipelineLog.latestStage ??
     input.fullPipelineLog.stageOutcomes?.at(-1)?.stage;
@@ -156,9 +187,11 @@ export function buildBenchmarkResult(
           ? terminalResult.cancellationReason === "deadline-exceeded"
             ? "pipeline-deadline-exceeded"
             : "pipeline-cancelled"
-          : input.lifecycle.terminationReason === undefined
-            ? "terminal-result-unavailable"
-            : "process-terminated";
+          : terminalCleanupFailed
+            ? "terminal-cleanup-failed"
+            : input.lifecycle.terminationReason === undefined
+              ? "terminal-result-unavailable"
+              : "process-terminated";
   const stageOutcomes = input.fullPipelineLog.stageOutcomes ?? [];
 
   return {
@@ -262,6 +295,7 @@ export function readBenchmarkTerminalPipelineResult(input: {
     result.status !== "capture-path-validation-failed" &&
     result.status !== "preparation-failed" &&
     result.status !== "security-rejected" &&
+    result.status !== "infrastructure-failed" &&
     result.status !== "cancelled"
   ) {
     return undefined;
@@ -287,7 +321,7 @@ export function readBenchmarkTerminalPipelineResult(input: {
   }
   return {
     artifacts: { logPath: result.artifacts.logPath },
-    failure: { blockers: result.failure.blockers },
+    failure: readTerminalFailure(result.failure),
     resultPath: input.resultPath,
     status: result.status,
     ...(sandboxProvider === undefined ? {} : { sandboxProvider }),
@@ -484,7 +518,7 @@ function isFailureSummary(value: Record<string, unknown>): value is Record<
   unknown
 > & {
   artifacts: { logPath: string };
-  failure: { blockers: string[] };
+  failure: { blockers: string[]; failureKind?: unknown };
 } {
   return (
     isRecord(value.artifacts) &&
@@ -493,6 +527,71 @@ function isFailureSummary(value: Record<string, unknown>): value is Record<
     isStringArray(value.failure.blockers) &&
     isStringArray(value.failure.suggestedChanges) &&
     hasStringFields(value, ["runDirectory", "runId"])
+  );
+}
+
+function readTerminalFailure(value: {
+  blockers: string[];
+  failureKind?: unknown;
+  infrastructure?: unknown;
+}): {
+  blockers: string[];
+  failureKind?: BenchmarkTerminalFailureKind;
+  infrastructure?: SandboxInfrastructureDiagnostic;
+} {
+  const infrastructure = readSandboxInfrastructureDiagnostic(
+    value.infrastructure,
+  );
+  return {
+    blockers: value.blockers,
+    ...(isTerminalFailureKind(value.failureKind)
+      ? { failureKind: value.failureKind }
+      : {}),
+    ...(infrastructure === undefined ? {} : { infrastructure }),
+  };
+}
+
+function readSandboxInfrastructureDiagnostic(
+  value: unknown,
+): SandboxInfrastructureDiagnostic | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    value.provider !== "daytona" ||
+    (value.phase !== "template-build-or-create" &&
+      value.phase !== "command-or-clone" &&
+      value.phase !== "creation-settlement" &&
+      value.phase !== "exec-transport" &&
+      value.phase !== "inventory" &&
+      value.phase !== "registry-acquisition" &&
+      value.phase !== "release-settlement" &&
+      value.phase !== "trusted-provisioning")
+  ) {
+    return undefined;
+  }
+  return { phase: value.phase, provider: value.provider };
+}
+
+function isTerminalFailureKind(
+  value: unknown,
+): value is BenchmarkTerminalFailureKind {
+  return (
+    value === "dependency-install-sigkill" ||
+    value === "repository_node_dependency_incompatible" ||
+    value === "sandbox-infrastructure-failed" ||
+    value === "unexpected-pipeline-error"
+  );
+}
+
+function isInfrastructureFailureKind(
+  value: unknown,
+): value is Extract<
+  BenchmarkTerminalFailureKind,
+  BenchmarkResult["infrastructureFailureKind"]
+> {
+  return (
+    value === "dependency-install-sigkill" ||
+    value === "sandbox-infrastructure-failed" ||
+    value === "unexpected-pipeline-error"
   );
 }
 
@@ -516,7 +615,7 @@ function readOptionalSandboxProvider(
   if (value === undefined) {
     return undefined;
   }
-  return value === "daytona" || value === "railway" ? value : undefined;
+  return value === "daytona" ? value : undefined;
 }
 
 function failureStageForTerminalStatus(

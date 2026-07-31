@@ -114,23 +114,6 @@ The embedded Pi Agent Harness reads `OPENAI_API_KEY` in the backend process and
 holds it in memory. It is not copied into Repo Preparation or submitted-code
 Daytona workspaces.
 
-To run the same benchmark suite through the opt-in Railway adapter, provide a
-dedicated Railway project token and environment and select the provider
-explicitly:
-
-```bash
-MAKEADEMO_RAILWAY_SANDBOX_PROJECT_TOKEN=...
-MAKEADEMO_RAILWAY_SANDBOX_ENVIRONMENT_ID=...
-OPENAI_API_KEY=sk-...
-bun run benchmark --sandbox-provider railway -- midday
-```
-
-Railway is a benchmark-only experiment and is not a production fallback. The
-runner ignores ambient `RAILWAY_API_TOKEN`, `RAILWAY_TOKEN`, and
-`RAILWAY_ENVIRONMENT_ID`. Its browser capture path is loopback-only, and its
-run-owned sandboxes are destroyed during cleanup rather than archived like
-Daytona preparation workspaces.
-
 Optional email settings:
 
 ```bash
@@ -223,10 +206,7 @@ Optional flags:
 --doc ./optional-notes.md
 ```
 
-Pipeline runs require `DAYTONA_API_KEY` and `OPENAI_API_KEY` by default. The
-benchmark runner accepts `--sandbox-provider railway` to use the dedicated
-Railway credentials described above; the provider choice is recorded in the
-benchmark manifest and each result row. The embedded Pi Agent Harness runs in
+Pipeline runs require `DAYTONA_API_KEY` and `OPENAI_API_KEY`. The embedded Pi Agent Harness runs in
 the backend and delegates repository shell and filesystem tools through the
 provider-neutral workspace seam. Its global tools provide anonymous Exa web
 research and Context7 library documentation; Pipeline Stage tools are exposed
@@ -237,8 +217,7 @@ credentials remain in the backend process.
 
 The controller-facing `MakeADemoPipeline` interface exposes only `run` and
 `dispose`; controllers do not assemble stage dependencies or manage sandbox
-lifecycle. Daytona remains the production/default composition, while Railway
-is selected only by the explicit benchmark flag.
+lifecycle. Daytona is the production composition.
 
 Each run writes a local run directory under `--output-root`:
 

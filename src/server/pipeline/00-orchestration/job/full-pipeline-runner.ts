@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -6,7 +6,10 @@ import {
   createFilePipelineLogSink,
   createPipelineEventLogger,
 } from "../../../shared/logging/pipeline-event-logger";
-import type { RepoSecurityInputInfrastructureDiagnostic } from "../../02-repo-security-screen/repository-loading/repo-security-input-loader.interface";
+import {
+  type PreparationWorkspaceInfrastructureDiagnostic,
+  readPreparationWorkspaceInfrastructureDiagnostic,
+} from "../../03-repo-preparation/preparation-workspace-infrastructure.interface";
 import type { DemoRequestScriptStore } from "../../04-script-generation/demo-request-script-store.interface";
 import type { RuntimeNetworkPolicy } from "../../05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
 import type {
@@ -42,7 +45,7 @@ export type FullPipelineResult = {
   finalVideo: CompositedVideoManifest;
   logPath: string;
   resultPath: string;
-  sandboxProvider?: "daytona" | "railway";
+  sandboxProvider?: "daytona";
   sandboxLogPath?: string;
   scriptPath?: string;
   preparedDemo: Extract<
@@ -53,7 +56,8 @@ export type FullPipelineResult = {
 };
 
 export type FullPipelineFailureContext = {
-  failure: ReturnType<typeof readPipelineFailure>;
+  cause?: unknown;
+  failure: FullPipelineFailure;
   logPath: string;
   agentAuditLogPath: string | undefined;
   resultPath: string;
@@ -63,8 +67,33 @@ export type FullPipelineFailureContext = {
         Awaited<ReturnType<typeof runPipelineJob>>,
         { status: "succeeded" }
       >["status"]
-    | "cancelled";
+    | "cancelled"
+    | "infrastructure-failed";
 };
+
+type PreparationWorkspaceCleanupMetadata = {
+  status: "failed";
+  workspaces: Array<{
+    infrastructure?: PreparationWorkspaceInfrastructureDiagnostic;
+    workspaceId: string;
+  }>;
+};
+
+type FullPipelineFailure =
+  | (ReturnType<typeof readPipelineFailure> & {
+      cleanup?: PreparationWorkspaceCleanupMetadata;
+    })
+  | (ReturnType<typeof createRepoSecurityInputFailureSummary>["failure"] & {
+      cleanup?: PreparationWorkspaceCleanupMetadata;
+    })
+  | (ReturnType<typeof createUnexpectedFailureSummary>["failure"] & {
+      cleanup?: PreparationWorkspaceCleanupMetadata;
+    })
+  | (ReturnType<
+      typeof createPreparationWorkspaceCleanupFailureSummary
+    >["failure"] & {
+      cleanup?: PreparationWorkspaceCleanupMetadata;
+    });
 
 export class FullPipelineStageFailure extends Error {
   readonly failure: FullPipelineFailureContext["failure"];
@@ -73,6 +102,7 @@ export class FullPipelineStageFailure extends Error {
   readonly resultPath: string;
   readonly stage: FullPipelineFailureContext["stage"];
   readonly status: FullPipelineFailureContext["status"];
+  override readonly cause?: unknown;
 
   constructor(context: FullPipelineFailureContext) {
     super(`Pipeline failed with status ${context.status}`);
@@ -80,6 +110,7 @@ export class FullPipelineStageFailure extends Error {
     this.failure = context.failure;
     this.logPath = context.logPath;
     this.agentAuditLogPath = context.agentAuditLogPath;
+    this.cause = context.cause;
     this.resultPath = context.resultPath;
     this.stage = context.stage;
     this.status = context.status;
@@ -107,7 +138,7 @@ type FullPipelineArtifactSummary = {
   draftCompositeReview: DraftCompositeReviewSummary;
   runDirectory: string;
   runId: string;
-  sandboxProvider?: "daytona" | "railway";
+  sandboxProvider?: "daytona";
   script: {
     sceneCount: number;
     scriptId: string;
@@ -129,6 +160,8 @@ type FullPipelineLogInput = {
   message: string;
   severity?: FullPipelineLogSeverity;
 } & Record<string, unknown>;
+
+const cleanupLogTimeoutMs = 50;
 
 export type FullPipelineRunnerOptions = PipelineOrchestratorOptions & {
   captureScenes?: (
@@ -156,10 +189,10 @@ export type FullPipelineRunnerOptions = PipelineOrchestratorOptions & {
     preparedDemo: PreparedDemoResult;
   }) => Promise<{ browserUrl?: string }>;
   /** Controller-owned marker for a failed Repo Security input infrastructure load. */
-  repoSecurityInputFailure?: true | RepoSecurityInputInfrastructureDiagnostic;
+  repoSecurityInputFailure?: true;
   runId?: string;
   /** Controller-owned provider provenance persisted in terminal summaries. */
-  sandboxProvider?: "daytona" | "railway";
+  sandboxProvider?: "daytona";
   /** Composition-owned browser/runtime public-egress policy. */
   runtimeNetworkPolicy?: RuntimeNetworkPolicy;
   sandboxLogPath?: string;
@@ -195,6 +228,7 @@ export async function runFullPipelineJob(
     },
   };
   let terminalFailureLogged = false;
+  let terminalFailure: FullPipelineStageFailure | undefined;
   const reportPipelineProgress: NonNullable<
     PipelineOrchestratorOptions["onProgress"]
   > = async (event) => {
@@ -212,308 +246,423 @@ export async function runFullPipelineJob(
     onProgress: reportPipelineProgress,
   };
 
-  try {
-    await log({
-      event: "pipeline-started",
-      message: "Full pipeline started.",
-      outputRoot,
-      repoUrl: input.repoUrl,
-      runDirectory,
-      runId,
-      severity: "info",
-      workspaceId: input.workspaceId,
-    });
-    throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
-
-    if (options.repoSecurityInputFailure !== undefined) {
-      const resultPath = join(runDirectory, "full-pipeline-result.json");
-      const failureSummary = createRepoSecurityInputFailureSummary({
-        agentAuditLogPath: options.agentAuditLogPath,
-        logPath,
+  const completed = await (async () => {
+    try {
+      await log({
+        event: "pipeline-started",
+        message: "Full pipeline started.",
+        outputRoot,
+        repoUrl: input.repoUrl,
         runDirectory,
         runId,
-        sandboxLogPath,
-        sandboxProvider: options.sandboxProvider,
-        scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
-        ...(options.repoSecurityInputFailure === true
-          ? {}
-          : { diagnostic: options.repoSecurityInputFailure }),
-      });
-      await reportPipelineProgress({
-        stage: "repo-security-screen",
-        status: "failed",
-      });
-      await log({
-        event: "pipeline-failed",
-        message: "Repo Security Screen input loading failed.",
-        severity: "error",
-        stage: "repo-security-screen",
-        status: "security-rejected",
-      });
-      terminalFailureLogged = true;
-      await writeFile(
-        resultPath,
-        `${JSON.stringify(failureSummary, null, 2)}\n`,
-      );
-      await log({
-        event: "result-written",
-        message: "Full pipeline failure result written.",
-        resultPath,
         severity: "info",
+        workspaceId: input.workspaceId,
       });
-      throw new FullPipelineStageFailure({
-        failure: failureSummary.failure,
-        logPath,
-        agentAuditLogPath: options.agentAuditLogPath,
-        resultPath,
-        stage: "repo-security-screen",
-        status: "security-rejected",
-      });
-    }
+      throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
 
-    const initialPreparedDemo = await runPipelineJob(
-      input,
-      orchestratorDependencies,
-      pipelineOptions,
-    );
-    if (initialPreparedDemo.status !== "succeeded") {
-      const resultPath = join(runDirectory, "full-pipeline-result.json");
-      const failureSummary = createFailureSummary({
-        logPath,
-        agentAuditLogPath: options.agentAuditLogPath,
-        runDirectory,
-        runId,
-        sandboxLogPath,
-        sandboxProvider: options.sandboxProvider,
-        scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
-        preparedDemo: initialPreparedDemo,
-      });
-      await log({
-        event: "pipeline-failed",
-        message: `Pipeline failed with status ${initialPreparedDemo.status}.`,
-        severity: "error",
-        status: initialPreparedDemo.status,
-      });
-      terminalFailureLogged = true;
-      await writeFile(
-        resultPath,
-        `${JSON.stringify(failureSummary, null, 2)}\n`,
-      );
-      await log({
-        event: "result-written",
-        message: "Full pipeline failure result written.",
-        resultPath,
-        severity: "info",
-      });
-      throw new FullPipelineStageFailure({
-        failure: failureSummary.failure,
-        logPath,
-        agentAuditLogPath: options.agentAuditLogPath,
-        resultPath,
-        stage: "pipeline",
-        status: initialPreparedDemo.status,
-      });
-    }
-
-    let preparedDemo: PreparedDemoResult = initialPreparedDemo;
-
-    const browserUrl = preparedDemo.capturePathValidation.browserUrl;
-    if (browserUrl === undefined || browserUrl.trim().length === 0) {
-      await log({
-        event: "pipeline-failed",
-        message: "Capture Path Validation did not return a browser URL.",
-        severity: "error",
-      });
-      terminalFailureLogged = true;
-      throw new Error("Capture Path Validation did not return a browser URL.");
-    }
-
-    let scriptSummary = summarizeDemoScript(preparedDemo.demoScript);
-    let scriptPersistence = await persistGeneratedScript({
-      demoRequestId: options.context?.demoRequestId,
-      log,
-      runDirectory,
-      demoScript: preparedDemo.demoScript,
-      scriptStore: options.demoRequestScriptStore,
-      scriptSummary,
-    });
-
-    const reviewResult = await runDraftCompositeReviewLoop({
-      browserUrl,
-      dependencies: orchestratorDependencies,
-      input,
-      log,
-      options: pipelineOptions,
-      runDirectory,
-      persistScript: (demoScript) =>
-        persistGeneratedScript({
-          demoRequestId: options.context?.demoRequestId,
-          log,
+      if (options.repoSecurityInputFailure !== undefined) {
+        const resultPath = join(runDirectory, "full-pipeline-result.json");
+        const failureSummary = createRepoSecurityInputFailureSummary({
+          agentAuditLogPath: options.agentAuditLogPath,
+          logPath,
           runDirectory,
-          demoScript,
-          scriptStore: options.demoRequestScriptStore,
-          scriptSummary: summarizeDemoScript(demoScript),
-        }),
-      scriptPersistence,
-      preparedDemo,
-    });
-    throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
-    preparedDemo = reviewResult.preparedDemo;
-    scriptSummary = summarizeDemoScript(preparedDemo.demoScript);
-    scriptPersistence = reviewResult.scriptPersistence;
-    const { captureManifest, finalVideo, reviewSummary } = reviewResult;
-    await writeDraftCompositeReviewMetadata({
-      finalVideo,
-      reviewSummary,
-    });
-    await log({
-      event: "pipeline-succeeded",
-      message: "Full pipeline succeeded.",
-      severity: "info",
-      viewUrl: finalVideo.viewUrl,
-    });
-    const resultPath = join(runDirectory, "full-pipeline-result.json");
-    const artifactSummary: FullPipelineArtifactSummary = {
-      artifacts: {
-        captureManifestPath: captureManifest.manifestPath,
-        compositeManifestPath: finalVideo.manifestPath,
-        finalVideoPath: finalVideo.outputVideoPath ?? finalVideo.viewUrl,
-        ...(scriptPersistence.demoRequestId === undefined
+          runId,
+          sandboxLogPath,
+          sandboxProvider: options.sandboxProvider,
+          scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
+        });
+        await reportPipelineProgress({
+          stage: "repo-security-screen",
+          status: "failed",
+        });
+        await log({
+          event: "pipeline-failed",
+          message: "Repo Security Screen input loading failed.",
+          severity: "error",
+          stage: "repo-security-screen",
+          status: "infrastructure-failed",
+        });
+        terminalFailureLogged = true;
+        await writeFile(
+          resultPath,
+          `${JSON.stringify(failureSummary, null, 2)}\n`,
+        );
+        await log({
+          event: "result-written",
+          message: "Full pipeline failure result written.",
+          resultPath,
+          severity: "info",
+        });
+        throw new FullPipelineStageFailure({
+          failure: failureSummary.failure,
+          logPath,
+          agentAuditLogPath: options.agentAuditLogPath,
+          resultPath,
+          stage: "repo-security-screen",
+          status: "infrastructure-failed",
+        });
+      }
+
+      const initialPreparedDemo = await runPipelineJob(
+        input,
+        orchestratorDependencies,
+        pipelineOptions,
+      );
+      if (initialPreparedDemo.status !== "succeeded") {
+        const status = pipelineFailureStatus(initialPreparedDemo);
+        const resultPath = join(runDirectory, "full-pipeline-result.json");
+        const failureSummary = createFailureSummary({
+          logPath,
+          agentAuditLogPath: options.agentAuditLogPath,
+          runDirectory,
+          runId,
+          sandboxLogPath,
+          sandboxProvider: options.sandboxProvider,
+          scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
+          preparedDemo: initialPreparedDemo,
+        });
+        await log({
+          event: "pipeline-failed",
+          message: `Pipeline failed with status ${initialPreparedDemo.status}.`,
+          severity: "error",
+          status,
+        });
+        terminalFailureLogged = true;
+        await writeFile(
+          resultPath,
+          `${JSON.stringify(failureSummary, null, 2)}\n`,
+        );
+        await log({
+          event: "result-written",
+          message: "Full pipeline failure result written.",
+          resultPath,
+          severity: "info",
+        });
+        throw new FullPipelineStageFailure({
+          failure: failureSummary.failure,
+          logPath,
+          agentAuditLogPath: options.agentAuditLogPath,
+          resultPath,
+          stage: "pipeline",
+          status,
+        });
+      }
+
+      let preparedDemo: PreparedDemoResult = initialPreparedDemo;
+
+      const browserUrl = preparedDemo.capturePathValidation.browserUrl;
+      if (browserUrl === undefined || browserUrl.trim().length === 0) {
+        await log({
+          event: "pipeline-failed",
+          message: "Capture Path Validation did not return a browser URL.",
+          severity: "error",
+        });
+        throw new Error(
+          "Capture Path Validation did not return a browser URL.",
+        );
+      }
+
+      let scriptSummary = summarizeDemoScript(preparedDemo.demoScript);
+      let scriptPersistence = await persistGeneratedScript({
+        demoRequestId: options.context?.demoRequestId,
+        log,
+        runDirectory,
+        demoScript: preparedDemo.demoScript,
+        scriptStore: options.demoRequestScriptStore,
+        scriptSummary,
+      });
+
+      const reviewResult = await runDraftCompositeReviewLoop({
+        browserUrl,
+        dependencies: orchestratorDependencies,
+        input,
+        log,
+        options: pipelineOptions,
+        runDirectory,
+        persistScript: (demoScript) =>
+          persistGeneratedScript({
+            demoRequestId: options.context?.demoRequestId,
+            log,
+            runDirectory,
+            demoScript,
+            scriptStore: options.demoRequestScriptStore,
+            scriptSummary: summarizeDemoScript(demoScript),
+          }),
+        scriptPersistence,
+        preparedDemo,
+      });
+      throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
+      preparedDemo = reviewResult.preparedDemo;
+      scriptSummary = summarizeDemoScript(preparedDemo.demoScript);
+      scriptPersistence = reviewResult.scriptPersistence;
+      const { captureManifest, finalVideo, reviewSummary } = reviewResult;
+      await writeDraftCompositeReviewMetadata({
+        finalVideo,
+        reviewSummary,
+      });
+      const resultPath = join(runDirectory, "full-pipeline-result.json");
+      const artifactSummary: FullPipelineArtifactSummary = {
+        artifacts: {
+          captureManifestPath: captureManifest.manifestPath,
+          compositeManifestPath: finalVideo.manifestPath,
+          finalVideoPath: finalVideo.outputVideoPath ?? finalVideo.viewUrl,
+          ...(scriptPersistence.demoRequestId === undefined
+            ? {}
+            : {
+                generatedScriptDemoRequestId: scriptPersistence.demoRequestId,
+              }),
+          ...(scriptPersistence.scriptPath === undefined
+            ? {}
+            : { generatedScriptPath: scriptPersistence.scriptPath }),
+          logPath,
+          ...(options.agentAuditLogPath === undefined
+            ? {}
+            : { agentAuditLogPath: options.agentAuditLogPath }),
+          renderPlanPath: finalVideo.renderPlanPath,
+          ...(sandboxLogPath === undefined ? {} : { sandboxLogPath }),
+          ...(options.scriptGenerationAuditLogPath === undefined
+            ? {}
+            : {
+                scriptGenerationAuditLogPath:
+                  options.scriptGenerationAuditLogPath,
+              }),
+          viewUrl: finalVideo.viewUrl,
+        },
+        draftCompositeReview: reviewSummary,
+        runDirectory,
+        runId,
+        ...(options.sandboxProvider === undefined
           ? {}
-          : { generatedScriptDemoRequestId: scriptPersistence.demoRequestId }),
+          : { sandboxProvider: options.sandboxProvider }),
+        script: {
+          sceneCount: scriptSummary.sceneCount,
+          scriptId: preparedDemo.demoScript.scriptId,
+          title: preparedDemo.demoScript.title,
+        },
+        status: "succeeded",
+      };
+      await log({
+        event: "pipeline-succeeded",
+        message: "Full pipeline succeeded.",
+        severity: "info",
+        viewUrl: finalVideo.viewUrl,
+      });
+      await writeFile(
+        resultPath,
+        `${JSON.stringify(artifactSummary, null, 2)}\n`,
+      );
+      await log({
+        event: "result-written",
+        message: "Full pipeline result written.",
+        resultPath,
+        severity: "info",
+      });
+      const result: FullPipelineResult = {
+        captureManifest,
+        draftCompositeReview: reviewSummary,
+        finalVideo,
+        logPath,
+        resultPath,
+        ...(options.sandboxProvider === undefined
+          ? {}
+          : { sandboxProvider: options.sandboxProvider }),
+        ...(sandboxLogPath === undefined ? {} : { sandboxLogPath }),
         ...(scriptPersistence.scriptPath === undefined
           ? {}
-          : { generatedScriptPath: scriptPersistence.scriptPath }),
-        logPath,
-        ...(options.agentAuditLogPath === undefined
-          ? {}
-          : { agentAuditLogPath: options.agentAuditLogPath }),
-        renderPlanPath: finalVideo.renderPlanPath,
-        ...(sandboxLogPath === undefined ? {} : { sandboxLogPath }),
-        ...(options.scriptGenerationAuditLogPath === undefined
-          ? {}
-          : {
-              scriptGenerationAuditLogPath:
-                options.scriptGenerationAuditLogPath,
-            }),
-        viewUrl: finalVideo.viewUrl,
-      },
-      draftCompositeReview: reviewSummary,
+          : { scriptPath: scriptPersistence.scriptPath }),
+        preparedDemo,
+        status: "succeeded",
+      };
+      return result;
+    } catch (error) {
+      if (isPipelineCancellationError(error)) {
+        const resultPath = join(runDirectory, "full-pipeline-result.json");
+        const cleanup = await cleanupPreparationWorkspaces({
+          handles: preparationWorkspaces,
+          log,
+        });
+        const infrastructure =
+          readPreparationWorkspaceInfrastructureDiagnostic(error);
+        const cancellationSummary = createCancellationSummary({
+          agentAuditLogPath: options.agentAuditLogPath,
+          cancellationReason: error.reason,
+          cleanup,
+          ...(infrastructure === undefined ? {} : { infrastructure }),
+          logPath,
+          runDirectory,
+          runId,
+          sandboxLogPath,
+          sandboxProvider: options.sandboxProvider,
+          scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
+        });
+        logBestEffort(log, {
+          cancellationReason: error.reason,
+          event: "pipeline-cancelled",
+          message: error.message,
+          severity: "warn",
+          status: "cancelled",
+        });
+        terminalFailureLogged = true;
+        await writeFile(
+          resultPath,
+          `${JSON.stringify(cancellationSummary, null, 2)}\n`,
+        );
+        preparationWorkspaces.clear();
+        logBestEffort(log, {
+          event: "result-written",
+          message: "Full pipeline cancellation result written.",
+          resultPath,
+          severity: "info",
+        });
+        const failure = new FullPipelineStageFailure({
+          failure: cancellationSummary.failure,
+          logPath,
+          agentAuditLogPath: options.agentAuditLogPath,
+          resultPath,
+          stage: "pipeline",
+          status: "cancelled",
+        });
+        terminalFailure = failure;
+        throw failure;
+      }
+      if (!terminalFailureLogged) {
+        const resultPath = join(runDirectory, "full-pipeline-result.json");
+        const failureSummary = createUnexpectedFailureSummary({
+          agentAuditLogPath: options.agentAuditLogPath,
+          logPath,
+          runDirectory,
+          runId,
+          sandboxLogPath,
+          sandboxProvider: options.sandboxProvider,
+          scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
+        });
+        await log({
+          error: readErrorMessage(error),
+          event: "pipeline-failed",
+          message: "Full pipeline failed unexpectedly.",
+          severity: "error",
+        });
+        terminalFailureLogged = true;
+        await writeFile(
+          resultPath,
+          `${JSON.stringify(failureSummary, null, 2)}\n`,
+        );
+        await log({
+          event: "result-written",
+          message: "Full pipeline failure result written.",
+          resultPath,
+          severity: "info",
+        });
+        const failure = new FullPipelineStageFailure({
+          cause: error,
+          failure: failureSummary.failure,
+          logPath,
+          agentAuditLogPath: options.agentAuditLogPath,
+          resultPath,
+          stage: "pipeline",
+          status: "infrastructure-failed",
+        });
+        terminalFailure = failure;
+        throw failure;
+      }
+      if (error instanceof FullPipelineStageFailure) {
+        terminalFailure = error;
+      }
+      throw error;
+    }
+  })().then(
+    (result) => ({ result, status: "succeeded" as const }),
+    (error: unknown) => ({ error, status: "failed" as const }),
+  );
+  const cleanup = await cleanupPreparationWorkspaces({
+    handles: preparationWorkspaces,
+    log,
+  });
+  if (cleanup !== undefined && completed.status === "succeeded") {
+    const failureSummary = createPreparationWorkspaceCleanupFailureSummary({
+      agentAuditLogPath: options.agentAuditLogPath,
+      cleanup,
+      logPath,
       runDirectory,
       runId,
-      ...(options.sandboxProvider === undefined
-        ? {}
-        : { sandboxProvider: options.sandboxProvider }),
-      script: {
-        sceneCount: scriptSummary.sceneCount,
-        scriptId: preparedDemo.demoScript.scriptId,
-        title: preparedDemo.demoScript.title,
-      },
-      status: "succeeded",
-    };
+      sandboxLogPath,
+      sandboxProvider: options.sandboxProvider,
+      scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
+    });
+    logBestEffort(log, {
+      event: "pipeline-failed",
+      message:
+        "Preparation Workspace release failed after all Pipeline stages completed.",
+      severity: "error",
+      status: "infrastructure-failed",
+    });
     await writeFile(
-      resultPath,
-      `${JSON.stringify(artifactSummary, null, 2)}\n`,
+      completed.result.resultPath,
+      `${JSON.stringify(failureSummary, null, 2)}\n`,
     );
-    await log({
+    logBestEffort(log, {
       event: "result-written",
-      message: "Full pipeline result written.",
-      resultPath,
+      message: "Full pipeline failure result written.",
+      resultPath: completed.result.resultPath,
       severity: "info",
     });
-    return {
-      captureManifest,
-      draftCompositeReview: reviewSummary,
-      finalVideo,
+    throw new FullPipelineStageFailure({
+      failure: failureSummary.failure,
       logPath,
-      resultPath,
-      ...(options.sandboxProvider === undefined
-        ? {}
-        : { sandboxProvider: options.sandboxProvider }),
-      ...(sandboxLogPath === undefined ? {} : { sandboxLogPath }),
-      ...(scriptPersistence.scriptPath === undefined
-        ? {}
-        : { scriptPath: scriptPersistence.scriptPath }),
-      preparedDemo,
-      status: "succeeded",
-    };
-  } catch (error) {
-    if (isPipelineCancellationError(error)) {
-      const resultPath = join(runDirectory, "full-pipeline-result.json");
-      const cancellationSummary = createCancellationSummary({
-        agentAuditLogPath: options.agentAuditLogPath,
-        cancellationReason: error.reason,
-        logPath,
-        runDirectory,
-        runId,
-        sandboxLogPath,
-        sandboxProvider: options.sandboxProvider,
-        scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
-      });
-      await cleanupPreparationWorkspaces({
-        handles: preparationWorkspaces,
-        log,
-      });
-      preparationWorkspaces.clear();
-      await log({
-        cancellationReason: error.reason,
-        event: "pipeline-cancelled",
-        message: error.message,
-        severity: "warn",
-        status: "cancelled",
-      });
-      terminalFailureLogged = true;
-      await writeFile(
-        resultPath,
-        `${JSON.stringify(cancellationSummary, null, 2)}\n`,
-      );
-      await log({
-        event: "result-written",
-        message: "Full pipeline cancellation result written.",
-        resultPath,
-        severity: "info",
-      });
-      throw new FullPipelineStageFailure({
-        failure: cancellationSummary.failure,
-        logPath,
-        agentAuditLogPath: options.agentAuditLogPath,
-        resultPath,
-        stage: "pipeline",
-        status: "cancelled",
-      });
-    }
-    if (!terminalFailureLogged) {
-      await log({
-        error: readErrorMessage(error),
-        event: "pipeline-failed",
-        message: "Full pipeline failed unexpectedly.",
-        severity: "error",
-      });
-      terminalFailureLogged = true;
-    }
-    throw error;
-  } finally {
-    await cleanupPreparationWorkspaces({
-      handles: preparationWorkspaces,
-      log,
+      agentAuditLogPath: options.agentAuditLogPath,
+      resultPath: completed.result.resultPath,
+      stage: "pipeline",
+      status: "infrastructure-failed",
     });
   }
+  if (cleanup !== undefined && terminalFailure !== undefined) {
+    const failure = withPreparationWorkspaceCleanupMetadata(
+      terminalFailure.failure,
+      cleanup,
+    );
+    await writePreparationWorkspaceCleanupMetadata({
+      cleanup,
+      resultPath: terminalFailure.resultPath,
+    });
+    throw new FullPipelineStageFailure({
+      ...(terminalFailure.cause === undefined
+        ? {}
+        : { cause: terminalFailure.cause }),
+      failure,
+      logPath: terminalFailure.logPath,
+      agentAuditLogPath: terminalFailure.agentAuditLogPath,
+      resultPath: terminalFailure.resultPath,
+      stage: terminalFailure.stage,
+      status: terminalFailure.status,
+    });
+  }
+  if (completed.status === "failed") throw completed.error;
+  return completed.result;
 }
 
 function createCancellationSummary(input: {
   agentAuditLogPath: string | undefined;
   cancellationReason: PipelineCancellationReason;
+  cleanup: PreparationWorkspaceCleanupMetadata | undefined;
+  infrastructure?: PreparationWorkspaceInfrastructureDiagnostic;
   logPath: string;
   runDirectory: string;
   runId: string;
   sandboxLogPath: string | undefined;
-  sandboxProvider: "daytona" | "railway" | undefined;
+  sandboxProvider: "daytona" | undefined;
   scriptGenerationAuditLogPath: string | undefined;
 }) {
   const blocker =
     input.cancellationReason === "deadline-exceeded"
       ? "Pipeline deadline exceeded before the full Pipeline Job completed."
       : "Pipeline cancelled by process signal before the full Pipeline Job completed.";
+  const failure = {
+    blockers: [blocker],
+    suggestedChanges: [],
+    ...(input.infrastructure === undefined
+      ? {}
+      : { infrastructure: input.infrastructure }),
+  } as FullPipelineFailure;
   return {
     artifacts: {
       logPath: input.logPath,
@@ -528,7 +677,10 @@ function createCancellationSummary(input: {
         : { sandboxLogPath: input.sandboxLogPath }),
     },
     cancellation: { reason: input.cancellationReason },
-    failure: { blockers: [blocker], suggestedChanges: [] },
+    failure:
+      input.cleanup === undefined
+        ? failure
+        : withPreparationWorkspaceCleanupMetadata(failure, input.cleanup),
     runDirectory: input.runDirectory,
     runId: input.runId,
     ...(input.sandboxProvider === undefined
@@ -544,9 +696,8 @@ function createRepoSecurityInputFailureSummary(input: {
   runDirectory: string;
   runId: string;
   sandboxLogPath: string | undefined;
-  sandboxProvider: "daytona" | "railway" | undefined;
+  sandboxProvider: "daytona" | undefined;
   scriptGenerationAuditLogPath: string | undefined;
-  diagnostic?: RepoSecurityInputInfrastructureDiagnostic;
 }) {
   return {
     artifacts: {
@@ -566,12 +717,8 @@ function createRepoSecurityInputFailureSummary(input: {
     failure: {
       blockers: [
         "Repo Security Screen input could not be loaded because sandbox infrastructure was unavailable.",
-        ...(input.diagnostic === undefined
-          ? []
-          : [
-              `Railway Repo Security infrastructure failed during ${input.diagnostic.phase.replaceAll("-", " ")}.`,
-            ]),
       ],
+      failureKind: "sandbox-infrastructure-failed" as const,
       suggestedChanges: [],
     },
     runDirectory: input.runDirectory,
@@ -579,26 +726,106 @@ function createRepoSecurityInputFailureSummary(input: {
     ...(input.sandboxProvider === undefined
       ? {}
       : { sandboxProvider: input.sandboxProvider }),
-    status: "security-rejected" as const,
+    status: "infrastructure-failed" as const,
+  };
+}
+
+function createUnexpectedFailureSummary(input: {
+  agentAuditLogPath: string | undefined;
+  logPath: string;
+  runDirectory: string;
+  runId: string;
+  sandboxLogPath: string | undefined;
+  sandboxProvider: "daytona" | undefined;
+  scriptGenerationAuditLogPath: string | undefined;
+}) {
+  return {
+    artifacts: {
+      logPath: input.logPath,
+      ...(input.agentAuditLogPath === undefined
+        ? {}
+        : { agentAuditLogPath: input.agentAuditLogPath }),
+      ...(input.scriptGenerationAuditLogPath === undefined
+        ? {}
+        : { scriptGenerationAuditLogPath: input.scriptGenerationAuditLogPath }),
+      ...(input.sandboxLogPath === undefined
+        ? {}
+        : { sandboxLogPath: input.sandboxLogPath }),
+    },
+    failure: {
+      blockers: [
+        "Full Pipeline infrastructure failed unexpectedly. Please report this issue to MakeADemo.",
+      ],
+      failureKind: "unexpected-pipeline-error" as const,
+      suggestedChanges: [],
+    },
+    runDirectory: input.runDirectory,
+    runId: input.runId,
+    ...(input.sandboxProvider === undefined
+      ? {}
+      : { sandboxProvider: input.sandboxProvider }),
+    status: "infrastructure-failed" as const,
+  };
+}
+
+function createPreparationWorkspaceCleanupFailureSummary(input: {
+  agentAuditLogPath: string | undefined;
+  cleanup: PreparationWorkspaceCleanupMetadata;
+  logPath: string;
+  runDirectory: string;
+  runId: string;
+  sandboxLogPath: string | undefined;
+  sandboxProvider: "daytona" | undefined;
+  scriptGenerationAuditLogPath: string | undefined;
+}) {
+  return {
+    artifacts: {
+      logPath: input.logPath,
+      ...(input.agentAuditLogPath === undefined
+        ? {}
+        : { agentAuditLogPath: input.agentAuditLogPath }),
+      ...(input.scriptGenerationAuditLogPath === undefined
+        ? {}
+        : { scriptGenerationAuditLogPath: input.scriptGenerationAuditLogPath }),
+      ...(input.sandboxLogPath === undefined
+        ? {}
+        : { sandboxLogPath: input.sandboxLogPath }),
+    },
+    failure: {
+      blockers: [
+        "Preparation Workspace release could not be confirmed after the Pipeline completed. Demo artifacts are inconclusive.",
+      ],
+      cleanup: input.cleanup,
+      failureKind: "preparation-workspace-cleanup-failed" as const,
+      suggestedChanges: [],
+    },
+    runDirectory: input.runDirectory,
+    runId: input.runId,
+    ...(input.sandboxProvider === undefined
+      ? {}
+      : { sandboxProvider: input.sandboxProvider }),
+    status: "infrastructure-failed" as const,
   };
 }
 
 async function cleanupPreparationWorkspaces(input: {
   handles: Iterable<NonNullable<PreparedDemoResult["preparationWorkspace"]>>;
   log: (entry: FullPipelineLogInput) => Promise<void>;
-}) {
+}): Promise<PreparationWorkspaceCleanupMetadata | undefined> {
+  const workspaces: PreparationWorkspaceCleanupMetadata["workspaces"] = [];
   for (const handle of input.handles) {
-    await logCleanupEvent(input.log, {
+    const startedAt = Date.now();
+    const release = handle.release();
+    logBestEffort(input.log, {
       event: "preparation-workspace-cleanup.started",
       message: "Preparation workspace cleanup started.",
       severity: "info",
       workspaceId: handle.id,
     });
 
-    const startedAt = Date.now();
     try {
-      await handle.release();
-      await logCleanupEvent(input.log, {
+      await release;
+      await logBestEffort(input.log, {
         durationMs: Date.now() - startedAt,
         event: "preparation-workspace-cleanup.succeeded",
         message: "Preparation workspace cleanup succeeded.",
@@ -606,7 +833,13 @@ async function cleanupPreparationWorkspaces(input: {
         workspaceId: handle.id,
       });
     } catch (error) {
-      await logCleanupEvent(input.log, {
+      const infrastructure =
+        readPreparationWorkspaceInfrastructureDiagnostic(error);
+      workspaces.push({
+        ...(infrastructure === undefined ? {} : { infrastructure }),
+        workspaceId: handle.id,
+      });
+      await logBestEffort(input.log, {
         durationMs: Date.now() - startedAt,
         error: readErrorMessage(error),
         event: "preparation-workspace-cleanup.failed",
@@ -616,16 +849,64 @@ async function cleanupPreparationWorkspaces(input: {
       });
     }
   }
+  return workspaces.length === 0 ? undefined : { status: "failed", workspaces };
 }
 
-async function logCleanupEvent(
+function withPreparationWorkspaceCleanupMetadata(
+  failure: FullPipelineFailure,
+  cleanup: PreparationWorkspaceCleanupMetadata,
+): FullPipelineFailure {
+  const infrastructure = cleanup.workspaces.find(
+    (workspace) => workspace.infrastructure !== undefined,
+  )?.infrastructure;
+  return {
+    ...failure,
+    cleanup,
+    ...(infrastructure === undefined || "infrastructure" in failure
+      ? {}
+      : { infrastructure }),
+  } as FullPipelineFailure;
+}
+
+async function writePreparationWorkspaceCleanupMetadata(input: {
+  cleanup: PreparationWorkspaceCleanupMetadata;
+  resultPath: string;
+}) {
+  const artifact = JSON.parse(await readFile(input.resultPath, "utf8")) as {
+    failure: FullPipelineFailure;
+  };
+  await writeFile(
+    input.resultPath,
+    `${JSON.stringify(
+      {
+        ...artifact,
+        failure: withPreparationWorkspaceCleanupMetadata(
+          artifact.failure,
+          input.cleanup,
+        ),
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
+async function logBestEffort(
   log: (entry: FullPipelineLogInput) => Promise<void>,
   entry: FullPipelineLogInput,
 ) {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    await log(entry);
+    await Promise.race([
+      log(entry),
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, cleanupLogTimeoutMs);
+      }),
+    ]);
   } catch {
-    // Cleanup observability must not hide an already durable successful result.
+    // Cleanup observability must not hide a terminal Pipeline result.
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
   }
 }
 
@@ -758,7 +1039,7 @@ function createFailureSummary(input: {
   runDirectory: string;
   runId: string;
   sandboxLogPath: string | undefined;
-  sandboxProvider: "daytona" | "railway" | undefined;
+  sandboxProvider: "daytona" | undefined;
   scriptGenerationAuditLogPath: string | undefined;
   preparedDemo: Exclude<
     Awaited<ReturnType<typeof runPipelineJob>>,
@@ -786,8 +1067,20 @@ function createFailureSummary(input: {
     ...(input.sandboxProvider === undefined
       ? {}
       : { sandboxProvider: input.sandboxProvider }),
-    status: input.preparedDemo.status,
+    status: pipelineFailureStatus(input.preparedDemo),
   };
+}
+
+function pipelineFailureStatus(
+  preparedDemo: Exclude<
+    Awaited<ReturnType<typeof runPipelineJob>>,
+    { status: "succeeded" }
+  >,
+) {
+  return preparedDemo.status === "preparation-failed" &&
+    preparedDemo.infrastructure !== undefined
+    ? ("infrastructure-failed" as const)
+    : preparedDemo.status;
 }
 
 function readPipelineFailure(
@@ -802,6 +1095,9 @@ function readPipelineFailure(
       ...(preparedDemo.failureKind === undefined
         ? {}
         : { failureKind: preparedDemo.failureKind }),
+      ...(preparedDemo.infrastructure === undefined
+        ? {}
+        : { infrastructure: preparedDemo.infrastructure }),
       suggestedChanges: [],
     };
   }

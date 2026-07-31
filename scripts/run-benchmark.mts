@@ -26,7 +26,7 @@ import {
   selectBenchmarkRepos,
 } from "../src/server/shared/benchmark/benchmark-suite";
 
-const { repoIds, sandboxProvider } = parseBenchmarkCommandArgs(
+const { concurrency, repoIds } = parseBenchmarkCommandArgs(
   process.argv.slice(2),
 );
 const selectedBenchmarkRepos = selectBenchmarkRepos({
@@ -36,7 +36,7 @@ const selectedBenchmarkRepos = selectBenchmarkRepos({
 const selectedBenchmarkSuite = {
   ...benchmarkSuite,
   repos: selectedBenchmarkRepos,
-  sandboxProvider,
+  sandboxProvider: "daytona" as const,
 };
 const benchmarkRunId = createRunId();
 const outputRoot = join(".makeademo-benchmark-runs", benchmarkRunId);
@@ -44,7 +44,17 @@ const resultsPath = join(outputRoot, "benchmark-results.jsonl");
 const benchmarkTimeoutMs = parseBenchmarkTimeout(
   process.env.MAKEADEMO_BENCHMARK_TIMEOUT_MS,
 );
-const suiteDeadlineAt = Date.now() + benchmarkTimeoutMs;
+const benchmarkJobCount = selectedBenchmarkRepos.reduce(
+  (count, repo) => count + repo.effectiveRepetitions,
+  0,
+);
+const benchmarkWorkerCount = concurrency ?? benchmarkJobCount;
+// A bounded run gives every admitted Pipeline Job its own full budget. The
+// suite watchdog spans the maximum number of worker waves; unbounded runs
+// retain the former one-wave timeout.
+const suiteDeadlineAt =
+  Date.now() +
+  benchmarkTimeoutMs * Math.ceil(benchmarkJobCount / benchmarkWorkerCount);
 const processController = createBenchmarkProcessController();
 const pipelineDeadlineReserveMs = 60_000;
 let interrupted = false;
@@ -73,6 +83,8 @@ let pendingResultWrite = Promise.resolve();
 let results: BenchmarkResult[];
 try {
   results = await runBenchmarkJobs({
+    ...(concurrency === undefined ? {} : { concurrency }),
+    ...(concurrency === undefined ? {} : { benchmarkTimeoutMs }),
     repos: selectedBenchmarkRepos,
     deadlineAt: suiteDeadlineAt,
     run: async ({ repo, repetitionIndex, deadlineAt }) => {
@@ -82,7 +94,7 @@ try {
         outputRoot,
         repo,
         repetitionIndex,
-        sandboxProvider,
+        sandboxProvider: "daytona",
         ...(deadlineAt === undefined ? {} : { deadlineAt }),
       });
       pendingResultWrite = pendingResultWrite.then(() =>
@@ -109,7 +121,7 @@ async function runRepoBenchmark(input: {
   outputRoot: string;
   repo: BenchmarkRepo;
   repetitionIndex: number;
-  sandboxProvider: "daytona" | "railway";
+  sandboxProvider: "daytona";
   deadlineAt?: number;
 }): Promise<BenchmarkResult> {
   const runName = `${input.repo.id}-r${input.repetitionIndex + 1}`;

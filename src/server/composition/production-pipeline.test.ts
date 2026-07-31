@@ -12,13 +12,17 @@ import type { BrowserValidator } from "../pipeline/05-capture-path-validation/de
 import type { SandboxRunner } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/sandbox-runner.interface";
 import { resolveProductionAgentModelConfig } from "./production-agent-model-config";
 import {
-  type ProductionSandboxProviderBundle,
   createDaytonaFreshCaptureStatePreparer,
   createProductionPipeline,
   createProductionPipelineDependencies,
+  resolveProductionRuntimeNetworkPolicy,
 } from "./production-pipeline";
 
 describe("production Pipeline assembly", () => {
+  it("allows public runtime egress for Daytona sandboxes", () => {
+    expect(resolveProductionRuntimeNetworkPolicy()).toBe("unrestricted-public");
+  });
+
   it("assembles the full Pipeline surface around injected Agent Harness runners without network work", async () => {
     const originalFetch = globalThis.fetch;
     const fetch = vi.fn(() => {
@@ -44,7 +48,6 @@ describe("production Pipeline assembly", () => {
         agentSessionRunner,
         sandbox: {
           apiKey: "test-daytona-api-key",
-          provider: "daytona",
         },
       });
 
@@ -132,40 +135,6 @@ describe("production Pipeline assembly", () => {
         id: "scene-validation",
       });
     }
-  });
-
-  it("selects a Railway provider bundle without exposing it to controllers", () => {
-    const factory = vi.fn(() => railwayProviderBundle());
-    const agentSessionRunner: AgentSessionRunner = {
-      async dispose() {},
-      async run() {
-        return { exitCode: 0, stderr: "", stdout: "" };
-      },
-    };
-
-    const pipeline = createProductionPipeline({
-      agentModel: resolveProductionAgentModelConfig({
-        modelID: "gpt-5.6",
-        providerID: "openai",
-      }),
-      agentSessionRunner,
-      sandbox: {
-        environmentId: "environment_railway",
-        projectToken: "project-token",
-        provider: "railway",
-      },
-      sandboxProviderFactory: factory,
-    });
-
-    expect(factory).toHaveBeenCalledWith(
-      {
-        environmentId: "environment_railway",
-        projectToken: "project-token",
-        provider: "railway",
-      },
-      expect.objectContaining({ sandboxLogSinks: [] }),
-    );
-    expect(Object.keys(pipeline).sort()).toEqual(["dispose", "run"]);
   });
 
   it("supplies a fresh deterministic state before Footage Capture", async () => {
@@ -262,34 +231,6 @@ function preparationManifest() {
     status: "created-new-demo" as const,
     url: "http://localhost:3000",
     workspaceId: "workspace_123",
-  };
-}
-
-function railwayProviderBundle(): ProductionSandboxProviderBundle {
-  return {
-    createSandboxRunner() {
-      return {
-        async runValidation() {
-          throw new Error("Not used during Pipeline assembly.");
-        },
-      };
-    },
-    async prepareFreshCaptureState() {
-      return {};
-    },
-    repoPreparationWorkspaceProvider: {
-      async create() {
-        return preparationWorkspaceHandle();
-      },
-    },
-    repoSecurityInputLoader: {
-      async load() {
-        return {
-          files: [],
-          repoStats: { fileCount: 0, sizeBytes: 0 },
-        };
-      },
-    },
   };
 }
 

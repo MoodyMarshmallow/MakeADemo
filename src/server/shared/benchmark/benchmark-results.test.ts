@@ -95,11 +95,11 @@ describe("readBenchmarkTerminalPipelineResult", () => {
       readBenchmarkTerminalPipelineResult({
         pipelineOutputRoot,
         resultPath,
-        value: { ...successfulTerminalSummary(), sandboxProvider: "railway" },
+        value: { ...successfulTerminalSummary(), sandboxProvider: "daytona" },
       }),
     ).toMatchObject({
       resultPath,
-      sandboxProvider: "railway",
+      sandboxProvider: "daytona",
       status: "succeeded",
     });
   });
@@ -123,6 +123,78 @@ describe("readBenchmarkTerminalPipelineResult", () => {
         },
       }),
     ).toMatchObject({ status: "cancelled" });
+  });
+
+  it("preserves a Repo Security sandbox infrastructure failure for inconclusive benchmarking", () => {
+    expect(
+      readBenchmarkTerminalPipelineResult({
+        pipelineOutputRoot,
+        resultPath,
+        value: {
+          artifacts: { logPath: "/runs/pipeline-log.jsonl" },
+          failure: {
+            blockers: ["Sandbox infrastructure was unavailable."],
+            failureKind: "sandbox-infrastructure-failed",
+            infrastructure: {
+              phase: "release-settlement",
+              provider: "daytona",
+            },
+            suggestedChanges: [],
+          },
+          runDirectory:
+            "/runs/ghost/pipeline/full-pipeline-2026-07-20T00-00-00-000Z",
+          runId: "full-pipeline-2026-07-20T00-00-00-000Z",
+          sandboxProvider: "daytona",
+          status: "infrastructure-failed",
+        },
+      }),
+    ).toMatchObject({
+      failure: {
+        failureKind: "sandbox-infrastructure-failed",
+        infrastructure: {
+          phase: "release-settlement",
+          provider: "daytona",
+        },
+      },
+      resultPath,
+      sandboxProvider: "daytona",
+      status: "infrastructure-failed",
+    });
+  });
+
+  it("preserves a Repo Preparation registry acquisition diagnostic for inconclusive benchmarking", () => {
+    expect(
+      readBenchmarkTerminalPipelineResult({
+        pipelineOutputRoot,
+        resultPath,
+        value: {
+          artifacts: { logPath: "/runs/pipeline-log.jsonl" },
+          failure: {
+            blockers: ["Sandbox infrastructure was unavailable."],
+            failureKind: "sandbox-infrastructure-failed",
+            infrastructure: {
+              phase: "registry-acquisition",
+              provider: "daytona",
+            },
+            suggestedChanges: [],
+          },
+          runDirectory:
+            "/runs/ghost/pipeline/full-pipeline-2026-07-20T00-00-00-000Z",
+          runId: "full-pipeline-2026-07-20T00-00-00-000Z",
+          sandboxProvider: "daytona",
+          status: "infrastructure-failed",
+        },
+      }),
+    ).toMatchObject({
+      failure: {
+        failureKind: "sandbox-infrastructure-failed",
+        infrastructure: {
+          phase: "registry-acquisition",
+          provider: "daytona",
+        },
+      },
+      status: "infrastructure-failed",
+    });
   });
 });
 
@@ -184,6 +256,37 @@ describe("inferBenchmarkStatusLevel", () => {
 });
 
 describe("buildBenchmarkResult", () => {
+  it("keeps a durable succeeded result inconclusive when CLI cleanup exits nonzero", () => {
+    expect(
+      buildBenchmarkResult({
+        benchmarkRunId: "run-1",
+        benchmarkTimeoutMs: 960_000,
+        command: ["bun", "src/server/composition/full-pipeline-cli.mts"],
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
+        durationMs: 20_000,
+        endedAt: "2026-07-20T00:00:20.000Z",
+        expectedLevel: "L5",
+        fullPipelineLog: { stageOutcomes: [], succeededEvents: [] },
+        fullPipelineResult: {
+          resultPath: "/runs/full-pipeline-result.json",
+          status: "succeeded",
+        },
+        lifecycle: { exitCode: 1, killed: false },
+        repoId: "ghost",
+        repoUrl: "https://github.com/TryGhost/Ghost",
+        runDirectory: ".makeademo-benchmark-runs/run-1/ghost-r1",
+        startedAt: "2026-07-20T00:00:00.000Z",
+        stderrPath: "stderr.log",
+        stdoutPath: "stdout.log",
+      }),
+    ).toMatchObject({
+      disposition: "inconclusive",
+      infrastructureFailureKind: "terminal-cleanup-failed",
+      status: "failed",
+      statusLevel: "L5",
+    });
+  });
+
   it("keeps a cooperative pipeline deadline inconclusive at the last trusted milestone", () => {
     expect(
       buildBenchmarkResult({
@@ -211,7 +314,7 @@ describe("buildBenchmarkResult", () => {
         repoId: "ghost",
         repoUrl: "https://github.com/TryGhost/Ghost",
         runDirectory: ".makeademo-benchmark-runs/run-1/ghost-r1",
-        sandboxProvider: "railway",
+        sandboxProvider: "daytona",
         startedAt: "2026-07-20T00:00:00.000Z",
         stderrPath: "stderr.log",
         stdoutPath: "stdout.log",
@@ -220,7 +323,7 @@ describe("buildBenchmarkResult", () => {
       disposition: "inconclusive",
       failureStage: "repo-preparation",
       infrastructureFailureKind: "pipeline-deadline-exceeded",
-      sandboxProvider: "railway",
+      sandboxProvider: "daytona",
       statusLevel: "L0",
     });
   });
@@ -460,6 +563,49 @@ describe("buildBenchmarkResult", () => {
       failureStage: "repo-preparation",
       infrastructureFailureKind: "dependency-install-sigkill",
       status: "failed",
+    });
+  });
+
+  it("keeps a durable sandbox infrastructure failure inconclusive", () => {
+    expect(
+      buildBenchmarkResult({
+        benchmarkRunId: "run-1",
+        benchmarkTimeoutMs: 960_000,
+        command: ["bun", "src/server/composition/full-pipeline-cli.mts"],
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
+        durationMs: 1_000,
+        endedAt: "2026-07-20T00:00:01.000Z",
+        expectedLevel: "L5",
+        fullPipelineLog: {
+          stageOutcomes: [{ stage: "repo-security-screen", status: "failed" }],
+          succeededEvents: [],
+        },
+        fullPipelineResult: {
+          failure: {
+            blockers: ["Sandbox infrastructure was unavailable."],
+            failureKind: "sandbox-infrastructure-failed",
+            infrastructure: {
+              phase: "command-or-clone",
+              provider: "daytona",
+            },
+          },
+          resultPath: "/runs/full-pipeline-result.json",
+          status: "infrastructure-failed",
+        },
+        lifecycle: { exitCode: 1, killed: false },
+        repoId: "cal",
+        repoUrl: "https://github.com/calcom/cal.com",
+        runDirectory: ".makeademo-benchmark-runs/run-1/cal-r1",
+        sandboxProvider: "daytona",
+        startedAt: "2026-07-20T00:00:00.000Z",
+        stderrPath: "stderr.log",
+        stdoutPath: "stdout.log",
+      }),
+    ).toMatchObject({
+      disposition: "inconclusive",
+      infrastructureFailureKind: "sandbox-infrastructure-failed",
+      status: "failed",
+      statusLevel: "L0",
     });
   });
 

@@ -5,12 +5,16 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { createAgentSession } from "../../../test-support/create-agent-session";
+import { PreparationWorkspaceInfrastructureError } from "../../03-repo-preparation/preparation-workspace-infrastructure.interface";
 import type {
   CaptureManifest,
   CaptureScenesFromScriptInput,
 } from "../../06-footage-capture/capture-scenes";
 import type { CompositedVideoManifest } from "../../07-compositing/composite-video";
-import { runFullPipelineJob } from "./full-pipeline-runner";
+import {
+  FullPipelineStageFailure,
+  runFullPipelineJob,
+} from "./full-pipeline-runner";
 import { PipelineCancellationError } from "./pipeline-cancellation";
 import type { PipelineOrchestratorDependencies } from "./pipeline-orchestrator";
 
@@ -293,7 +297,7 @@ describe("runFullPipelineJob", () => {
     }
   });
 
-  it("reports the sandbox log artifact only when a local sink path is configured", async () => {
+  it("turns a successful Pipeline Job into a durable infrastructure failure when Preparation Workspace release fails", async () => {
     const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
     const sandboxLogPath = join(outputRoot, "full-run", "sandbox-log.jsonl");
     const cleanupEvents: string[] = [];
@@ -303,7 +307,7 @@ describe("runFullPipelineJob", () => {
     };
 
     try {
-      const result = await runFullPipelineJob(
+      const failure = await runFullPipelineJob(
         fullPipelineInput(),
         orchestratorDependencies([], undefined, preparationWorkspace),
         {
@@ -324,12 +328,29 @@ describe("runFullPipelineJob", () => {
           runId: "full-run",
           sandboxLogPath,
         },
-      );
+      ).catch((error: unknown) => error);
+      if (!(failure instanceof FullPipelineStageFailure)) throw failure;
 
-      expect(result.sandboxLogPath).toBe(sandboxLogPath);
-      await expect(readJsonFile(result.resultPath)).resolves.toMatchObject({
+      expect(failure).toMatchObject({
+        failure: {
+          failureKind: "preparation-workspace-cleanup-failed",
+        },
+        resultPath: join(outputRoot, "full-run", "full-pipeline-result.json"),
+        status: "infrastructure-failed",
+      });
+      await expect(readJsonFile(failure.resultPath)).resolves.toMatchObject({
         artifacts: { sandboxLogPath },
-        status: "succeeded",
+        failure: {
+          cleanup: {
+            workspaces: [
+              {
+                workspaceId: "daytona_workspace",
+              },
+            ],
+          },
+          failureKind: "preparation-workspace-cleanup-failed",
+        },
+        status: "infrastructure-failed",
       });
       expect(cleanupEvents).toContain("preparation-workspace-cleanup.failed");
     } finally {
@@ -424,13 +445,14 @@ describe("runFullPipelineJob", () => {
   });
 
   it("fails before capture when Capture Path Validation did not produce a browser URL", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
     const preparationWorkspace = fakePreparationWorkspaceHandle();
     let destroyCount = 0;
     preparationWorkspace.release = async () => {
       destroyCount += 1;
     };
-    await expect(
-      runFullPipelineJob(
+    try {
+      const failure = await runFullPipelineJob(
         fullPipelineInput(),
         orchestratorDependencies(
           [],
@@ -444,49 +466,101 @@ describe("runFullPipelineJob", () => {
           async compositeVideo() {
             throw new Error("compositing should not run");
           },
+          outputRoot,
+          runId: "missing-browser-url",
         },
-      ),
-    ).rejects.toThrow(
-      "Capture Path Validation succeeded without a browser URL.",
-    );
-    expect(destroyCount).toBe(1);
+      ).catch((error: unknown) => error);
+      if (!(failure instanceof FullPipelineStageFailure)) throw failure;
+
+      expect(failure).toMatchObject({
+        cause: expect.objectContaining({
+          message: "Capture Path Validation succeeded without a browser URL.",
+        }),
+        failure: { failureKind: "unexpected-pipeline-error" },
+        resultPath: join(
+          outputRoot,
+          "missing-browser-url",
+          "full-pipeline-result.json",
+        ),
+        status: "infrastructure-failed",
+      });
+      await expect(readJsonFile(failure.resultPath)).resolves.toMatchObject({
+        failure: { failureKind: "unexpected-pipeline-error" },
+        status: "infrastructure-failed",
+      });
+      expect(destroyCount).toBe(1);
+    } finally {
+      await rm(outputRoot, { force: true, recursive: true });
+    }
   });
 
   it("preserves the downstream failure when preparation cleanup also fails", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
     const preparationWorkspace = fakePreparationWorkspaceHandle();
     preparationWorkspace.release = async () => {
       throw new Error("cleanup failed");
     };
 
-    await expect(
-      runFullPipelineJob(
+    try {
+      const failure = await runFullPipelineJob(
         fullPipelineInput(),
         orchestratorDependencies(
           [],
           { includeBrowserUrl: false },
           preparationWorkspace,
         ),
-      ),
-    ).rejects.toThrow(
-      "Capture Path Validation succeeded without a browser URL.",
-    );
+        { outputRoot, runId: "stage-and-cleanup-fail" },
+      ).catch((error: unknown) => error);
+      if (!(failure instanceof FullPipelineStageFailure)) throw failure;
+
+      expect(failure).toMatchObject({
+        cause: expect.objectContaining({
+          message: "Capture Path Validation succeeded without a browser URL.",
+        }),
+        failure: {
+          cleanup: {
+            workspaces: [{ workspaceId: "daytona_workspace" }],
+          },
+          failureKind: "unexpected-pipeline-error",
+        },
+        status: "infrastructure-failed",
+      });
+      await expect(readJsonFile(failure.resultPath)).resolves.toMatchObject({
+        failure: {
+          cleanup: {
+            workspaces: [{ workspaceId: "daytona_workspace" }],
+          },
+          failureKind: "unexpected-pipeline-error",
+        },
+        status: "infrastructure-failed",
+      });
+    } finally {
+      await rm(outputRoot, { force: true, recursive: true });
+    }
   });
 
   it("fails default Footage Capture when no fresh-state reset is configured", async () => {
     const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
 
     try {
-      await expect(
-        runFullPipelineJob(fullPipelineInput(), orchestratorDependencies([]), {
+      const failure = await runFullPipelineJob(
+        fullPipelineInput(),
+        orchestratorDependencies([]),
+        {
           async reviewDraftComposite() {
             return acceptDraftComposite();
           },
           outputRoot,
           runId: "full-run",
+        },
+      ).catch((error: unknown) => error);
+      expect(failure).toMatchObject({
+        cause: expect.objectContaining({
+          message:
+            "Footage Capture requires a fresh deterministic app-state reset before recording.",
         }),
-      ).rejects.toThrow(
-        "Footage Capture requires a fresh deterministic app-state reset before recording.",
-      );
+        status: "infrastructure-failed",
+      });
     } finally {
       await rm(outputRoot, { force: true, recursive: true });
     }
@@ -604,6 +678,64 @@ describe("runFullPipelineJob", () => {
     }
   });
 
+  it("materializes Preparation Workspace infrastructure diagnostics as inconclusive terminal results", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
+
+    try {
+      const failure = await runFullPipelineJob(
+        fullPipelineInput(),
+        {
+          async generateDemoScript() {
+            throw new Error("script generation should not run");
+          },
+          async prepareRepo() {
+            return {
+              fallbackPrompt:
+                "Preparation Workspace infrastructure failed during release settlement.",
+              failureKind: "sandbox-infrastructure-failed" as const,
+              infrastructure: {
+                phase: "release-settlement" as const,
+                provider: "daytona" as const,
+              },
+              status: "failed" as const,
+            };
+          },
+          screenRepoSecurity() {
+            return { rejections: [], status: "passed" as const, warnings: [] };
+          },
+          async validateCapturePath() {
+            throw new Error("capture path validation should not run");
+          },
+        },
+        { outputRoot, runId: "preparation-infrastructure-fails" },
+      ).catch((error: unknown) => error);
+      if (!(failure instanceof FullPipelineStageFailure)) throw failure;
+
+      expect(failure).toMatchObject({
+        failure: {
+          failureKind: "sandbox-infrastructure-failed",
+          infrastructure: {
+            phase: "release-settlement",
+            provider: "daytona",
+          },
+        },
+        status: "infrastructure-failed",
+      });
+      await expect(readJsonFile(failure.resultPath)).resolves.toMatchObject({
+        failure: {
+          failureKind: "sandbox-infrastructure-failed",
+          infrastructure: {
+            phase: "release-settlement",
+            provider: "daytona",
+          },
+        },
+        status: "infrastructure-failed",
+      });
+    } finally {
+      await rm(outputRoot, { force: true, recursive: true });
+    }
+  });
+
   it("writes an authoritative cancelled result before propagating a pipeline deadline", async () => {
     const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
     const controller = new AbortController();
@@ -653,6 +785,196 @@ describe("runFullPipelineJob", () => {
         status: "cancelled",
       });
       expect(resultExistedDuringRelease).toEqual([false]);
+    } finally {
+      await rm(outputRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("records Repo Preparation release infrastructure without replacing cancellation", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
+
+    try {
+      const failure = await runFullPipelineJob(
+        fullPipelineInput(),
+        {
+          async generateDemoScript() {
+            throw new Error("script generation should not run");
+          },
+          async prepareRepo() {
+            throw new PipelineCancellationError("signal", {
+              preparationWorkspaceInfrastructureDiagnostic: {
+                phase: "release-settlement",
+                provider: "daytona",
+              },
+            });
+          },
+          screenRepoSecurity() {
+            return { rejections: [], status: "passed" as const, warnings: [] };
+          },
+          async validateCapturePath() {
+            throw new Error("capture path validation should not run");
+          },
+        },
+        { outputRoot, runId: "cancelled-repo-preparation-release" },
+      ).catch((error: unknown) => error);
+      if (!(failure instanceof FullPipelineStageFailure)) throw failure;
+
+      expect(failure).toMatchObject({
+        failure: {
+          infrastructure: {
+            phase: "release-settlement",
+            provider: "daytona",
+          },
+        },
+        status: "cancelled",
+      });
+      await expect(readJsonFile(failure.resultPath)).resolves.toMatchObject({
+        cancellation: { reason: "signal" },
+        failure: {
+          infrastructure: {
+            phase: "release-settlement",
+            provider: "daytona",
+          },
+        },
+        status: "cancelled",
+      });
+    } finally {
+      await rm(outputRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("starts Preparation Workspace release without waiting for a stalled cleanup log sink", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
+    const preparationWorkspace = fakePreparationWorkspaceHandle();
+    let releaseStarted: (() => void) | undefined;
+    const releaseBegan = new Promise<void>((resolve) => {
+      releaseStarted = resolve;
+    });
+    let cleanupLogStarted!: () => void;
+    const cleanupLogWrite = new Promise<void>((resolve) => {
+      cleanupLogStarted = resolve;
+    });
+    preparationWorkspace.release = async () => {
+      releaseStarted?.();
+    };
+
+    try {
+      void runFullPipelineJob(
+        fullPipelineInput(),
+        orchestratorDependencies([], undefined, preparationWorkspace),
+        {
+          async captureScenes(input) {
+            return captureManifest(outputRoot, input.runId ?? "capture");
+          },
+          async compositeVideo(input) {
+            return compositeManifest(outputRoot, input.runId ?? "composite");
+          },
+          async inspectDraftCompositeEvidence() {
+            return cleanDraftEvidence();
+          },
+          logSinks: [
+            {
+              write(line) {
+                const entry = JSON.parse(line) as { event?: string };
+                if (entry.event === "preparation-workspace-cleanup.started") {
+                  cleanupLogStarted();
+                  return new Promise<void>(() => undefined);
+                }
+              },
+            },
+          ],
+          outputRoot,
+          reviewDraftComposite: acceptDraftComposite,
+          runId: "stalled-cleanup-log",
+        },
+      ).catch(() => undefined);
+
+      await cleanupLogWrite;
+      await expect(
+        Promise.race([
+          releaseBegan.then(() => "release-started"),
+          new Promise<string>((resolve) =>
+            setTimeout(() => resolve("timed-out"), 50),
+          ),
+        ]),
+      ).resolves.toBe("release-started");
+    } finally {
+      await rm(outputRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("keeps cancellation primary while preserving safe Preparation Workspace cleanup infrastructure", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
+    const controller = new AbortController();
+    const preparationWorkspace = fakePreparationWorkspaceHandle();
+    preparationWorkspace.release = async () => {
+      throw new PreparationWorkspaceInfrastructureError({
+        phase: "release-settlement",
+        provider: "daytona",
+      });
+    };
+
+    try {
+      const failure = await runFullPipelineJob(
+        fullPipelineInput(),
+        {
+          ...orchestratorDependencies([], undefined, preparationWorkspace),
+          async generateDemoScript() {
+            controller.abort(
+              new PipelineCancellationError("deadline-exceeded"),
+            );
+            throw controller.signal.reason;
+          },
+        },
+        {
+          outputRoot,
+          runId: "cancelled-cleanup-infrastructure",
+          signal: controller.signal,
+        },
+      ).catch((error: unknown) => error);
+      if (!(failure instanceof FullPipelineStageFailure)) throw failure;
+
+      expect(failure).toMatchObject({
+        failure: {
+          cleanup: {
+            workspaces: [
+              {
+                infrastructure: {
+                  phase: "release-settlement",
+                  provider: "daytona",
+                },
+                workspaceId: "daytona_workspace",
+              },
+            ],
+          },
+          infrastructure: {
+            phase: "release-settlement",
+            provider: "daytona",
+          },
+        },
+        status: "cancelled",
+      });
+      await expect(readJsonFile(failure.resultPath)).resolves.toMatchObject({
+        cancellation: { reason: "deadline-exceeded" },
+        failure: {
+          cleanup: {
+            workspaces: [
+              {
+                infrastructure: {
+                  phase: "release-settlement",
+                  provider: "daytona",
+                },
+                workspaceId: "daytona_workspace",
+              },
+            ],
+          },
+          infrastructure: {
+            phase: "release-settlement",
+            provider: "daytona",
+          },
+        },
+        status: "cancelled",
+      });
     } finally {
       await rm(outputRoot, { force: true, recursive: true });
     }
@@ -753,52 +1075,70 @@ describe("runFullPipelineJob", () => {
     const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
 
     try {
-      await expect(
-        runFullPipelineJob(
-          fullPipelineInput(),
-          {
-            async generateDemoScript() {
-              throw new Error("ScriptGen stalled before artifact output");
-            },
-            async prepareRepo() {
-              return {
-                manifest: {
-                  assumptions: [],
-                  createdFiles: [],
-                  demoCommand: "npm run demo",
-                  diffArtifactId: "diff",
-                  existingDemoEvidence: [],
-                  mockedServices: [],
-                  modifiedFiles: [],
-                  repoUrl: "https://github.com/example/app",
-                  risks: [],
-                  scriptGenerationContext: [],
-                  setupSummary: "Prepared app.",
-                  status: "adapted-existing-demo",
-                  url: "http://localhost:3000/",
-                  workspaceId: "workspace_123",
-                },
-                agentSession: createAgentSession(),
-                status: "succeeded",
-                workspace: fakePreparationWorkspaceHandle(),
-              };
-            },
-            screenRepoSecurity() {
-              return { rejections: [], status: "passed", warnings: [] };
-            },
-            async validateCapturePath() {
-              throw new Error(
-                "capture path validation should not run after script generation fails",
-              );
-            },
+      const failure = await runFullPipelineJob(
+        fullPipelineInput(),
+        {
+          async generateDemoScript() {
+            throw new Error("ScriptGen stalled before artifact output");
           },
-          { outputRoot, runId: "scriptgen-fails" },
-        ),
-      ).rejects.toThrow("ScriptGen stalled before artifact output");
+          async prepareRepo() {
+            return {
+              manifest: {
+                assumptions: [],
+                createdFiles: [],
+                demoCommand: "npm run demo",
+                diffArtifactId: "diff",
+                existingDemoEvidence: [],
+                mockedServices: [],
+                modifiedFiles: [],
+                repoUrl: "https://github.com/example/app",
+                risks: [],
+                scriptGenerationContext: [],
+                setupSummary: "Prepared app.",
+                status: "adapted-existing-demo",
+                url: "http://localhost:3000/",
+                workspaceId: "workspace_123",
+              },
+              agentSession: createAgentSession(),
+              status: "succeeded",
+              workspace: fakePreparationWorkspaceHandle(),
+            };
+          },
+          screenRepoSecurity() {
+            return { rejections: [], status: "passed", warnings: [] };
+          },
+          async validateCapturePath() {
+            throw new Error(
+              "capture path validation should not run after script generation fails",
+            );
+          },
+        },
+        { outputRoot, runId: "scriptgen-fails" },
+      ).catch((error: unknown) => error);
+      if (!(failure instanceof FullPipelineStageFailure)) throw failure;
+
+      expect(failure).toMatchObject({
+        failure: {
+          blockers: [
+            "Full Pipeline infrastructure failed unexpectedly. Please report this issue to MakeADemo.",
+          ],
+          failureKind: "unexpected-pipeline-error",
+        },
+        stage: "pipeline",
+        status: "infrastructure-failed",
+      });
 
       await expect(
         readdir(join(outputRoot, "scriptgen-fails")),
-      ).resolves.toEqual(["pipeline-log.jsonl"]);
+      ).resolves.toEqual(["full-pipeline-result.json", "pipeline-log.jsonl"]);
+      await expect(
+        readFile(failure.resultPath, "utf8").then(JSON.parse),
+      ).resolves.toMatchObject({
+        failure: {
+          failureKind: "unexpected-pipeline-error",
+        },
+        status: "infrastructure-failed",
+      });
       const logEntries = (
         await readFile(
           join(outputRoot, "scriptgen-fails", "pipeline-log.jsonl"),

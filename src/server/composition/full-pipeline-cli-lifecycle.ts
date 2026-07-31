@@ -1,16 +1,5 @@
 import { isPipelineCancellationError } from "../pipeline/00-orchestration/job/pipeline-cancellation";
 
-/** Adds provider provenance to every durable full-Pipeline terminal outcome. */
-export function addSandboxProviderToTerminalOutput(input: {
-  output: string;
-  sandboxProvider: "daytona" | "railway";
-}): string {
-  const output = input.output.startsWith("\n")
-    ? input.output.slice(1)
-    : input.output;
-  return `\nSandbox provider: ${input.sandboxProvider}\n${output}`;
-}
-
 /**
  * Owns pre-Pipeline input loading and turns its cooperative cancellation into
  * the same durable terminal result flow used after the Pipeline starts.
@@ -40,7 +29,13 @@ export async function finalizeFullPipelineCli(input: {
   terminalOutput?: string;
   write: (output: string) => void;
 }): Promise<void> {
-  await input.cleanup();
+  let cleanupError: unknown;
+  try {
+    await input.cleanup();
+  } catch (error) {
+    cleanupError = error;
+  }
   input.removeSignalHandlers();
   if (input.terminalOutput !== undefined) input.write(input.terminalOutput);
+  if (cleanupError !== undefined) throw cleanupError;
 }

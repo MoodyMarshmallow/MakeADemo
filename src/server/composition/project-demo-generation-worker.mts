@@ -46,7 +46,6 @@ do {
         }),
         sandbox: {
           apiKey: daytonaApiKey,
-          provider: "daytona",
           ...(daytonaSnapshot === undefined
             ? {}
             : { snapshot: daytonaSnapshot }),

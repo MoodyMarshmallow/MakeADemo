@@ -226,6 +226,9 @@ export async function runPipelineJob(
       ...(preparation.failureKind === undefined
         ? {}
         : { failureKind: preparation.failureKind }),
+      ...(preparation.infrastructure === undefined
+        ? {}
+        : { infrastructure: preparation.infrastructure }),
       status: "preparation-failed",
     };
   }

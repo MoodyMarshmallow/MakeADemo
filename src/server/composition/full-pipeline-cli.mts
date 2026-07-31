@@ -21,7 +21,6 @@ import {
 } from "../shared/logging/pipeline-event-logger";
 import { createAgentOutputRouter } from "./agent-output";
 import {
-  addSandboxProviderToTerminalOutput,
   finalizeFullPipelineCli,
   runFullPipelineCliOperation,
 } from "./full-pipeline-cli-lifecycle";
@@ -31,13 +30,11 @@ import {
   parseProductionAgentCliArgs,
 } from "./production-agent-cli-options";
 import { resolveProductionAgentModelConfig } from "./production-agent-model-config";
-import {
-  type SandboxProviderId,
-  createProductionPipeline,
-} from "./production-pipeline";
+import { createProductionPipeline } from "./production-pipeline";
 
-const { outputRoot, pipelineDeadlineAt, preCaptureArgs, sandboxProvider } =
-  readFullPipelineArgs(process.argv.slice(2));
+const { outputRoot, pipelineDeadlineAt, preCaptureArgs } = readFullPipelineArgs(
+  process.argv.slice(2),
+);
 const { pipeline: options, agentModel } = await readOptions(preCaptureArgs);
 const daytonaSnapshot = readOptionalEnv("MAKEADEMO_DAYTONA_SNAPSHOT");
 const daytonaSubmittedCodeSnapshot = readOptionalEnv(
@@ -45,7 +42,6 @@ const daytonaSubmittedCodeSnapshot = readOptionalEnv(
 );
 const sandbox = readFullPipelineSandboxConfig({
   environment: process.env,
-  provider: sandboxProvider,
   ...(daytonaSnapshot === undefined ? {} : { daytonaSnapshot }),
   ...(daytonaSubmittedCodeSnapshot === undefined
     ? {}
@@ -181,12 +177,9 @@ await finalizeFullPipelineCli({
   ...(terminalFailureOutput === undefined && result === undefined
     ? {}
     : {
-        terminalOutput: addSandboxProviderToTerminalOutput({
-          output:
-            terminalFailureOutput ??
-            formatFullPipelineSuccess(result as NonNullable<typeof result>),
-          sandboxProvider,
-        }),
+        terminalOutput:
+          terminalFailureOutput ??
+          formatFullPipelineSuccess(result as NonNullable<typeof result>),
       }),
   write: (output) =>
     terminalFailureOutput === undefined
@@ -248,8 +241,6 @@ function readFullPipelineArgs(args: string[]) {
   const preCaptureArgs: string[] = [];
   let pipelineDeadlineAt: number | undefined;
   let outputRoot: string | undefined;
-  let sandboxProvider: SandboxProviderId = "daytona";
-  let sandboxProviderSeen = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] as string;
@@ -266,22 +257,6 @@ function readFullPipelineArgs(args: string[]) {
       continue;
     }
 
-    if (arg === "--sandbox-provider") {
-      if (sandboxProviderSeen) {
-        throw new Error("--sandbox-provider may be specified at most once.");
-      }
-      const value = readFlagValue(args, index, arg);
-      if (value !== "daytona" && value !== "railway") {
-        throw new Error(
-          `Unsupported sandbox provider "${value}". Expected daytona or railway.`,
-        );
-      }
-      sandboxProvider = value;
-      sandboxProviderSeen = true;
-      index += 1;
-      continue;
-    }
-
     preCaptureArgs.push(arg);
   }
 
@@ -289,7 +264,6 @@ function readFullPipelineArgs(args: string[]) {
     preCaptureArgs,
     ...(outputRoot === undefined ? {} : { outputRoot }),
     ...(pipelineDeadlineAt === undefined ? {} : { pipelineDeadlineAt }),
-    sandboxProvider,
   };
 }
 

@@ -1,34 +1,16 @@
-import type {
-  ProductionSandboxConfig,
-  SandboxProviderId,
-} from "./production-pipeline";
+import type { ProductionSandboxConfig } from "./production-pipeline";
 
 type PipelineEnvironment = Readonly<Record<string, string | undefined>>;
 
 /**
- * Resolves the full-Pipeline CLI's provider configuration from explicit
- * credentials. Railway never falls back to ambient Railway CLI credentials.
+ * Resolves the full-Pipeline CLI's Daytona configuration from explicit
+ * credentials.
  */
 export function readFullPipelineSandboxConfig(input: {
   daytonaSnapshot?: string;
   daytonaSubmittedCodeSnapshot?: string;
   environment: PipelineEnvironment;
-  provider: SandboxProviderId;
 }): ProductionSandboxConfig {
-  if (input.provider === "railway") {
-    return {
-      environmentId: readRequiredEnvironment(
-        input.environment,
-        "MAKEADEMO_RAILWAY_SANDBOX_ENVIRONMENT_ID",
-      ),
-      projectToken: readRequiredEnvironment(
-        input.environment,
-        "MAKEADEMO_RAILWAY_SANDBOX_PROJECT_TOKEN",
-      ),
-      provider: "railway",
-    };
-  }
-
   return {
     apiKey: readRequiredEnvironment(input.environment, "DAYTONA_API_KEY"),
     ...(input.daytonaSnapshot === undefined
@@ -37,7 +19,6 @@ export function readFullPipelineSandboxConfig(input: {
     ...(input.daytonaSubmittedCodeSnapshot === undefined
       ? {}
       : { submittedCodeSnapshot: input.daytonaSubmittedCodeSnapshot }),
-    provider: "daytona",
   };
 }
 
