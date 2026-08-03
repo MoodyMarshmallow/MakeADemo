@@ -22,6 +22,7 @@ import {
   validationEvidenceCaps,
 } from "../../../pipeline/05-capture-path-validation/demo-runtime-preflight/validation-evidence";
 import type { PipelineEventLogger } from "../../logging/pipeline-event-logger";
+import { submittedRuntimeIdentityMarker } from "../../submitted-runtime-launch-identity";
 
 export class PreparedWorkspaceSandboxRunner implements SandboxRunner {
   private readonly releaseWorkspaceOnCleanup: boolean;
@@ -555,7 +556,21 @@ export function createStartDemoScript(
   const logPath = `${stateDirectory}/makeademo-demo.log`;
   const pidPath = `${stateDirectory}/makeademo-demo.pid`;
   const sessionPrefix = sessionCommand.length === 0 ? "" : `${sessionCommand} `;
-  return `cd ${shellQuote(workspacePath)} && rm -f ${shellQuote(exitCodePath)} && nohup ${sessionPrefix}sh -c ${shellQuote(`sh -c ${shellQuote(`exec ${demoCommand}`)}; status=$?; echo "$status" > ${shellQuote(exitCodePath)}; exit "$status"`)} > ${shellQuote(logPath)} 2>&1 & echo $! > ${shellQuote(pidPath)} && echo $!`;
+  const runtimeScript = [
+    `echo "$$" > ${shellQuote(pidPath)}`,
+    `if test -n "\${MAKEADEMO_RUNTIME_REPORT_TOKEN:-}"; then makeademo_runtime_stat="$(cat /proc/$$/stat)"; makeademo_runtime_fields="\${makeademo_runtime_stat##*) }"; set -- $makeademo_runtime_fields; printf '%s:%s:%s:%s:%s:%s\\n' ${shellQuote(submittedRuntimeIdentityMarker)} "$MAKEADEMO_RUNTIME_REPORT_TOKEN" "$$" "$3" "$4" "\${20}" >&3; exec 3>&-; unset MAKEADEMO_RUNTIME_REPORT_TOKEN; fi`,
+    `sh -c ${shellQuote(`exec ${demoCommand}`)}`,
+    "status=$?",
+    `echo "$status" > ${shellQuote(exitCodePath)}`,
+    'exit "$status"',
+  ].join("; ");
+  const awaitRuntimeIdentity = [
+    "makeademo_identity_attempts=100",
+    `while test "$makeademo_identity_attempts" -gt 0 && ! grep -Eq "^[0-9]+$" ${shellQuote(pidPath)} 2>/dev/null; do sleep 0.01; makeademo_identity_attempts=$((makeademo_identity_attempts - 1)); done`,
+    `grep -Eq "^[0-9]+$" ${shellQuote(pidPath)} 2>/dev/null`,
+    `cat ${shellQuote(pidPath)}`,
+  ].join(" && ");
+  return `cd ${shellQuote(workspacePath)} || exit $?; rm -f ${shellQuote(exitCodePath)} ${shellQuote(pidPath)} || exit $?; nohup ${sessionPrefix}sh -c ${shellQuote(runtimeScript)} > ${shellQuote(logPath)} 2>&1 & ${awaitRuntimeIdentity}`;
 }
 
 function createDemoProcessStateCommand(): string {
@@ -639,6 +654,10 @@ async function waitForDemoReadiness(input: {
 }) {
   const budgetMs = Math.max(1, input.timeoutMs);
   const deadlineAt = Date.now() + budgetMs;
+  const settlementMarginMs = Math.min(
+    readinessProbeSettlementMarginMs,
+    Math.max(1, Math.floor(budgetMs / 2)),
+  );
   const attempts = Math.max(
     1,
     Math.ceil(budgetMs / Math.max(1, input.pollIntervalMs)),
@@ -651,16 +670,19 @@ async function waitForDemoReadiness(input: {
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const remainingBeforeProbeMs = deadlineAt - Date.now();
-    if (attempt > 0 && remainingBeforeProbeMs <= 0) {
+    if (remainingBeforeProbeMs <= settlementMarginMs) {
       break;
     }
-    const remainingMs = Math.max(1, remainingBeforeProbeMs);
+    const commandTimeoutMs = Math.min(
+      readinessProbeMaxTimeoutMs,
+      remainingBeforeProbeMs,
+    );
     lastResult = await input.execute(
       createDemoReadinessCommand(
         input.url,
-        readinessFetchTimeoutMs(remainingMs),
+        commandTimeoutMs - settlementMarginMs,
       ),
-      { timeoutMs: remainingMs },
+      { timeoutMs: commandTimeoutMs },
     );
     if (lastResult.exitCode === 0) {
       return lastResult;
@@ -685,13 +707,8 @@ async function waitForDemoReadiness(input: {
   };
 }
 
-function readinessFetchTimeoutMs(commandTimeoutMs: number): number {
-  const providerSettlementMarginMs = Math.min(
-    1_000,
-    Math.max(1, Math.floor(commandTimeoutMs / 10)),
-  );
-  return Math.max(1, commandTimeoutMs - providerSettlementMarginMs);
-}
+const readinessProbeMaxTimeoutMs = 5_000;
+const readinessProbeSettlementMarginMs = 1_000;
 
 function createDemoReadinessCommand(url: string, timeoutMs: number): string {
   return `node -e ${shellQuote("fetch(process.argv[1], { signal: AbortSignal.timeout(Number(process.argv[2])) }).then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1));")} ${shellQuote(url)} ${shellQuote(String(timeoutMs))}`;

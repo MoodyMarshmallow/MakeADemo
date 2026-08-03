@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -14,6 +14,10 @@ import type {
 import { submittedCodeKnownGoodNodeReleaseSnapshot } from "../../../pipeline/03-repo-preparation/submitted-code-node-release-catalog.interface";
 import { resolveSubmittedCodeToolchain } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
 import type { PipelineEventLogger } from "../../logging/pipeline-event-logger";
+import {
+  parseSubmittedRuntimeLaunchIdentity,
+  submittedRuntimeIdentityMarker,
+} from "../../submitted-runtime-launch-identity";
 import {
   PreparedWorkspaceSandboxRunner as RuntimePreparedWorkspaceSandboxRunner,
   createStartDemoScript,
@@ -69,6 +73,93 @@ describe("DaytonaSandboxRunner", () => {
       await rm(state, { force: true, recursive: true });
     }
   });
+
+  it("retains the runtime session leader when the session launcher forks", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "makeademo-wrapper-"));
+    const state = await mkdtemp(join(tmpdir(), "makeademo-state-"));
+    const forkingSessionLauncher = join(state, "forking-session-launcher");
+    const observedPidsPath = join(state, "observed-pids");
+    let observedPids: number[] = [];
+    try {
+      await writeFile(forkingSessionLauncher, '#!/bin/sh\n"$@" &\nexit 0\n');
+      await chmod(forkingSessionLauncher, 0o755);
+      const command = createStartDemoScript(
+        `sh -c 'printf "%s %s\\n" "$PPID" "$$" > ${observedPidsPath}; sleep 30'`,
+        workspace,
+        state,
+        forkingSessionLauncher,
+      );
+
+      const { stdout } = await execFileAsync("sh", ["-lc", command]);
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        try {
+          observedPids = (await readFile(observedPidsPath, "utf8"))
+            .trim()
+            .split(/\s+/)
+            .map(Number);
+          break;
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      }
+
+      expect(observedPids).toHaveLength(2);
+      expect(Number(stdout.trim())).toBe(observedPids[0]);
+    } finally {
+      for (const pid of [...observedPids].reverse()) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // The short-lived launcher or shell may already have exited.
+        }
+      }
+      await rm(workspace, { force: true, recursive: true });
+      await rm(state, { force: true, recursive: true });
+    }
+  });
+
+  it.skipIf(process.platform !== "linux")(
+    "reports the real setsid process birth identity over the trusted descriptor",
+    async () => {
+      const workspace = await mkdtemp(join(tmpdir(), "makeademo-wrapper-"));
+      const state = await mkdtemp(join(tmpdir(), "makeademo-state-"));
+      const token = "trusted-runtime-report";
+      let processGroupId: number | undefined;
+      try {
+        const command = createStartDemoScript("sleep 30", workspace, state);
+        const { stdout } = await execFileAsync(
+          "sh",
+          ["-lc", `{ ${command}; } 3>&1`],
+          {
+            env: { ...process.env, MAKEADEMO_RUNTIME_REPORT_TOKEN: token },
+          },
+        );
+        const identity = parseSubmittedRuntimeLaunchIdentity(stdout, token);
+        expect(stdout).toContain(submittedRuntimeIdentityMarker);
+        expect(identity).toMatchObject({
+          processGroupId: identity?.processId,
+          sessionId: identity?.processId,
+        });
+        if (identity === undefined) {
+          throw new Error("Expected a submitted runtime launch identity.");
+        }
+        const stat = await readFile(`/proc/${identity.processId}/stat`, "utf8");
+        const fields = stat.slice(stat.lastIndexOf(") ") + 2).split(" ");
+        expect(identity.processStartTimeTicks).toBe(Number(fields[19]));
+        processGroupId = identity.processGroupId;
+      } finally {
+        if (processGroupId !== undefined) {
+          try {
+            process.kill(-processGroupId, "SIGKILL");
+          } catch {
+            // The runtime may already have exited.
+          }
+        }
+        await rm(workspace, { force: true, recursive: true });
+        await rm(state, { force: true, recursive: true });
+      }
+    },
+  );
   it("validates the retained prepared Daytona workspace", async () => {
     const workspace = new FakePreparationWorkspaceHandle();
     const runner = new DaytonaSandboxRunner();
@@ -687,6 +778,33 @@ describe("DaytonaSandboxRunner", () => {
     ).toBe(true);
   });
 
+  it("finishes as not ready instead of starting a probe that cannot settle within the readiness deadline", async () => {
+    const workspace = new FakePreparationWorkspaceHandle(new Map(), undefined, {
+      minimumReadinessCommandTimeoutMs: 25,
+      readinessProbeDelayMs: 30,
+    });
+    workspace.readinessResults = [1, 1];
+    const runner = new DaytonaSandboxRunner({
+      readinessPollIntervalMs: 0,
+      readinessTimeoutMs: 50,
+    });
+
+    const result = await runner.runValidation({
+      demoCommand: "npm run demo",
+      preparationManifest: manifest("workspace_123"),
+      preparationWorkspace: workspace,
+      repoUrl: "https://github.com/example/app",
+      url: "http://localhost:3000",
+    });
+
+    expect(result).toMatchObject({
+      failureKind: "demo-process-exited",
+      runtimeExitCode: 1,
+    });
+    expect(workspace.readinessTimeouts).toHaveLength(1);
+    expect(workspace.readinessTimeouts[0]).toBeGreaterThanOrEqual(25);
+  });
+
   it("returns a Daytona preview URL for the submitted-code browser URL", async () => {
     const workspace = new FakePreparationWorkspaceHandle();
     const runner = new DaytonaSandboxRunner();
@@ -1012,7 +1130,9 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
     failSandboxLogWrites?: boolean;
     hangUnboundedReadiness?: boolean;
     installResourceDiagnostics?: PreparationWorkspaceResourceDiagnostics;
+    minimumReadinessCommandTimeoutMs?: number;
     neverSettleSandboxLogWrites?: boolean;
+    readinessProbeDelayMs?: number;
     repoFilesOutput?: string;
   };
 
@@ -1025,7 +1145,9 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
       failSandboxLogWrites?: boolean;
       hangUnboundedReadiness?: boolean;
       installResourceDiagnostics?: PreparationWorkspaceResourceDiagnostics;
+      minimumReadinessCommandTimeoutMs?: number;
       neverSettleSandboxLogWrites?: boolean;
+      readinessProbeDelayMs?: number;
       repoFilesOutput?: string;
     } = {},
   ) {
@@ -1052,6 +1174,20 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
       this.events.push(command);
       if (command.includes("fetch")) {
         this.readinessTimeouts.push(options.timeoutMs);
+        if (
+          options.timeoutMs !== undefined &&
+          options.timeoutMs <
+            (this.options.minimumReadinessCommandTimeoutMs ?? 0)
+        ) {
+          throw new Error(
+            `Daytona command did not finish within ${options.timeoutMs}ms.`,
+          );
+        }
+        if ((this.options.readinessProbeDelayMs ?? 0) > 0) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, this.options.readinessProbeDelayMs),
+          );
+        }
         if (
           this.options.hangUnboundedReadiness === true &&
           options.timeoutMs === undefined
