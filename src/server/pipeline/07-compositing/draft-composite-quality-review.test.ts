@@ -96,7 +96,7 @@ describe("inspectDraftCompositeEvidence", () => {
     const hanging = `#!/bin/sh
 printf 'started %s\n' "$$" >> '${processLog}'
 trap 'printf "terminated %s\\n" "$$" >> "${processLog}"; exit 0' TERM INT
-while :; do :; done
+while :; do /bin/sleep 0.05; done
 `;
     await writeFile(join(bin, "ffmpeg"), hanging, { mode: 0o755 });
     await writeFile(join(bin, "ffprobe"), hanging, { mode: 0o755 });
@@ -118,7 +118,7 @@ while :; do :; done
           runDirectory: root,
         },
         signal: controller.signal,
-        timeoutMs: 1_000,
+        timeoutMs: 10_000,
       } as Parameters<typeof inspectDraftCompositeEvidence>[0]);
       await vi.waitFor(async () => {
         const log = await readFile(processLog, "utf8").catch(() => "");
