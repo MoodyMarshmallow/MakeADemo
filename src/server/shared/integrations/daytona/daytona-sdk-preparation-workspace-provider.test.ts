@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import {
   access,
   copyFile,
@@ -9,6 +9,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
@@ -23,6 +24,7 @@ import {
 } from "../../../pipeline/03-repo-preparation/submitted-code-execution";
 import { submittedCodeKnownGoodNodeReleaseSnapshot } from "../../../pipeline/03-repo-preparation/submitted-code-node-release-catalog.interface";
 import { resolveSubmittedCodeToolchain as resolveAgainstNodeCatalog } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
+import { submittedRuntimeIdentityMarker } from "../../submitted-runtime-launch-identity";
 import {
   DaytonaSdkPreparationWorkspaceProvider,
   createDaytonaSdkPreparationWorkspaceHandle,
@@ -1177,9 +1179,17 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         script.includes("makeademo_pid") && script.includes("kill -TERM"),
     );
     expect(quiescenceScript).toBeDefined();
-    expect(quiescenceScript).toContain('kill -TERM -- -"$makeademo_pid"');
-    expect(quiescenceScript).toContain('kill -0 -- -"$makeademo_pid"');
-    expect(quiescenceScript).toContain('kill -KILL -- -"$makeademo_pid"');
+    if (quiescenceScript === undefined) {
+      throw new Error("Expected the guarded quiescence script.");
+    }
+    expect(quiescenceScript).toContain('kill -TERM -- -"$makeademo_pgid"');
+    expect(quiescenceScript).not.toContain('|| kill -TERM "$makeademo_pid"');
+    expect(quiescenceScript).toContain('kill -0 -- -"$makeademo_pgid"');
+    expect(quiescenceScript).toContain('kill -KILL -- -"$makeademo_pgid"');
+    expect(quiescenceScript).toContain("makeademo_identity_matches");
+    expect(quiescenceScript.indexOf("makeademo_identity_matches")).toBeLessThan(
+      quiescenceScript.indexOf('kill -TERM -- -"$makeademo_pgid"'),
+    );
     expect(quiescenceScript).toContain("/dev/tcp/127.0.0.1/4173");
 
     const occupiedCalls: unknown[] = [];
@@ -1204,8 +1214,352 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         port: 4173,
         timeoutMs: 500,
       }),
-    ).rejects.toThrow("port 4173 remains occupied");
+    ).rejects.toThrow(
+      "port 4173 remains occupied after quiescence. Diagnostics: retained process group 4242; listener pid=5151 pgid=5151 command=node",
+    );
+
+    await expect(
+      occupiedHandle.workspace.quiesceSubmittedRuntime?.({
+        port: 4173,
+        timeoutMs: 500,
+      }),
+    ).rejects.toThrow("port 4173 remains occupied after quiescence");
+    const occupiedQuiescenceScripts = decodedSubmittedScripts(
+      occupiedCalls,
+    ).filter((script) => script.includes("/dev/tcp/127.0.0.1/4173"));
+    expect(occupiedQuiescenceScripts.at(-1)).not.toContain(
+      "makeademo_pid='4242'",
+    );
   });
+
+  it("refuses to signal a reused PID and clears the stale retained identity", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls, {
+        quiescenceIdentityMismatch: true,
+        retainedRuntimePid: 4242,
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const { plan } = await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    await handle.workspace.executeSubmittedRuntime?.({
+      command: "echo runtime-start",
+      plan,
+    });
+
+    await expect(
+      handle.workspace.quiesceSubmittedRuntime?.({
+        port: 4173,
+        timeoutMs: 500,
+      }),
+    ).rejects.toThrow(
+      "identity changed before quiescence; no further signal was sent. Diagnostics: retained process identity no longer matches; refusing to signal",
+    );
+
+    await expect(
+      handle.workspace.quiesceSubmittedRuntime?.({
+        port: 4173,
+        timeoutMs: 500,
+      }),
+    ).resolves.toBeUndefined();
+    const quiescenceScripts = decodedSubmittedScripts(calls).filter((script) =>
+      script.includes("/dev/tcp/127.0.0.1/4173"),
+    );
+    const guardedScript = quiescenceScripts.at(-2);
+    expect(guardedScript).toContain("makeademo_start_time=");
+    expect(guardedScript).toContain("9001");
+    expect(guardedScript?.indexOf("refusing to signal")).toBeLessThan(
+      guardedScript?.indexOf('kill -TERM -- -"$makeademo_pgid"') ?? -1,
+    );
+    expect(quiescenceScripts.at(-1)).not.toContain("makeademo_pid='4242'");
+  });
+
+  it("continues after a retained runtime exits naturally and its port stays closed", async () => {
+    const portProbe = createServer();
+    await new Promise<void>((resolve, reject) => {
+      portProbe.once("error", reject);
+      portProbe.listen(0, "127.0.0.1", resolve);
+    });
+    const address = portProbe.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("Expected a local TCP port.");
+    }
+    await new Promise<void>((resolve) => portProbe.close(() => resolve()));
+
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls, {
+        executeQuiescenceLocally: true,
+        retainedRuntimePid: 4242,
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const { plan } = await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    const runtime = { command: "echo runtime-start", plan };
+    await handle.workspace.executeSubmittedRuntime?.(runtime);
+
+    await expect(
+      handle.workspace.quiesceSubmittedRuntime?.({
+        port: address.port,
+        timeoutMs: 500,
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      handle.workspace.executeSubmittedRuntime?.(runtime),
+    ).resolves.toMatchObject({ exitCode: 0 });
+  });
+
+  it("fails closed without signaling when a reused PID has an unrelated occupied port", async () => {
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("Expected a local TCP port.");
+    }
+
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls, {
+        executeQuiescenceLocally: true,
+        retainedRuntimePid: 4242,
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const { plan } = await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    await handle.workspace.executeSubmittedRuntime?.({
+      command: "echo runtime-start",
+      plan,
+    });
+
+    try {
+      await expect(
+        handle.workspace.quiesceSubmittedRuntime?.({
+          port: address.port,
+          timeoutMs: 500,
+        }),
+      ).rejects.toThrow(
+        "identity changed before quiescence; no further signal was sent",
+      );
+      expect(server.listening).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+
+    const quiescenceScript = decodedSubmittedScripts(calls).find(
+      (script) =>
+        script.includes(`/dev/tcp/127.0.0.1/${address.port}`) &&
+        script.includes("makeademo_identity_matches"),
+    );
+    expect(quiescenceScript).toBeDefined();
+    expect(
+      quiescenceScript?.indexOf("refusing to signal because port"),
+    ).toBeLessThan(
+      quiescenceScript?.indexOf('kill -TERM -- -"$makeademo_pgid"') ?? -1,
+    );
+  });
+
+  it("does not accept one closed-port sample when the stale runtime port becomes occupied", async () => {
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("Expected a local TCP port.");
+    }
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls, {
+        executeQuiescenceLocally: true,
+        retainedRuntimePid: 4242,
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const { plan } = await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    await handle.workspace.executeSubmittedRuntime?.({
+      command: "echo runtime-start",
+      plan,
+    });
+
+    const reopened = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        server.once("error", reject);
+        server.listen(address.port, "127.0.0.1", resolve);
+      }, 40);
+      timer.unref();
+    });
+    try {
+      await expect(
+        handle.workspace.quiesceSubmittedRuntime?.({
+          port: address.port,
+          timeoutMs: 500,
+        }),
+      ).rejects.toThrow("was not confirmed closed twice");
+      await reopened;
+      expect(server.listening).toBe(true);
+    } finally {
+      await reopened.catch(() => undefined);
+      if (server.listening) {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    }
+  });
+
+  it("rejects a runtime report whose nonce-bound identity is not a session leader", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls, {
+        malformedRetainedRuntimeIdentity: true,
+        retainedRuntimePid: 4242,
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const { plan } = await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+
+    await expect(
+      handle.workspace.executeSubmittedRuntime?.({
+        command: "echo runtime-start",
+        plan,
+      }),
+    ).rejects.toThrow("did not report a valid session identity");
+  });
+
+  it("waits for the owned runtime listener to release its port before succeeding", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls, {
+        executeQuiescenceLocally: true,
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("Expected a local TCP port.");
+    }
+    const closeTimer = setTimeout(() => server.close(), 100);
+
+    try {
+      await expect(
+        handle.workspace.quiesceSubmittedRuntime?.({
+          port: address.port,
+          timeoutMs: 100,
+        }),
+      ).resolves.toBeUndefined();
+    } finally {
+      clearTimeout(closeTimer);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it.skipIf(process.platform !== "linux")(
+    "kills an original stubborn group member after TERM exits the session leader",
+    async () => {
+      const portProbe = createServer();
+      await new Promise<void>((resolve, reject) => {
+        portProbe.once("error", reject);
+        portProbe.listen(0, "127.0.0.1", resolve);
+      });
+      const address = portProbe.address();
+      if (address === null || typeof address === "string") {
+        throw new Error("Expected a local TCP port.");
+      }
+      await new Promise<void>((resolve) => portProbe.close(() => resolve()));
+
+      const leader = spawn(
+        "setsid",
+        [
+          "/bin/sh",
+          "-c",
+          `trap 'exit 143' TERM; (trap '' TERM; exec python3 -m http.server ${address.port} --bind 127.0.0.1) & wait`,
+        ],
+        { stdio: "ignore" },
+      );
+      const processId = leader.pid;
+      if (processId === undefined) throw new Error("Expected a leader PID.");
+
+      try {
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          try {
+            const response = await fetch(`http://127.0.0.1:${address.port}`);
+            if (response.ok) break;
+          } catch {
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          }
+        }
+        await expect(
+          fetch(`http://127.0.0.1:${address.port}`),
+        ).resolves.toMatchObject({ ok: true });
+
+        const stat = await readFile(`/proc/${processId}/stat`, "utf8");
+        const fields = stat.slice(stat.lastIndexOf(") ") + 2).split(" ");
+        const identity = {
+          processGroupId: Number(fields[2]),
+          processId,
+          processStartTimeTicks: Number(fields[19]),
+          sessionId: Number(fields[3]),
+        };
+        expect(identity).toMatchObject({
+          processGroupId: processId,
+          sessionId: processId,
+        });
+
+        const calls: unknown[] = [];
+        const provider = new DaytonaSdkPreparationWorkspaceProvider({
+          client: fakeCommandTimeoutClient(calls, {
+            executeQuiescenceLocally: true,
+            retainedRuntimeIdentity: identity,
+          }),
+          submittedCodeSnapshot: "makeademo-submitted-code",
+        });
+        const handle = await provider.create();
+        const { plan } = await provisionToolchainForSubmittedCodeSync(handle);
+        await handle.workspace.syncSubmittedCodeWorkspace?.();
+        await handle.workspace.executeSubmittedRuntime?.({
+          command: "echo runtime-start",
+          plan,
+        });
+
+        await expect(
+          handle.workspace.quiesceSubmittedRuntime?.({
+            port: address.port,
+            timeoutMs: 500,
+          }),
+        ).resolves.toBeUndefined();
+        await expect(
+          fetch(`http://127.0.0.1:${address.port}`),
+        ).rejects.toThrow();
+      } finally {
+        try {
+          process.kill(-processId, "SIGKILL");
+        } catch {
+          // The quiescence contract should already have removed the group.
+        }
+      }
+    },
+  );
 
   it("rejects a second submitted runtime start until successful quiescence clears the retained process group", async () => {
     const calls: unknown[] = [];
@@ -3929,10 +4283,19 @@ function fakeCommandTimeoutClient(
     deprecatedPackageManagerRelease?: boolean;
     emulateLinuxRootArtifactWriteAccess?: boolean;
     emulatedYarnCliSha512?: string;
+    executeQuiescenceLocally?: boolean;
     nodeProvisioningFailure?: boolean;
     packageManagerVerificationFailure?: boolean;
     resourceSnapshots?: string[];
+    malformedRetainedRuntimeIdentity?: boolean;
+    quiescenceIdentityMismatch?: boolean;
     quiescencePortOccupied?: boolean;
+    retainedRuntimeIdentity?: {
+      processGroupId: number;
+      processId: number;
+      processStartTimeTicks: number;
+      sessionId: number;
+    };
     retainedRuntimePid?: number;
     submittedInstallExitCode?: number;
     submittedIntegrityFailureAttempt?: number;
@@ -3972,10 +4335,19 @@ function fakeCommandTimeoutSandbox(
     deprecatedPackageManagerRelease?: boolean;
     emulateLinuxRootArtifactWriteAccess?: boolean;
     emulatedYarnCliSha512?: string;
+    executeQuiescenceLocally?: boolean;
     nodeProvisioningFailure?: boolean;
     packageManagerVerificationFailure?: boolean;
     resourceSnapshots?: string[];
+    malformedRetainedRuntimeIdentity?: boolean;
+    quiescenceIdentityMismatch?: boolean;
     quiescencePortOccupied?: boolean;
+    retainedRuntimeIdentity?: {
+      processGroupId: number;
+      processId: number;
+      processStartTimeTicks: number;
+      sessionId: number;
+    };
     retainedRuntimePid?: number;
     submittedInstallExitCode?: number;
     submittedIntegrityFailureAttempt?: number;
@@ -4040,6 +4412,15 @@ function fakeCommandTimeoutSandbox(
             }
             const script = decodeNoninteractivePtyCommand(input);
             calls.push({ decodedPtyScript: { sandbox: id, script } });
+            if (
+              options.executeQuiescenceLocally === true &&
+              id === "submitted_sandbox" &&
+              script.includes("/dev/tcp/127.0.0.1/")
+            ) {
+              const execution = await execFileAsync("/bin/sh", ["-c", script]);
+              ptyOptions.onData(new TextEncoder().encode(execution.stdout));
+              return;
+            }
             const verifiesSubmittedIntegrity =
               id === "submitted_sandbox" &&
               script.includes("MAKEADEMO_VERIFY_PROJECT_INTEGRITY");
@@ -4080,11 +4461,20 @@ function fakeCommandTimeoutSandbox(
                 submittedExecution.command,
               );
             const isRetainedRuntimeStart =
-              options.retainedRuntimePid !== undefined &&
-              submittedExecution?.command.includes("echo runtime-start");
+              submittedExecution?.env.MAKEADEMO_RUNTIME_REPORT_TOKEN !==
+              undefined;
+            const retainedRuntimeIdentity = options.retainedRuntimeIdentity ?? {
+              processGroupId: options.retainedRuntimePid ?? 4242,
+              processId: options.retainedRuntimePid ?? 4242,
+              processStartTimeTicks: 9001,
+              sessionId: options.retainedRuntimePid ?? 4242,
+            };
             const quiescencePortOccupied =
               options.quiescencePortOccupied === true &&
               script.includes("/dev/tcp/127.0.0.1/4173");
+            const quiescenceIdentityMismatch =
+              options.quiescenceIdentityMismatch === true &&
+              script.includes("makeademo_identity_matches");
             if (unavailablePackageManagerRelease) {
               calls.push({ registryMetadataUnavailable: true });
             }
@@ -4098,32 +4488,38 @@ function fakeCommandTimeoutSandbox(
                 nodeProvisioningFails ||
                 packageManagerVerificationFails
                   ? 1
-                  : quiescencePortOccupied
-                    ? 70
-                    : submittedInstall
-                      ? (options.submittedInstallExitCode ?? 0)
-                      : 0,
+                  : quiescenceIdentityMismatch
+                    ? 72
+                    : quiescencePortOccupied
+                      ? 70
+                      : submittedInstall
+                        ? (options.submittedInstallExitCode ?? 0)
+                        : 0,
               stderr: integrityFails
                 ? "lock mismatch"
-                : unavailablePackageManagerRelease
-                  ? "MAKEADEMO_REGISTRY_RELEASE_UNAVAILABLE"
-                  : deprecatedPackageManagerRelease
-                    ? "MAKEADEMO_REGISTRY_RELEASE_DEPRECATED"
-                    : rootFalselyAppearsWritable
-                      ? "root reports the mode-read-only artifact as writable"
-                      : yarnCliDigestMismatch
-                        ? "launched Yarn CLI digest mismatch"
-                        : nodeProvisioningFails
-                          ? "signed Node manifest rejected"
-                          : packageManagerVerificationFails
-                            ? "trusted package-manager artifact changed"
-                            : "",
+                : quiescenceIdentityMismatch
+                  ? "retained process identity no longer matches; refusing to signal"
+                  : quiescencePortOccupied
+                    ? "retained process group 4242; listener pid=5151 pgid=5151 command=node"
+                    : unavailablePackageManagerRelease
+                      ? "MAKEADEMO_REGISTRY_RELEASE_UNAVAILABLE"
+                      : deprecatedPackageManagerRelease
+                        ? "MAKEADEMO_REGISTRY_RELEASE_DEPRECATED"
+                        : rootFalselyAppearsWritable
+                          ? "root reports the mode-read-only artifact as writable"
+                          : yarnCliDigestMismatch
+                            ? "launched Yarn CLI digest mismatch"
+                            : nodeProvisioningFails
+                              ? "signed Node manifest rejected"
+                              : packageManagerVerificationFails
+                                ? "trusted package-manager artifact changed"
+                                : "",
               stdout:
                 (resourceSnapshot
                   ? options.resourceSnapshots?.shift()
                   : undefined) ??
                 (isRetainedRuntimeStart
-                  ? `${options.retainedRuntimePid}\n`
+                  ? `${submittedRuntimeIdentityMarker}:${submittedExecution.env.MAKEADEMO_RUNTIME_REPORT_TOKEN}:${retainedRuntimeIdentity.processId}:${options.malformedRetainedRuntimeIdentity === true ? retainedRuntimeIdentity.processGroupId + 1 : retainedRuntimeIdentity.processGroupId}:${retainedRuntimeIdentity.sessionId}:${retainedRuntimeIdentity.processStartTimeTicks}\n`
                   : undefined) ??
                 trustedNodeProvisionAttestation(script) ??
                 (script.includes("MAKEADEMO_ARTIFACT_SHA512")

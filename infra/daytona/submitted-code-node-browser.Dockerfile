@@ -9,7 +9,7 @@ RUN if [ "$TARGETARCH" != "amd64" ]; then \
     fi
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg git gpgv unzip xz-utils \
+  && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg git gpgv iproute2 unzip xz-utils \
   && update-ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 

@@ -53,6 +53,10 @@ import {
   canonicalizeReadOnlyCommand,
 } from "../../repository-inspection-command";
 import {
+  type SubmittedRuntimeLaunchIdentity,
+  parseSubmittedRuntimeLaunchIdentity,
+} from "../../submitted-runtime-launch-identity";
+import {
   type TrustedSubmittedNodeRuntimeArtifact,
   createTrustedSubmittedNodeProvisionCommand,
   readTrustedSubmittedNodeAttestation,
@@ -203,7 +207,9 @@ const submittedCodePlaywrightBrowsersPath = "/ms-playwright";
 const makeADemoCaptureNodePath = "/opt/makeademo/capture-runtime/bin/node";
 const makeADemoCaptureEvidenceGraceMs = 5_000;
 const runtimePortStillOccupiedExitCode = 70;
+const runtimeIdentityMismatchExitCode = 72;
 const runtimeQuiescenceSettlementGraceMs = 2_000;
+const runtimeQuiescenceCommandOverheadMs = 1_000;
 const parentSubmittedRuntimePaths = [
   "/usr/local/bin/node",
   "/usr/local/bin/npm",
@@ -465,7 +471,7 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
   };
   private readonly sandboxLogger: PipelineEventLogger;
   private submittedRuntimeMutation = Promise.resolve();
-  private submittedRuntimeProcessGroupId: number | undefined;
+  private submittedRuntimeIdentity: SubmittedRuntimeLaunchIdentity | undefined;
   private submittedCodeSandbox: DaytonaSdkSandbox | undefined;
 
   constructor(
@@ -785,7 +791,7 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
       if (this.submittedCodeSandbox === undefined) {
         throw new Error("Submitted-code Daytona sandbox is not configured.");
       }
-      if (this.submittedRuntimeProcessGroupId !== undefined) {
+      if (this.submittedRuntimeIdentity !== undefined) {
         throw new Error(
           "A submitted runtime is already active; quiesce it before starting another.",
         );
@@ -796,9 +802,11 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
         ...options,
         env: {},
       };
+      const runtimeReportToken = randomUUID();
       const command = createUnprivilegedSubmittedCodeExecution(
         execution.command,
         execution.env,
+        runtimeReportToken,
       ).command;
       const result = await this.executeSandboxCommand(
         this.submittedCodeSandbox,
@@ -806,7 +814,7 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
         runtimeOptions,
         execution.cwd,
       );
-      this.retainSubmittedRuntimeIdentity(result);
+      this.retainSubmittedRuntimeIdentity(result, runtimeReportToken);
       return result;
     });
   }
@@ -823,34 +831,55 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
         this.submittedCodeSandbox,
         createSubmittedRuntimeQuiescenceCommand({
           ...request,
-          ...(this.submittedRuntimeProcessGroupId === undefined
+          settlementGraceMs: runtimeQuiescenceSettlementGraceMs,
+          ...(this.submittedRuntimeIdentity === undefined
             ? {}
-            : { processGroupId: this.submittedRuntimeProcessGroupId }),
+            : { identity: this.submittedRuntimeIdentity }),
         }),
         {
           env: createSubmittedRuntimeEnv(),
-          timeoutMs: request.timeoutMs + runtimeQuiescenceSettlementGraceMs,
+          timeoutMs:
+            request.timeoutMs +
+            runtimeQuiescenceSettlementGraceMs +
+            runtimeQuiescenceCommandOverheadMs,
         },
       );
       if (result.exitCode !== 0) {
+        if (
+          result.exitCode === runtimePortStillOccupiedExitCode ||
+          result.exitCode === runtimeIdentityMismatchExitCode
+        ) {
+          this.submittedRuntimeIdentity = undefined;
+        }
+        const diagnostics = readRuntimeQuiescenceDiagnostics(result.stderr);
         throw new Error(
-          result.exitCode === runtimePortStillOccupiedExitCode
+          (result.exitCode === runtimePortStillOccupiedExitCode
             ? `Submitted runtime port ${request.port} remains occupied after quiescence.`
-            : "Submitted runtime process group could not be quiesced.",
+            : result.exitCode === runtimeIdentityMismatchExitCode
+              ? "Submitted runtime identity changed before quiescence; no further signal was sent."
+              : "Submitted runtime process group could not be quiesced.") +
+            (diagnostics.length === 0 ? "" : ` Diagnostics: ${diagnostics}`),
         );
       }
-      this.submittedRuntimeProcessGroupId = undefined;
+      this.submittedRuntimeIdentity = undefined;
     });
   }
 
   private retainSubmittedRuntimeIdentity(
     result: PreparationWorkspaceCommandResult,
+    runtimeReportToken: string,
   ): void {
     if (result.exitCode !== 0) return;
-    const identity = /^\s*(\d+)\s*$/m.exec(result.stdout)?.[1];
-    if (identity !== undefined) {
-      this.submittedRuntimeProcessGroupId = Number(identity);
+    const identity = parseSubmittedRuntimeLaunchIdentity(
+      result.stdout,
+      runtimeReportToken,
+    );
+    if (identity === undefined) {
+      throw new Error(
+        "Submitted runtime launcher did not report a valid session identity.",
+      );
     }
+    this.submittedRuntimeIdentity = identity;
   }
 
   private async serializeSubmittedRuntimeMutation<T>(
@@ -2103,29 +2132,55 @@ function readSafeProviderState(
 }
 
 function createSubmittedRuntimeQuiescenceCommand(input: {
+  identity?: SubmittedRuntimeLaunchIdentity;
   port: number;
-  processGroupId?: number;
+  settlementGraceMs: number;
   timeoutMs: number;
 }): string {
-  const attempts = Math.max(1, Math.ceil(input.timeoutMs / 200));
-  const processGroupId = input.processGroupId;
+  const signalAttempts = Math.max(1, Math.ceil(input.timeoutMs / 200));
+  const settlementAttempts = Math.max(
+    1,
+    Math.ceil(input.settlementGraceMs / 100),
+  );
+  const identity = input.identity;
   const lines = [
-    ...(processGroupId === undefined
+    `makeademo_port=${shellQuote(String(input.port))}`,
+    `makeademo_port_is_open() { exec 3<>"/dev/tcp/127.0.0.1/${input.port}"; makeademo_port_status=$?; exec 3>&- 2>/dev/null || true; return "$makeademo_port_status"; }`,
+    'makeademo_listener_snapshot() { if command -v ss >/dev/null 2>&1; then makeademo_ss="$(ss -H -ltnp "sport = :$makeademo_port" 2>/dev/null || true)"; printf "%s\\n" "$makeademo_ss"; printf "%s\\n" "$makeademo_ss" | sed -n "s/.*pid=\\([0-9][0-9]*\\).*/\\1/p" | while IFS= read -r makeademo_owner_pid; do ps -p "$makeademo_owner_pid" -o pid=,ppid=,pgid=,stat=,comm= 2>/dev/null || true; done; elif command -v fuser >/dev/null 2>&1; then fuser -v -n tcp "$makeademo_port" 2>&1 || true; else printf "%s\\n" "listener diagnostics unavailable"; fi; }',
+    'makeademo_listener_before="$(makeademo_listener_snapshot)"',
+    ...(identity === undefined
       ? []
       : [
-          `makeademo_pid=${shellQuote(String(processGroupId))}`,
-          'kill -TERM -- -"$makeademo_pid" >/dev/null 2>&1 || kill -TERM "$makeademo_pid" >/dev/null 2>&1 || true',
-          `makeademo_attempts=${attempts}`,
-          'while test "$makeademo_attempts" -gt 0 && kill -0 -- -"$makeademo_pid" >/dev/null 2>&1; do sleep 0.1; makeademo_attempts=$((makeademo_attempts - 1)); done',
-          'if kill -0 -- -"$makeademo_pid" >/dev/null 2>&1; then kill -KILL -- -"$makeademo_pid" >/dev/null 2>&1 || true; fi',
-          `makeademo_attempts=${attempts}`,
-          'while test "$makeademo_attempts" -gt 0 && kill -0 -- -"$makeademo_pid" >/dev/null 2>&1; do sleep 0.1; makeademo_attempts=$((makeademo_attempts - 1)); done',
-          'if kill -0 -- -"$makeademo_pid" >/dev/null 2>&1; then exit 71; fi',
+          `makeademo_pid=${shellQuote(String(identity.processId))}`,
+          `makeademo_pgid=${shellQuote(String(identity.processGroupId))}`,
+          `makeademo_sid=${shellQuote(String(identity.sessionId))}`,
+          `makeademo_start_time=${shellQuote(String(identity.processStartTimeTicks))}`,
+          'makeademo_identity_matches() { test -r "/proc/$makeademo_pid/stat" || return 1; makeademo_stat="$(cat "/proc/$makeademo_pid/stat")" || return 1; makeademo_actual_pid="${makeademo_stat%% *}"; makeademo_fields="${makeademo_stat##*) }"; set -- $makeademo_fields; test "$makeademo_actual_pid" = "$makeademo_pid" && test "$3" = "$makeademo_pgid" && test "$4" = "$makeademo_sid" && test "${20}" = "$makeademo_start_time"; }',
+          'makeademo_capture_owned_members() { ps -eo pid=,pgid= 2>/dev/null | awk -v makeademo_pgid="$makeademo_pgid" \'$2 == makeademo_pgid && makeademo_count < 256 { print $1; makeademo_count += 1 }\' | while IFS= read -r makeademo_member_pid; do test -r "/proc/$makeademo_member_pid/stat" || continue; makeademo_member_stat="$(cat "/proc/$makeademo_member_pid/stat")" || continue; makeademo_member_actual_pid="${makeademo_member_stat%% *}"; makeademo_member_fields="${makeademo_member_stat##*) }"; set -- $makeademo_member_fields; if test "$makeademo_member_actual_pid" = "$makeademo_member_pid" && test "$3" = "$makeademo_pgid" && test "$4" = "$makeademo_sid"; then printf "%s:%s:%s:%s\\n" "$makeademo_member_pid" "${20}" "$3" "$4"; fi; done; }',
+          'makeademo_original_member_remains() { while IFS=: read -r makeademo_member_pid makeademo_member_start_time makeademo_member_pgid makeademo_member_sid; do test -n "$makeademo_member_pid" || continue; test -r "/proc/$makeademo_member_pid/stat" || continue; makeademo_member_stat="$(cat "/proc/$makeademo_member_pid/stat")" || continue; makeademo_member_actual_pid="${makeademo_member_stat%% *}"; makeademo_member_fields="${makeademo_member_stat##*) }"; set -- $makeademo_member_fields; if test "$makeademo_member_actual_pid" = "$makeademo_member_pid" && test "${20}" = "$makeademo_member_start_time" && test "$3" = "$makeademo_member_pgid" && test "$4" = "$makeademo_member_sid" && test "$3" = "$makeademo_pgid" && test "$4" = "$makeademo_sid"; then return 0; fi; done <<< "$makeademo_owned_members_before"; return 1; }',
+          'makeademo_group_before="$(ps -eo pid=,ppid=,pgid=,stat=,comm= 2>/dev/null | awk -v makeademo_pgid="$makeademo_pgid" \'$3 == makeademo_pgid\' || true)"',
+          `if ! makeademo_identity_matches; then if test -f /tmp/makeademo-demo.pid && test "$(cat /tmp/makeademo-demo.pid 2>/dev/null)" = "$makeademo_pid"; then rm -f /tmp/makeademo-demo.pid; fi; if ! makeademo_port_is_open 2>/dev/null; then sleep 0.1; if ! makeademo_port_is_open 2>/dev/null; then exit 0; fi; fi; printf "retained process identity no longer matches PID %s PGID %s SID %s start-time %s; refusing to signal because port %s was not confirmed closed twice; listener before check:\\n%s\\nlistener after check:\\n%s\\n" "$makeademo_pid" "$makeademo_pgid" "$makeademo_sid" "$makeademo_start_time" "$makeademo_port" "$makeademo_listener_before" "$(makeademo_listener_snapshot)" >&2; exit ${runtimeIdentityMismatchExitCode}; fi`,
+          'makeademo_owned_members_before="$(makeademo_capture_owned_members)"',
+          `if test -z "$makeademo_owned_members_before"; then printf "retained process group %s had no birth-identified members before TERM; refusing to signal\\n" "$makeademo_pgid" >&2; exit ${runtimeIdentityMismatchExitCode}; fi`,
+          `if ! makeademo_original_member_remains; then printf "no original birth-identified member remains in PGID %s SID %s before TERM; refusing to signal\\n" "$makeademo_pgid" "$makeademo_sid" >&2; exit ${runtimeIdentityMismatchExitCode}; fi`,
+          'kill -TERM -- -"$makeademo_pgid" >/dev/null 2>&1 || true',
+          `makeademo_attempts=${signalAttempts}`,
+          'while test "$makeademo_attempts" -gt 0 && kill -0 -- -"$makeademo_pgid" >/dev/null 2>&1; do sleep 0.1; makeademo_attempts=$((makeademo_attempts - 1)); done',
+          `if kill -0 -- -"$makeademo_pgid" >/dev/null 2>&1; then if ! makeademo_original_member_remains; then printf "no original birth-identified member remains in PGID %s SID %s before KILL; refusing to signal\\n" "$makeademo_pgid" "$makeademo_sid" >&2; exit ${runtimeIdentityMismatchExitCode}; fi; kill -KILL -- -"$makeademo_pgid" >/dev/null 2>&1 || true; fi`,
+          `makeademo_attempts=${signalAttempts}`,
+          'while test "$makeademo_attempts" -gt 0 && kill -0 -- -"$makeademo_pgid" >/dev/null 2>&1; do sleep 0.1; makeademo_attempts=$((makeademo_attempts - 1)); done',
+          'if kill -0 -- -"$makeademo_pgid" >/dev/null 2>&1; then printf "retained process group %s did not exit\\nowned group before signal:\\n%s\\nowned group after signal:\\n" "$makeademo_pgid" "$makeademo_group_before" >&2; ps -eo pid=,ppid=,pgid=,stat=,comm= 2>/dev/null | awk -v makeademo_pgid="$makeademo_pgid" \'$3 == makeademo_pgid\' >&2 || true; exit 71; fi',
           'if test -f /tmp/makeademo-demo.pid && test "$(cat /tmp/makeademo-demo.pid 2>/dev/null)" = "$makeademo_pid"; then rm -f /tmp/makeademo-demo.pid; fi',
         ]),
-    `/bin/bash -c ${shellQuote(`if exec 3<>/dev/tcp/127.0.0.1/${input.port}; then exec 3>&-; exit ${runtimePortStillOccupiedExitCode}; fi`)}`,
+    `makeademo_settlement_attempts=${settlementAttempts}`,
+    'while test "$makeademo_settlement_attempts" -gt 0 && makeademo_port_is_open 2>/dev/null; do sleep 0.1; makeademo_settlement_attempts=$((makeademo_settlement_attempts - 1)); done',
+    `if makeademo_port_is_open 2>/dev/null; then printf "retained process group %s; listener before signal:\\n%s\\nlistener after signal:\\n%s\\n" "\${makeademo_pid:-none}" "$makeademo_listener_before" "$(makeademo_listener_snapshot)" >&2; exit ${runtimePortStillOccupiedExitCode}; fi`,
   ];
-  return lines.join(" && ");
+  return `/bin/bash -c ${shellQuote(lines.join("\n"))}`;
+}
+
+function readRuntimeQuiescenceDiagnostics(stderr: string): string {
+  return stderr.replaceAll("\0", "").trim().slice(-2_048);
 }
 
 function createMakeADemoCaptureCommand(
@@ -3007,6 +3062,7 @@ function readInspectionFilesystemPaths(argv: readonly string[]): string[] {
 function createUnprivilegedSubmittedCodeExecution(
   command: string,
   env: Readonly<Record<string, string>>,
+  runtimeReportToken?: string,
 ): { command: string } {
   const encoded = Buffer.from(command, "utf8").toString("base64");
   const environment = Object.entries({
@@ -3014,11 +3070,14 @@ function createUnprivilegedSubmittedCodeExecution(
     PATH: agentWorkspacePath,
     TMPDIR: agentWorkspaceTemp,
     ...env,
+    ...(runtimeReportToken === undefined
+      ? {}
+      : { MAKEADEMO_RUNTIME_REPORT_TOKEN: runtimeReportToken }),
   })
     .map(([key, value]) => `${key}=${shellQuote(value)}`)
     .join(" ");
   return {
-    command: `printf %s ${shellQuote(encoded)} | base64 --decode | runuser -u ${shellQuote(agentWorkspaceUser)} -- env -i ${environment} /bin/bash --noprofile --norc`,
+    command: `printf %s ${shellQuote(encoded)} | base64 --decode | runuser -u ${shellQuote(agentWorkspaceUser)} -- env -i ${environment} /bin/bash --noprofile --norc${runtimeReportToken === undefined ? "" : " 3>&1"}`,
   };
 }
 

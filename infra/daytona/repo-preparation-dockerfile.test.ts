@@ -107,6 +107,7 @@ describe("Daytona Repo Preparation image", () => {
     expect(dockerfile).toContain("ca-certificates");
     expect(dockerfile).toContain("ffmpeg");
     expect(dockerfile).toContain("git");
+    expect(dockerfile).toContain("iproute2");
     expect(dockerfile).toContain("unzip");
     expect(dockerfile).toContain("update-ca-certificates");
     expect(dockerfile).toContain("bun-v1.2.5");
