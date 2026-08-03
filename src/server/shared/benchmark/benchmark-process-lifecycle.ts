@@ -10,9 +10,12 @@ import {
 } from "./benchmark-control-events.schema";
 
 const DEFAULT_BENCHMARK_TIMEOUT_MS = 2_100_000;
-// fd3 is local and each frame is bounded to 64 KiB. This permits one queued
-// read turn after direct-child exit without tying completion to descendant EOF.
-const CONTROL_EXIT_DRAIN_GRACE_MS = 25;
+// fd3 is local and each frame is bounded to 64 KiB. Allow a scheduled
+// descendant to begin flushing after direct-child exit, then stop shortly
+// after its last data without tying completion to descendant EOF.
+const CONTROL_EXIT_INITIAL_DRAIN_GRACE_MS = 150;
+const CONTROL_EXIT_ACTIVITY_DRAIN_GRACE_MS = 25;
+const CONTROL_EXIT_MAX_DRAIN_GRACE_MS = 250;
 
 export function parseBenchmarkTimeout(value: string | undefined): number {
   if (value === undefined || value === "") return DEFAULT_BENCHMARK_TIMEOUT_MS;
@@ -130,6 +133,7 @@ export async function runBenchmarkProcess(
   let graceTimer: ReturnType<typeof setTimeout> | undefined;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
   let controlDrainTimer: ReturnType<typeof setTimeout> | undefined;
+  let controlDrainStartedAt: number | undefined;
   let pendingResultAccess: Promise<void> = Promise.resolve();
   let terminationPromise: Promise<void> | undefined;
   let resolveTermination: (() => void) | undefined;
@@ -205,13 +209,30 @@ export async function runBenchmarkProcess(
     if (controlDrainTimer) clearTimeout(controlDrainTimer);
     controlStream?.destroy();
   };
-  const drainControlReadAfterExit = () => {
-    if (controlStream === undefined) return;
+  const scheduleControlReadStop = (delayMs: number) => {
+    if (controlStream === undefined || controlDrainStartedAt === undefined)
+      return;
+    if (controlDrainTimer) clearTimeout(controlDrainTimer);
+    const remainingMs = Math.max(
+      0,
+      CONTROL_EXIT_MAX_DRAIN_GRACE_MS - (Date.now() - controlDrainStartedAt),
+    );
     controlDrainTimer = setTimeout(
       () => controlStream.destroy(),
-      CONTROL_EXIT_DRAIN_GRACE_MS,
+      Math.min(delayMs, remainingMs),
     );
   };
+  const drainControlReadAfterExit = () => {
+    if (controlStream === undefined || controlDrainStartedAt !== undefined)
+      return;
+    controlDrainStartedAt = Date.now();
+    scheduleControlReadStop(CONTROL_EXIT_INITIAL_DRAIN_GRACE_MS);
+  };
+  const extendActiveControlDrain = () => {
+    if (controlDrainStartedAt === undefined) return;
+    scheduleControlReadStop(CONTROL_EXIT_ACTIVITY_DRAIN_GRACE_MS);
+  };
+  controlStream?.on("data", extendActiveControlDrain);
 
   return await new Promise((resolve, reject) => {
     child.once("exit", drainControlReadAfterExit);
@@ -238,7 +259,7 @@ export async function runBenchmarkProcess(
       clearTimeout(deadlineTimer);
       if (graceTimer) clearTimeout(graceTimer);
       if (killTimer) clearTimeout(killTimer);
-      stopControlRead();
+      drainControlReadAfterExit();
       stdout.end();
       stderr.end();
       unregister?.();
