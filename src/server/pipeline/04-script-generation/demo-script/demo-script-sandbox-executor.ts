@@ -1,7 +1,9 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import ts from "typescript";
 
+import { executeMakeADemoCapture } from "../../03-repo-preparation/makeademo-capture-execution";
 import { uploadSubmittedCodeWorkspaceFiles } from "../../03-repo-preparation/preparation-workspace-upload";
 import type { PreparationWorkspace } from "../../03-repo-preparation/preparation-workspace.interface";
 import { executeSubmittedCode } from "../../03-repo-preparation/submitted-code-execution";
@@ -16,9 +18,8 @@ import {
 } from "./capture-sdk-harness";
 import { prepareStylizedPlaywrightScript } from "./stylized-playwright-script";
 
-const submittedCodeEvidenceGraceMs = 5_000;
-const trustedPlaywrightModuleRoot =
-  "/opt/makeademo/playwright-runtime/node_modules";
+const trustedCapturePlaywrightBridge =
+  "/opt/makeademo/capture-runtime/playwright.mjs";
 
 export type DemoScriptSandboxExecutionInput = {
   baseUrl: string;
@@ -64,11 +65,20 @@ export class DemoScriptTypeValidationError extends Error {
 export async function executeDemoScriptInSandbox(
   input: DemoScriptSandboxExecutionInput,
 ): Promise<DemoScriptSandboxExecutionResult> {
+  if (/\bchromium\s*\.\s*launch\s*\(/.test(input.demoPlaywrightScript)) {
+    throw new DemoScriptTypeValidationError(
+      new Error(
+        "Demo Scripts must not launch their own Playwright browser. Use Capture SDK setup() and scene() callbacks; MakeADemo owns the trusted browser harness.",
+      ),
+    );
+  }
+
   const localRunDirectory = await mkdtemp(
     join(tmpdir(), "makeademo-demo-script-execution-"),
   );
-  const localScriptPath = join(localRunDirectory, input.scriptFilename);
-  const remoteScriptPath = `${input.remoteRunDirectory}/${input.scriptFilename}`;
+  const compiledScriptFilename = input.scriptFilename.replace(/\.ts$/, ".mjs");
+  const localScriptPath = join(localRunDirectory, compiledScriptFilename);
+  const remoteScriptPath = `${input.remoteRunDirectory}/${compiledScriptFilename}`;
   const artifactName = input.scriptFilename.replace(/\.ts$/, "");
   const remoteStdoutPath = `${input.remoteRunDirectory}/${artifactName}.stdout.log`;
   const remoteStderrPath = `${input.remoteRunDirectory}/${artifactName}.stderr.log`;
@@ -87,21 +97,23 @@ export async function executeDemoScriptInSandbox(
     } catch (error) {
       throw new DemoScriptTypeValidationError(error);
     }
-    await writeFile(
-      localScriptPath,
-      prepareStylizedPlaywrightScript(input.demoPlaywrightScript, {
+    const preparedScript = prepareStylizedPlaywrightScript(
+      input.demoPlaywrightScript,
+      {
         baseUrl: input.baseUrl,
         headed: input.headed ?? false,
         mode: input.mode,
         pauseAfterSceneMs: input.pauseAfterSceneMs ?? 0,
+        playwrightModuleSpecifier: trustedCapturePlaywrightBridge,
         ...(input.runtimeNetworkPolicy === undefined
           ? {}
           : { runtimeNetworkPolicy: input.runtimeNetworkPolicy }),
         ...(input.videoDirectory === undefined
           ? {}
           : { videoDirectory: input.videoDirectory }),
-      }),
+      },
     );
+    await writeFile(localScriptPath, compileDemoScript(preparedScript));
 
     await executeSubmittedCode(
       input.workspace,
@@ -109,7 +121,7 @@ export async function executeDemoScriptInSandbox(
     );
     await uploadSubmittedCodeWorkspaceFiles({
       files: [
-        "makeademo-capture-sdk.js",
+        "makeademo-capture-sdk.mjs",
         "makeademo-capture-sdk.d.ts",
         "makeademo-capture-sdk.instructions.md",
         "demo-script.contract.ts",
@@ -125,19 +137,13 @@ export async function executeDemoScriptInSandbox(
       workspace: input.workspace,
     });
 
-    const result = await executeSubmittedCode(
-      input.workspace,
-      [
-        `cd ${shellQuote(input.remoteRunDirectory)}`,
-        createExposeTrustedPlaywrightCommand(),
-        `timeout -s TERM ${Math.ceil(input.timeoutMs / 1000)} bun ${shellQuote(remoteScriptPath)} > ${shellQuote(remoteStdoutPath)} 2> ${shellQuote(remoteStderrPath)}`,
-        "code=$?",
-        `cat ${shellQuote(remoteStdoutPath)}`,
-        `cat ${shellQuote(remoteStderrPath)} >&2`,
-        "exit $code",
-      ].join("; "),
-      { timeoutMs: input.timeoutMs + submittedCodeEvidenceGraceMs },
-    );
+    const result = await executeMakeADemoCapture(input.workspace, {
+      runDirectory: input.remoteRunDirectory,
+      scriptPath: remoteScriptPath,
+      stderrPath: remoteStderrPath,
+      stdoutPath: remoteStdoutPath,
+      timeoutMs: input.timeoutMs,
+    });
 
     return {
       blockedNetworkAttempts: parseCaptureSdkBlockedNetworkEvents(
@@ -161,18 +167,12 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function createExposeTrustedPlaywrightCommand() {
-  const commands = [
-    'trusted_playwright_modules="${MAKEADEMO_PLAYWRIGHT_MODULE_ROOT:?}"',
-    `test "$trusted_playwright_modules" = ${shellQuote(trustedPlaywrightModuleRoot)}`,
-    'test -d "$trusted_playwright_modules/@playwright/test"',
-    'test -d "$trusted_playwright_modules/playwright"',
-    'test -d "$trusted_playwright_modules/playwright-core"',
-    "mkdir -p node_modules",
-    "rm -rf node_modules/@playwright node_modules/playwright node_modules/playwright-core",
-    'ln -s "$trusted_playwright_modules/@playwright" node_modules/@playwright',
-    'ln -s "$trusted_playwright_modules/playwright" node_modules/playwright',
-    'ln -s "$trusted_playwright_modules/playwright-core" node_modules/playwright-core',
-  ];
-  return `${commands.join(" && ")} || exit $?`;
+function compileDemoScript(source: string): string {
+  return ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.ESNext,
+      target: ts.ScriptTarget.ES2022,
+    },
+    fileName: "demo-script.ts",
+  }).outputText;
 }

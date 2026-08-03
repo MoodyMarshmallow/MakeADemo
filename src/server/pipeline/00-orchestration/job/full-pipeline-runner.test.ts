@@ -1,10 +1,12 @@
-import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import { createAgentSession } from "../../../test-support/create-agent-session";
+import { repoSecurityEvidenceFixture } from "../../../test-support/repo-security-evidence-fixture";
+import type { RepoSecurityInput } from "../../02-repo-security-screen/repo-security-screen";
 import { PreparationWorkspaceInfrastructureError } from "../../03-repo-preparation/preparation-workspace-infrastructure.interface";
 import type {
   CaptureManifest,
@@ -13,10 +15,44 @@ import type {
 import type { CompositedVideoManifest } from "../../07-compositing/composite-video";
 import {
   FullPipelineStageFailure,
-  runFullPipelineJob,
+  runFullPipelineJob as runFullPipelineJobWithDependencies,
 } from "./full-pipeline-runner";
+import type { FullPipelineRunnerOptions } from "./full-pipeline-runner";
 import { PipelineCancellationError } from "./pipeline-cancellation";
+import type { PipelineJobInput } from "./pipeline-job";
 import type { PipelineOrchestratorDependencies } from "./pipeline-orchestrator";
+
+function runFullPipelineJob(
+  input: Omit<PipelineJobInput, "repoSecurity"> & {
+    repoSecurity: Omit<RepoSecurityInput, "evidence"> &
+      Partial<Pick<RepoSecurityInput, "evidence">>;
+  },
+  dependencies: Omit<PipelineOrchestratorDependencies, "reviewRepoSecurity"> &
+    Partial<Pick<PipelineOrchestratorDependencies, "reviewRepoSecurity">>,
+  options?: FullPipelineRunnerOptions,
+) {
+  return runFullPipelineJobWithDependencies(
+    {
+      ...input,
+      repoSecurity: {
+        evidence: repoSecurityEvidenceFixture(),
+        ...input.repoSecurity,
+      },
+    },
+    {
+      async reviewRepoSecurity() {
+        return {
+          concerns: [],
+          rationale: "Test fixture approval.",
+          status: "succeeded",
+          verdict: "approved",
+        };
+      },
+      ...dependencies,
+    },
+    options,
+  );
+}
 
 describe("runFullPipelineJob", () => {
   it("runs the pipeline, captures prepared scenes from the local app URL, and composites the final video", async () => {
@@ -158,12 +194,108 @@ describe("runFullPipelineJob", () => {
     }
   });
 
+  it("serializes an agent-only Repo Security rejection with bounded decision blockers", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
+    let prepared = false;
+    const input: PipelineJobInput = fullPipelineInput();
+    input.repoSecurity.evidence = {
+      coverage: {
+        excerptBytes: 21,
+        omittedEligibleFileCount: 0,
+        omittedEligibleSizeBytes: 0,
+        selectedFileCount: 1,
+        truncatedFileCount: 0,
+      },
+      files: [
+        {
+          excerpt: "SECRET_SOURCE_EXCERPT",
+          excerptBytes: 21,
+          excerptSha256: "a".repeat(64),
+          path: "scripts/setup.sh",
+          sizeBytes: 21,
+          truncated: false,
+        },
+      ],
+      inventory: {
+        eligibleFileCount: 1,
+        eligibleSizeBytes: 21,
+        omittedEligibleFileCount: 0,
+        omittedEligibleSizeBytes: 0,
+        sampledPathOmissionCount: 0,
+        sampledPaths: ["scripts/setup.sh"],
+        totalFileCount: 1,
+        totalSizeBytes: 21,
+      },
+      limits: {
+        maxEvidenceBytes: 512 * 1_024,
+        maxFileBytes: 32 * 1_024,
+        maxFiles: 128,
+        maxInventorySamplePaths: 128,
+      },
+    };
+
+    try {
+      const failure = await runFullPipelineJob(
+        input,
+        {
+          ...orchestratorDependencies([]),
+          async prepareRepo() {
+            prepared = true;
+            throw new Error("must not prepare");
+          },
+          async reviewRepoSecurity() {
+            return {
+              concerns: ["A lifecycle hook executes an unverified binary."],
+              rationale: "The reviewed setup is unsafe to execute.",
+              status: "succeeded",
+              verdict: "rejected",
+            };
+          },
+          screenRepoSecurity() {
+            return {
+              rejections: [],
+              status: "passed",
+              warnings: [
+                {
+                  code: "lifecycle-postinstall",
+                  message: "postinstall requires agent safety review",
+                  path: "package.json",
+                  scriptName: "postinstall",
+                  severity: "warning",
+                },
+              ],
+            };
+          },
+        },
+        { outputRoot, runId: "security-agent-rejected" },
+      ).catch((error: unknown) => error);
+      if (!(failure instanceof FullPipelineStageFailure)) throw failure;
+
+      const resultText = await readFile(failure.resultPath, "utf8");
+      expect(JSON.parse(resultText)).toMatchObject({
+        failure: {
+          blockers: [
+            "Repo Security agent rejected execution: The reviewed setup is unsafe to execute.",
+            "Repo Security concern: A lifecycle hook executes an unverified binary.",
+          ],
+        },
+        status: "security-rejected",
+      });
+      expect(prepared).toBe(false);
+      expect(resultText).not.toContain("SECRET_SOURCE_EXCERPT");
+      expect(resultText).not.toContain("must not prepare");
+    } finally {
+      await rm(outputRoot, { force: true, recursive: true });
+    }
+  });
+
   it("retries authoritative Capture Path Validation after a Draft Composite script repair", async () => {
     const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
     const calls: string[] = [];
     const capturePathProgress: string[] = [];
     const reviewedScriptIds: string[] = [];
     const capturedScriptIds: string[] = [];
+    const finalOutputEvents: string[] = [];
     let repairCount = 0;
     const baseDependencies = orchestratorDependencies(calls);
 
@@ -228,7 +360,24 @@ describe("runFullPipelineJob", () => {
             return captureManifest(outputRoot, input.runId ?? "capture");
           },
           async compositeVideo(input) {
+            finalOutputEvents.push(`render:${input.runId}`);
             return compositeManifest(outputRoot, input.runId ?? "composite");
+          },
+          finalVideoPublisher: {
+            async publishFinalVideo({ draftComposite }) {
+              finalOutputEvents.push(`publish:${draftComposite.runId}`);
+              return {
+                finalVideo: {
+                  ...draftComposite,
+                  finalVideo: {
+                    key: `final/${draftComposite.runId}.mp4`,
+                    r2Url: `r2://videos/final/${draftComposite.runId}.mp4`,
+                  },
+                  viewUrl: `r2://videos/final/${draftComposite.runId}.mp4`,
+                },
+                warnings: [],
+              };
+            },
           },
           inspectDraftCompositeEvidence: async () => cleanDraftEvidence(),
           onProgress(event) {
@@ -238,6 +387,10 @@ describe("runFullPipelineJob", () => {
           },
           outputRoot,
           reviewDraftComposite: async (input) => {
+            expect(finalOutputEvents).not.toContainEqual(
+              expect.stringMatching(/^publish:/),
+            );
+            finalOutputEvents.push(`review:${input.attempt}`);
             reviewedScriptIds.push(input.demoScript.scriptId);
             return input.attempt === 1
               ? {
@@ -265,6 +418,17 @@ describe("runFullPipelineJob", () => {
         "script_initial",
         "script_repaired_2",
       ]);
+      expect(finalOutputEvents).toEqual([
+        "render:composite-1",
+        "review:1",
+        "render:composite-2",
+        "review:2",
+        "publish:composite-2",
+      ]);
+      expect(result.finalVideo.finalVideo).toEqual({
+        key: "final/composite-2.mp4",
+        r2Url: "r2://videos/final/composite-2.mp4",
+      });
       expect(
         calls.filter((call) => call.startsWith("capture-path-validation:")),
       ).toEqual([
@@ -297,10 +461,277 @@ describe("runFullPipelineJob", () => {
     }
   });
 
+  it("publishes the selected checkpoint once when Draft Composite review is exhausted", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
+    const previousLimit = process.env.MAKEADEMO_DRAFT_COMPOSITE_REVIEW_ATTEMPTS;
+    process.env.MAKEADEMO_DRAFT_COMPOSITE_REVIEW_ATTEMPTS = "0";
+    const events: string[] = [];
+    try {
+      const result = await runFullPipelineJob(
+        fullPipelineInput(),
+        orchestratorDependencies([]),
+        {
+          async captureScenes(input) {
+            return captureManifest(outputRoot, input.runId ?? "capture");
+          },
+          async compositeVideo(input) {
+            events.push(`render:${input.runId}`);
+            return compositeManifest(outputRoot, input.runId ?? "composite");
+          },
+          finalVideoPublisher: {
+            async publishFinalVideo({ draftComposite }) {
+              events.push(`publish:${draftComposite.runId}`);
+              return {
+                finalVideo: {
+                  ...draftComposite,
+                  finalVideo: {
+                    key: `final/${draftComposite.runId}.mp4`,
+                    r2Url: `r2://videos/final/${draftComposite.runId}.mp4`,
+                  },
+                  viewUrl: `r2://videos/final/${draftComposite.runId}.mp4`,
+                },
+                warnings: [],
+              };
+            },
+          },
+          inspectDraftCompositeEvidence: async () => cleanDraftEvidence(),
+          outputRoot,
+          reviewDraftComposite: async ({ attempt }) => {
+            expect(events).toEqual([`render:composite-${attempt}`]);
+            events.push(`review:${attempt}`);
+            return {
+              decision: "repair",
+              reason: "The narrative still needs work.",
+              repairScope: "demo-script",
+            };
+          },
+          runId: "review-exhausted-run",
+        },
+      );
+
+      expect(result.draftCompositeReview).toMatchObject({
+        attempts: 1,
+        status: "exhausted",
+      });
+      expect(events).toEqual([
+        "render:composite-1",
+        "review:1",
+        "publish:composite-1",
+      ]);
+      expect(result.finalVideo.finalVideo?.key).toBe("final/composite-1.mp4");
+    } finally {
+      if (previousLimit === undefined) {
+        Reflect.deleteProperty(
+          process.env,
+          "MAKEADEMO_DRAFT_COMPOSITE_REVIEW_ATTEMPTS",
+        );
+      } else {
+        process.env.MAKEADEMO_DRAFT_COMPOSITE_REVIEW_ATTEMPTS = previousLimit;
+      }
+      await rm(outputRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("keeps final publication failures terminal and visible", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
+    try {
+      const failure = await runFullPipelineJob(
+        fullPipelineInput(),
+        orchestratorDependencies([]),
+        {
+          async captureScenes(input) {
+            return captureManifest(outputRoot, input.runId ?? "capture");
+          },
+          async compositeVideo(input) {
+            return compositeManifest(outputRoot, input.runId ?? "composite");
+          },
+          finalVideoPublisher: {
+            async publishFinalVideo() {
+              throw new Error("final video storage unavailable");
+            },
+          },
+          inspectDraftCompositeEvidence: async () => cleanDraftEvidence(),
+          outputRoot,
+          reviewDraftComposite: acceptDraftComposite,
+          runId: "publication-failed-run",
+        },
+      ).catch((error: unknown) => error);
+      if (!(failure instanceof FullPipelineStageFailure)) throw failure;
+
+      expect(failure).toMatchObject({
+        cause: expect.objectContaining({
+          message: "final video storage unavailable",
+        }),
+        failure: { failureKind: "unexpected-pipeline-error" },
+        status: "infrastructure-failed",
+      });
+      await expect(readJsonFile(failure.resultPath)).resolves.toMatchObject({
+        failure: { failureKind: "unexpected-pipeline-error" },
+        status: "infrastructure-failed",
+      });
+      expect(await readFile(failure.logPath, "utf8")).toContain(
+        "final video storage unavailable",
+      );
+    } finally {
+      await rm(outputRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("waits for deferred publication to settle before propagating cancellation", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
+    const controller = new AbortController();
+    let finishPublication: (() => void) | undefined;
+    let reportPublicationStarted: (() => void) | undefined;
+    const publicationStarted = new Promise<void>((resolve) => {
+      reportPublicationStarted = resolve;
+    });
+    const publicationCanFinish = new Promise<void>((resolve) => {
+      finishPublication = resolve;
+    });
+    try {
+      const pipeline = runFullPipelineJob(
+        fullPipelineInput(),
+        orchestratorDependencies([]),
+        {
+          async captureScenes(input) {
+            return captureManifest(outputRoot, input.runId ?? "capture");
+          },
+          async compositeVideo(input) {
+            return compositeManifest(outputRoot, input.runId ?? "composite");
+          },
+          finalVideoPublisher: {
+            async publishFinalVideo({ draftComposite, signal }) {
+              expect(signal).toBe(controller.signal);
+              reportPublicationStarted?.();
+              await publicationCanFinish;
+              throw new PipelineCancellationError("signal");
+            },
+          },
+          inspectDraftCompositeEvidence: async () => cleanDraftEvidence(),
+          outputRoot,
+          reviewDraftComposite: acceptDraftComposite,
+          runId: "publication-cancelled-run",
+          signal: controller.signal,
+        },
+      );
+      await publicationStarted;
+      await expect(
+        readJsonFile(
+          join(
+            outputRoot,
+            "publication-cancelled-run",
+            "full-pipeline-result.json",
+          ),
+        ),
+      ).resolves.toMatchObject({ status: "ready-for-publication" });
+      controller.abort(new PipelineCancellationError("signal"));
+
+      await expect(
+        Promise.race([
+          pipeline.then(
+            () => "settled",
+            () => "settled",
+          ),
+          new Promise<"still-running">((resolve) =>
+            setTimeout(() => resolve("still-running"), 30),
+          ),
+        ]),
+      ).resolves.toBe("still-running");
+      finishPublication?.();
+      const failure = await pipeline.catch((error: unknown) => error);
+      if (!(failure instanceof FullPipelineStageFailure)) throw failure;
+      expect(failure).toMatchObject({ status: "cancelled" });
+      await expect(readJsonFile(failure.resultPath)).resolves.toMatchObject({
+        cancellation: { reason: "signal" },
+        status: "cancelled",
+      });
+    } finally {
+      await rm(outputRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("persists terminal success when cancellation arrives before the durable publication link commits", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
+    const controller = new AbortController();
+    let finishLink: (() => void) | undefined;
+    let reportLinkStarted: (() => void) | undefined;
+    const linkStarted = new Promise<void>((resolve) => {
+      reportLinkStarted = resolve;
+    });
+    const linkCanFinish = new Promise<void>((resolve) => {
+      finishLink = resolve;
+    });
+    try {
+      const pipeline = runFullPipelineJob(
+        fullPipelineInput(),
+        orchestratorDependencies([]),
+        {
+          async captureScenes(input) {
+            return captureManifest(outputRoot, input.runId ?? "capture");
+          },
+          async compositeVideo(input) {
+            return compositeManifest(outputRoot, input.runId ?? "composite");
+          },
+          finalVideoPublisher: {
+            async publishFinalVideo({
+              draftComposite,
+              onPublicationCommitted,
+            }) {
+              reportLinkStarted?.();
+              await linkCanFinish;
+              onPublicationCommitted?.();
+              return {
+                finalVideo: {
+                  ...draftComposite,
+                  finalVideo: {
+                    key: "demo-videos/request-1/final-video.mp4",
+                    r2Url: "r2://videos/request-1/final-video.mp4",
+                  },
+                  viewUrl: "r2://videos/request-1/final-video.mp4",
+                },
+                warnings: [],
+              };
+            },
+          },
+          inspectDraftCompositeEvidence: async () => cleanDraftEvidence(),
+          outputRoot,
+          reviewDraftComposite: acceptDraftComposite,
+          runId: "publication-committed-run",
+          signal: controller.signal,
+        },
+      );
+      await linkStarted;
+      controller.abort(new PipelineCancellationError("signal"));
+      finishLink?.();
+
+      await expect(pipeline).resolves.toMatchObject({
+        finalVideo: {
+          viewUrl: "r2://videos/request-1/final-video.mp4",
+        },
+        status: "succeeded",
+      });
+      await expect(
+        readJsonFile(
+          join(
+            outputRoot,
+            "publication-committed-run",
+            "full-pipeline-result.json",
+          ),
+        ),
+      ).resolves.toMatchObject({
+        artifacts: { viewUrl: "r2://videos/request-1/final-video.mp4" },
+        status: "succeeded",
+      });
+    } finally {
+      await rm(outputRoot, { force: true, recursive: true });
+    }
+  });
+
   it("turns a successful Pipeline Job into a durable infrastructure failure when Preparation Workspace release fails", async () => {
     const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
     const sandboxLogPath = join(outputRoot, "full-run", "sandbox-log.jsonl");
     const cleanupEvents: string[] = [];
+    const publicationEvents: string[] = [];
     const preparationWorkspace = fakePreparationWorkspaceHandle();
     preparationWorkspace.release = async () => {
       throw new Error("provider cleanup unavailable");
@@ -319,6 +750,12 @@ describe("runFullPipelineJob", () => {
           },
           async inspectDraftCompositeEvidence() {
             return cleanDraftEvidence();
+          },
+          finalVideoPublisher: {
+            async publishFinalVideo({ draftComposite }) {
+              publicationEvents.push(draftComposite.runId);
+              return { finalVideo: draftComposite, warnings: [] };
+            },
           },
           onLog(entry) {
             cleanupEvents.push(entry.event);
@@ -353,6 +790,45 @@ describe("runFullPipelineJob", () => {
         status: "infrastructure-failed",
       });
       expect(cleanupEvents).toContain("preparation-workspace-cleanup.failed");
+      expect(publicationEvents).toEqual([]);
+    } finally {
+      await rm(outputRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("does not publish when pre-publication result persistence fails", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
+    const runId = "result-persistence-failed";
+    const publicationEvents: string[] = [];
+    try {
+      const failure = await runFullPipelineJob(
+        fullPipelineInput(),
+        orchestratorDependencies([]),
+        {
+          async captureScenes(input) {
+            return captureManifest(outputRoot, input.runId ?? "capture");
+          },
+          async compositeVideo(input) {
+            return compositeManifest(outputRoot, input.runId ?? "composite");
+          },
+          finalVideoPublisher: {
+            async publishFinalVideo({ draftComposite }) {
+              publicationEvents.push(draftComposite.runId);
+              return { finalVideo: draftComposite, warnings: [] };
+            },
+          },
+          inspectDraftCompositeEvidence: async () => cleanDraftEvidence(),
+          outputRoot,
+          reviewDraftComposite: async () => {
+            await mkdir(join(outputRoot, runId, "full-pipeline-result.json"));
+            return acceptDraftComposite();
+          },
+          runId,
+        },
+      ).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(Error);
+      expect(publicationEvents).toEqual([]);
     } finally {
       await rm(outputRoot, { force: true, recursive: true });
     }
@@ -623,7 +1099,7 @@ describe("runFullPipelineJob", () => {
         ),
         resultPath: join(outputRoot, "failed-run", "full-pipeline-result.json"),
         stage: "pipeline",
-        status: "preparation-failed",
+        status: "infrastructure-failed",
       });
 
       await expect(
@@ -646,7 +1122,7 @@ describe("runFullPipelineJob", () => {
           failureKind: "dependency-install-sigkill",
           suggestedChanges: [],
         },
-        status: "preparation-failed",
+        status: "infrastructure-failed",
       });
 
       const logEntries = (
@@ -662,7 +1138,7 @@ describe("runFullPipelineJob", () => {
         expect.objectContaining({
           event: "pipeline-failed",
           level: "error",
-          status: "preparation-failed",
+          status: "infrastructure-failed",
         }),
       );
       expect(logEntries).toContainEqual(
@@ -999,6 +1475,7 @@ describe("runFullPipelineJob", () => {
                 diagnosticsLogPath: "/workspace/.makeademo/sandbox-log.jsonl",
                 failedAction: "locator.click(getByRole(button, Save))",
                 failedSceneId: "scene_article_feed",
+                failureKind: "validator-dependency-failed",
                 failureReason: "Generated selector did not match.",
                 logs: ["selector failed"],
                 runDirectory:
@@ -1025,9 +1502,7 @@ describe("runFullPipelineJob", () => {
             runId: "capture-path-fails",
           },
         ),
-      ).rejects.toThrow(
-        "Pipeline failed with status capture-path-validation-failed",
-      );
+      ).rejects.toThrow("Pipeline failed with status infrastructure-failed");
 
       await expect(
         readJsonFile(
@@ -1039,23 +1514,9 @@ describe("runFullPipelineJob", () => {
             "Capture Path Validation failed. Please report this issue to MakeADemo.",
             "Capture Path Validation reason: Generated selector did not match.",
           ],
-          capturePathValidation: {
-            diagnosticsLogPath: "/workspace/.makeademo/sandbox-log.jsonl",
-            failedAction: "locator.click(getByRole(button, Save))",
-            failedSceneId: "scene_article_feed",
-            failureReason: "Generated selector did not match.",
-            runDirectory:
-              "/workspace/.makeademo/capture-path-validation-runs/run/scene_article_feed",
-            scriptPath:
-              "/workspace/.makeademo/capture-path-validation-runs/run/scene_article_feed/scene_article_feed.ts",
-            stderrPath:
-              "/workspace/.makeademo/capture-path-validation-runs/run/scene_article_feed/scene_article_feed.stderr.log",
-            stdoutPath:
-              "/workspace/.makeademo/capture-path-validation-runs/run/scene_article_feed/scene_article_feed.stdout.log",
-          },
-          suggestedChanges: ["Retry with more seeded data."],
+          failureKind: "validator-dependency-failed",
         },
-        status: "capture-path-validation-failed",
+        status: "infrastructure-failed",
       });
     } finally {
       if (previousRepairAttempts === undefined) {
@@ -1315,9 +1776,11 @@ describe("runFullPipelineJob", () => {
 
 function fullPipelineInput() {
   return {
+    commitSha: "0123456789abcdef0123456789abcdef01234567",
     demoBrief: { keyProductFeatures: ["article feed"] },
     normalizedSupportingDocuments: [],
     repoSecurity: {
+      evidence: repoSecurityEvidenceFixture(),
       files: [{ path: "package.json", text: "{}" }],
       repoStats: { fileCount: 1, sizeBytes: 100 },
     },
@@ -1383,6 +1846,14 @@ function orchestratorDependencies(
         agentSession,
         status: "succeeded",
         workspace: preparationWorkspace,
+      };
+    },
+    async reviewRepoSecurity() {
+      return {
+        concerns: [],
+        rationale: "Test fixture approval.",
+        status: "succeeded",
+        verdict: "approved",
       };
     },
     screenRepoSecurity() {

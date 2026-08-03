@@ -8,12 +8,14 @@ import {
 describe("submitContextGathering", () => {
   it("stores the maker, Demo Request, and queued Project from a public repo intake", async () => {
     const calls: string[] = [];
+    const commitSha = "a".repeat(40);
     const store: ContextGatheringStore = {
       async createQueuedProject(input) {
         calls.push("createQueuedProject");
         expect(input.user.email).toBe("founder@example.com");
         expect(input.user.name).toBe("Anqi");
         expect(input.project.repoUrl).toBe("https://github.com/example/app");
+        expect(input.project.commitSha).toBe(commitSha);
         expect(input.project.repoVisibility).toBe("public");
         expect(input.project.githubInstallationId).toBeUndefined();
         expect(input.project.supportingFiles).toEqual([
@@ -60,10 +62,21 @@ describe("submitContextGathering", () => {
           },
         ],
       },
-      { store },
+      {
+        revisionResolver: {
+          async resolve(input) {
+            calls.push("resolveRevision");
+            expect(input).toEqual({
+              repoUrl: "https://github.com/example/app",
+            });
+            return commitSha;
+          },
+        },
+        store,
+      },
     );
 
-    expect(calls).toEqual(["createQueuedProject"]);
+    expect(calls).toEqual(["resolveRevision", "createQueuedProject"]);
     expect(result).toEqual({
       demoRequestId: "demo-request-1",
       projectId: "project-1",
@@ -92,7 +105,14 @@ describe("submitContextGathering", () => {
           },
           supportingFiles: [],
         },
-        { store },
+        {
+          revisionResolver: {
+            async resolve() {
+              throw new Error("revision resolver should not be called");
+            },
+          },
+          store,
+        },
       ),
     ).rejects.toThrow("githubInstallationId is required for private repos");
   });
@@ -126,7 +146,14 @@ describe("submitContextGathering", () => {
             },
           ],
         },
-        { store },
+        {
+          revisionResolver: {
+            async resolve() {
+              throw new Error("revision resolver should not be called");
+            },
+          },
+          store,
+        },
       ),
     ).rejects.toThrow("Supporting Documents cannot be videos or pictures");
   });

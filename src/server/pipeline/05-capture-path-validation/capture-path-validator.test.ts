@@ -101,6 +101,43 @@ describe("validateCapturePath", () => {
     );
   });
 
+  it("preserves machine-readable scene infrastructure failures", async () => {
+    const result = await validateCapturePath(
+      {
+        preparationManifest: manifest(),
+        preparationWorkspace: workspaceHandle([]),
+        demoScript: demoScript(),
+      },
+      {
+        async runRuntimePreflight() {
+          return {
+            blockedNetworkAttempts: [],
+            browserUrl: "https://preview.example.test/",
+            logs: ["project checks passed"],
+            status: "succeeded" as const,
+            warnings: [],
+          };
+        },
+        sceneValidator: {
+          async validateScene() {
+            return {
+              failureKind: "validator-dependency-failed" as const,
+              failureReason: "Trusted Playwright is unavailable.",
+              logs: ["missing trusted Playwright"],
+              status: "failed" as const,
+            };
+          },
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      failureKind: "validator-dependency-failed",
+      failureReason: "Trusted Playwright is unavailable.",
+      status: "failed",
+    });
+  });
+
   it("enqueues each demo-script diagnostics event once without a fallback while a serialized sink is slow", async () => {
     const sandboxLogs: Array<Record<string, unknown>> = [];
     const fallbackWarnings: Array<Record<string, unknown>> = [];

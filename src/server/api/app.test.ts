@@ -287,6 +287,7 @@ describe("Context Gathering API", () => {
         createInstallUrl: () =>
           "https://github.com/apps/owlet/installations/select_target",
         listRepositories: async () => [],
+        resolveRepositoryRevision: async () => "d".repeat(40),
       },
       demoRequests: {
         async readDemoRequestStatus() {
@@ -297,6 +298,7 @@ describe("Context Gathering API", () => {
         async createQueuedProject(input) {
           expect(input.user.email).toBe("anqi@example.com");
           expect(input.project.repoVisibility).toBe("public");
+          expect(input.project.commitSha).toBe("d".repeat(40));
           expect(input.project.context).toEqual({
             importantFeatures: "script generation",
             productSummary: "A demo generator.",

@@ -8,6 +8,7 @@ import {
 } from "./repo-preparation-prompt-policy";
 
 const promptInput = {
+  commitSha: "0123456789abcdef0123456789abcdef01234567",
   normalizedSupportingDocuments: [],
   repoUrl: "https://github.com/example/app",
   structuredDemoIntent: { keyProductFeatures: ["demo"] },

@@ -140,6 +140,9 @@ export async function runDemoRuntimePreflight(
                 ),
               },
             }),
+        ...(sandboxResult.resourceDiagnostics === undefined
+          ? {}
+          : { resourceDiagnostics: sandboxResult.resourceDiagnostics }),
         failureReason: boundValidationEvidence(
           sandboxResult.failureReason ??
             "Demo command failed inside the sandbox.",

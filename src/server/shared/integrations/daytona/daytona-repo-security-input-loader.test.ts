@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { screenRepoSecurity } from "../../../pipeline/02-repo-security-screen/repo-security-screen";
 import { readRepoSecurityInputTextPolicy } from "../../../pipeline/02-repo-security-screen/repository-loading/repo-security-input";
 import { createPipelineEventLogger } from "../../logging/pipeline-event-logger";
 import {
@@ -12,6 +13,224 @@ import {
 } from "./daytona-repo-security-input-loader";
 
 describe("DaytonaRepoSecurityInputLoader", () => {
+  it("retains the pinned parent workspace and source baseline for Repo Preparation", async () => {
+    const provider = new FakeRepositoryLoadingWorkspaceProvider(
+      new FakeRepositoryLoadingWorkspace(),
+    );
+    const loaded = await new DaytonaRepoSecurityInputLoader({ provider }).load({
+      commitSha: "a".repeat(40),
+      repoUrl: "https://github.com/example/app",
+      shouldReadText: readRepoSecurityInputTextPolicy,
+    });
+
+    expect(loaded.preparationWorkspace.id).toBe("workspace-1");
+    expect(loaded.baselineSourceControlledPaths).toEqual(["package.json"]);
+    expect(provider.releasedWorkspaceIds).toEqual([]);
+  });
+
+  it("treats an installation-selected public repo as public source", async () => {
+    const commands: string[] = [];
+    const loaded = await new DaytonaRepoSecurityInputLoader({
+      provider: new FakeRepositoryLoadingWorkspaceProvider(
+        new FakeRepositoryLoadingWorkspace({ commands }),
+      ),
+    }).load({
+      commitSha: "c".repeat(40),
+      githubInstallationId: "installation-123",
+      repoUrl: "https://github.com/example/public-app",
+      repoVisibility: "public",
+      shouldReadText: readRepoSecurityInputTextPolicy,
+    });
+
+    expect(loaded.baselineSourceControlledPaths).toEqual(["package.json"]);
+    expect(commands.find((command) => command.includes("git clone"))).toContain(
+      "https://github.com/example/public-app",
+    );
+    expect(commands.join("\n")).not.toContain("installation-123");
+  });
+
+  it("fails closed for private source until installation authority is server-bound", async () => {
+    const commands: string[] = [];
+    const provider = new FakeRepositoryLoadingWorkspaceProvider(
+      new FakeRepositoryLoadingWorkspace({ commands }),
+    );
+
+    await expect(
+      new DaytonaRepoSecurityInputLoader({ provider }).load({
+        commitSha: "b".repeat(40),
+        githubInstallationId: "installation-123",
+        repoUrl: "https://github.com/example/private-app",
+        repoVisibility: "private",
+        shouldReadText: readRepoSecurityInputTextPolicy,
+      }),
+    ).rejects.toThrow("requires a server-bound GitHub installation grant");
+
+    expect(commands).toEqual([]);
+    expect(provider.releasedWorkspaceIds).toEqual(["workspace-1"]);
+  });
+  it("inspects supported manifests independently of the generic evidence budget", async () => {
+    const rootManifest = JSON.stringify({
+      scripts: { install: "rm -rf /" },
+    });
+    const dummyManifest = `${" ".repeat(32 * 1_024 - 2)}{}`;
+    const textByPath: Record<string, string> = {
+      "package.json": rootManifest,
+    };
+    const stats = [
+      { path: "package.json", sizeBytes: Buffer.byteLength(rootManifest) },
+      ...Array.from({ length: 17 }, (_, index) => {
+        const path = `apps/app-${index.toString().padStart(2, "0")}/package.json`;
+        textByPath[path] = dummyManifest;
+        return { path, sizeBytes: 32 * 1_024 };
+      }),
+    ];
+    const result = await readRepoSecurityInput(
+      new FakeRepositoryLoadingWorkspaceProvider(
+        new FakeRepositoryLoadingWorkspace({
+          fileStats: inventoryRecords(stats),
+          textByPath,
+        }),
+      ),
+      "https://github.com/example/app",
+    );
+
+    expect(result.files.filter((file) => file.text !== undefined)).toHaveLength(
+      18,
+    );
+    expect(screenRepoSecurity(result)).toMatchObject({
+      rejections: expect.arrayContaining([
+        expect.objectContaining({ code: "lifecycle-root-delete" }),
+      ]),
+      status: "rejected",
+    });
+  });
+
+  it("loads bounded static review evidence without executing repository content", async () => {
+    const commands: string[] = [];
+    const largeScript = "x".repeat(40_000);
+    const workspace = new FakeRepositoryLoadingWorkspace({
+      commands,
+      fileStats: inventoryRecords([
+        { path: "scripts/review.sh", sizeBytes: 40_000 },
+        { path: "package.json", sizeBytes: 17 },
+        { path: ".env", sizeBytes: 31 },
+        { path: "keys/id_rsa", sizeBytes: 128 },
+        { path: "src/app.ts", sizeBytes: 20 },
+      ]),
+      textByPath: {
+        ".env": "EVIDENCE_SECRET",
+        "keys/id_rsa": "PRIVATE_KEY_SECRET",
+        "package.json": '{"name":"app"}',
+        "scripts/review.sh": largeScript,
+        "src/app.ts": "console.log('app')",
+      },
+    });
+
+    const result = await readRepoSecurityInput(
+      new FakeRepositoryLoadingWorkspaceProvider(workspace),
+      "https://github.com/example/app",
+    );
+
+    expect(result.evidence?.files.map((file) => file.path)).toEqual([
+      "package.json",
+      "scripts/review.sh",
+    ]);
+    expect(result.evidence?.files[1]).toMatchObject({
+      excerptBytes: 32 * 1_024,
+      excerptSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      path: "scripts/review.sh",
+      truncated: true,
+    });
+    expect(result.evidence?.coverage).toMatchObject({
+      selectedFileCount: 2,
+      truncatedFileCount: 1,
+    });
+    expect(JSON.stringify(result)).not.toContain("EVIDENCE_SECRET");
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_KEY_SECRET");
+    const evidenceReads = commands.filter((command) =>
+      command.startsWith("head -c "),
+    );
+    expect(evidenceReads).toEqual([
+      "head -c 18 -- '/workspace/package.json'",
+      "head -c 32769 -- '/workspace/scripts/review.sh'",
+    ]);
+    expect(commands.some((command) => command.startsWith("cat "))).toBe(false);
+    expect(commands.join("\n")).not.toMatch(
+      /(?:^|\s)(?:bun|node|npm|pnpm|yarn)\s/,
+    );
+  });
+
+  it("bounds concurrent static file reads", async () => {
+    const textByPath: Record<string, string> = {};
+    const fileStats = Array.from({ length: 12 }, (_, index) => {
+      const path = `scripts/read-${index.toString().padStart(2, "0")}.sh`;
+      textByPath[path] = "#!/bin/sh\necho reviewed";
+      return { path, sizeBytes: 24 };
+    });
+    const workspace = new FakeRepositoryLoadingWorkspace({
+      evidenceReadDelayMs: 5,
+      fileStats: inventoryRecords(fileStats),
+      textByPath,
+    });
+
+    await readRepoSecurityInput(
+      new FakeRepositoryLoadingWorkspaceProvider(workspace),
+      "https://github.com/example/app",
+    );
+
+    expect(workspace.maxConcurrentEvidenceReads).toBeGreaterThan(1);
+    expect(workspace.maxConcurrentEvidenceReads).toBeLessThanOrEqual(4);
+  });
+
+  it("parses NUL-delimited inventory paths containing tabs and newlines", async () => {
+    const tabPath = "scripts/with\ttab.sh";
+    const newlinePath = "scripts/with\nnewline.sh";
+    const workspace = new FakeRepositoryLoadingWorkspace({
+      fileStats: inventoryRecords([
+        { path: tabPath, sizeBytes: 8 },
+        { path: newlinePath, sizeBytes: 8 },
+        { path: "package.json", sizeBytes: 2 },
+      ]),
+      textByPath: {
+        [newlinePath]: "echo two",
+        "package.json": "{}",
+        [tabPath]: "echo one",
+      },
+    });
+
+    const result = await readRepoSecurityInput(
+      new FakeRepositoryLoadingWorkspaceProvider(workspace),
+      "https://github.com/example/app",
+    );
+
+    expect(result.repoStats).toEqual({ fileCount: 3, sizeBytes: 18 });
+    expect(result.files.map((file) => file.path)).toEqual([
+      tabPath,
+      newlinePath,
+      "package.json",
+    ]);
+    expect(result.evidence?.files.map((file) => file.path)).toEqual([
+      "package.json",
+    ]);
+    expect(result.evidence?.inventory.sampledPaths).toEqual(["package.json"]);
+    expect(result.evidence?.inventory.sampledPathOmissionCount).toBe(2);
+  });
+
+  it("rejects inventory transport larger than its fixed output bound", async () => {
+    const workspace = new FakeRepositoryLoadingWorkspace({
+      fileStats: "x".repeat(4 * 1_024 * 1_024 + 1),
+    });
+
+    await expect(
+      readRepoSecurityInput(
+        new FakeRepositoryLoadingWorkspaceProvider(workspace),
+        "https://github.com/example/app",
+      ),
+    ).rejects.toThrow(
+      "Repo security inventory exceeds the 4194304-byte transport limit.",
+    );
+  });
+
   it("screens the exact requested repository commit", async () => {
     const commands: string[] = [];
 
@@ -34,8 +253,12 @@ describe("DaytonaRepoSecurityInputLoader", () => {
     const sentinel = "DOTENV_CANARY_ORIGINAL";
     const workspace = new FakeRepositoryLoadingWorkspace({
       commands,
-      fileStats:
-        "package.json\t17\n.env\t31\napps/web/.env.production\t42\n.env.test.local.template\t27\n",
+      fileStats: inventoryRecords([
+        { path: "package.json", sizeBytes: 17 },
+        { path: ".env", sizeBytes: 31 },
+        { path: "apps/web/.env.production", sizeBytes: 42 },
+        { path: ".env.test.local.template", sizeBytes: 27 },
+      ]),
       textByPath: {
         ".env": `API_KEY=${sentinel}`,
         ".env.test.local.template": `API_KEY=${sentinel}`,
@@ -142,10 +365,7 @@ describe("DaytonaRepoSecurityInputLoader", () => {
     );
 
     expect(result.repoStats).toEqual({ fileCount: 1, sizeBytes: 17 });
-    expect(provider.releasedWorkspaceIds).toEqual([
-      "workspace-1",
-      "workspace-2",
-    ]);
+    expect(provider.releasedWorkspaceIds).toEqual(["workspace-1"]);
     expect(firstWorkspace.cloneAttempts).toBe(1);
     expect(secondWorkspace.cloneAttempts).toBe(1);
     expect(firstWorkspace.cloneTimeoutsMs).toEqual([120_000]);
@@ -180,10 +400,7 @@ describe("DaytonaRepoSecurityInputLoader", () => {
     );
 
     expect(result.repoStats).toEqual({ fileCount: 1, sizeBytes: 17 });
-    expect(provider.releasedWorkspaceIds).toEqual([
-      "workspace-1",
-      "workspace-2",
-    ]);
+    expect(provider.releasedWorkspaceIds).toEqual(["workspace-1"]);
     expect(firstWorkspace.cloneAttempts).toBe(1);
     expect(secondWorkspace.cloneAttempts).toBe(1);
     expect(firstWorkspace.cloneTimeoutsMs).toEqual([120_000]);
@@ -211,10 +428,7 @@ describe("DaytonaRepoSecurityInputLoader", () => {
     );
 
     expect(result.repoStats).toEqual({ fileCount: 1, sizeBytes: 17 });
-    expect(provider.releasedWorkspaceIds).toEqual([
-      "workspace-1",
-      "workspace-2",
-    ]);
+    expect(provider.releasedWorkspaceIds).toEqual(["workspace-1"]);
     expect(firstWorkspace.cloneAttempts).toBe(1);
     expect(secondWorkspace.cloneAttempts).toBe(1);
     expect(firstWorkspace.cloneTimeoutsMs).toEqual([120_000]);
@@ -240,7 +454,7 @@ describe("DaytonaRepoSecurityInputLoader", () => {
     expect(commands[0]).toContain("sudo mkdir -p '/workspace'");
     expect(commands[0]).toContain("sudo chown -R");
     expect(commands[0]).toContain(
-      "git clone --depth 1 'https://github.com/example/app' '/workspace'",
+      "git clone --depth 1 --no-checkout 'https://github.com/example/app' '/workspace'",
     );
     expect(commands[0]).toContain("/etc/ssl/certs/ca-certificates.crt");
     expect(commands[0]).toContain("/etc/pki/tls/certs/ca-bundle.crt");
@@ -337,7 +551,12 @@ describe("DaytonaRepoSecurityInputLoader", () => {
         events.push("clone-cancelled");
         rejectClone?.(new Error("clone cancelled"));
       },
-      async execute(command) {
+      async execute() {
+        throw new Error(
+          "Repository loading must not use privileged execution.",
+        );
+      },
+      async executeRepositoryCommand(command) {
         if (!command.includes("git clone")) {
           throw new Error(`Unexpected command: ${command}`);
         }
@@ -347,6 +566,7 @@ describe("DaytonaRepoSecurityInputLoader", () => {
           rejectClone = reject;
         });
       },
+      async uploadFiles() {},
     };
     const provider: RepositoryLoadingWorkspaceProvider = {
       async create() {
@@ -360,6 +580,7 @@ describe("DaytonaRepoSecurityInputLoader", () => {
       },
     };
     const loading = new DaytonaRepoSecurityInputLoader({ provider }).load({
+      commitSha: "a".repeat(40),
       repoUrl: "https://github.com/example/app",
       shouldReadText: readRepoSecurityInputTextPolicy,
       signal: controller.signal,
@@ -375,50 +596,6 @@ describe("DaytonaRepoSecurityInputLoader", () => {
       "workspace-released",
     ]);
   });
-
-  it("logs and bounds workspace release timeouts after repo stats succeed", async () => {
-    const lines: string[] = [];
-    const logger = createPipelineEventLogger({
-      base: { component: "repo-security-screen" },
-      sinks: [{ write: (line) => void lines.push(line) }],
-      timestamp: () => "2026-06-17T00:00:00.000Z",
-    });
-
-    const result = await readRepoSecurityInput(
-      new FakeRepositoryLoadingWorkspaceProvider(
-        new FakeRepositoryLoadingWorkspace(),
-        {
-          release: () => new Promise(() => undefined),
-        },
-      ),
-      "https://github.com/example/app",
-      { releaseTimeoutMs: 1, logger },
-    );
-
-    expect(result.repoStats).toEqual({ fileCount: 1, sizeBytes: 17 });
-    expect(lines.map((line) => JSON.parse(line))).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          event: "repo-security-screen.workspace_release.started",
-          externalCall: "daytona.workspace_release",
-          level: "info",
-          message: "Daytona workspace release started.",
-          stage: "repo-security-screen",
-          workspaceId: "workspace-1",
-        }),
-        expect.objectContaining({
-          durationMs: expect.any(Number),
-          event: "repo-security-screen.workspace_release.timeout",
-          externalCall: "daytona.workspace_release",
-          level: "warn",
-          message: "Daytona workspace release timeout.",
-          stage: "repo-security-screen",
-          timeoutMs: 1,
-          workspaceId: "workspace-1",
-        }),
-      ]),
-    );
-  });
 });
 
 async function readRepoSecurityInput(
@@ -429,14 +606,15 @@ async function readRepoSecurityInput(
   } = {},
 ) {
   const { commitSha, ...loaderOptions } = options;
-  return new DaytonaRepoSecurityInputLoader({
+  const loaded = await new DaytonaRepoSecurityInputLoader({
     ...loaderOptions,
     provider,
   }).load({
-    ...(commitSha === undefined ? {} : { commitSha }),
+    commitSha: commitSha ?? "a".repeat(40),
     repoUrl,
     shouldReadText: readRepoSecurityInputTextPolicy,
   });
+  return loaded.repoSecurity;
 }
 
 class FakeRepositoryLoadingWorkspaceProvider
@@ -497,26 +675,39 @@ function readWorkspaceAt(
   return workspace;
 }
 
+function inventoryRecords(
+  files: readonly { path: string; sizeBytes: number }[],
+): string {
+  return files.map((file) => `${file.path}\0${file.sizeBytes}\0`).join("");
+}
+
 class FakeRepositoryLoadingWorkspace implements RepositoryLoadingWorkspace {
+  private activeEvidenceReads = 0;
   cloneAttempts = 0;
   readonly cloneTimeoutsMs: number[] = [];
+  maxConcurrentEvidenceReads = 0;
 
   constructor(
     private readonly input: {
       cloneError?: Error;
       cloneResults?: RepositoryLoadingWorkspaceCommandResult[];
       commands?: string[];
+      evidenceReadDelayMs?: number;
       fileStats?: string;
       textByPath?: Record<string, string>;
     } = {},
   ) {}
 
-  async execute(
+  async execute(): Promise<RepositoryLoadingWorkspaceCommandResult> {
+    throw new Error("Repository loading must not use privileged execution.");
+  }
+
+  async executeRepositoryCommand(
     command: string,
     options?: { timeoutMs?: number },
   ): Promise<RepositoryLoadingWorkspaceCommandResult> {
     this.input.commands?.push(command);
-    if (command.includes("git clone")) {
+    if (command.includes("git clone") || command.includes("tar -xzf")) {
       if (options?.timeoutMs !== undefined) {
         this.cloneTimeoutsMs.push(options.timeoutMs);
       }
@@ -532,29 +723,56 @@ class FakeRepositoryLoadingWorkspace implements RepositoryLoadingWorkspace {
       this.cloneAttempts += 1;
       return result;
     }
-
-    if (command.includes("-printf '%P\\t%s\\n'")) {
-      return {
-        exitCode: 0,
-        stderr: "",
-        stdout: this.input.fileStats ?? "package.json\t17\n",
-      };
+    if (command.includes("find '/workspace' -mindepth 1")) {
+      return { exitCode: 0, stderr: "", stdout: "" };
     }
 
-    if (command.startsWith("cat ")) {
-      const path = Object.keys(this.input.textByPath ?? {}).find((candidate) =>
-        command.includes(`/${candidate}'`),
-      );
+    if (command.includes("-printf '%P\\0%s\\0'")) {
       return {
         exitCode: 0,
         stderr: "",
         stdout:
+          this.input.fileStats ??
+          inventoryRecords([{ path: "package.json", sizeBytes: 17 }]),
+      };
+    }
+
+    if (command === "git -C /workspace ls-files -z") {
+      return { exitCode: 0, stderr: "", stdout: "package.json\0" };
+    }
+
+    if (command.startsWith("head -c ")) {
+      this.activeEvidenceReads += 1;
+      this.maxConcurrentEvidenceReads = Math.max(
+        this.maxConcurrentEvidenceReads,
+        this.activeEvidenceReads,
+      );
+      try {
+        if ((this.input.evidenceReadDelayMs ?? 0) > 0) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, this.input.evidenceReadDelayMs),
+          );
+        }
+        const path = Object.keys(this.input.textByPath ?? {})
+          .sort((left, right) => right.length - left.length)
+          .find((candidate) => command.includes(`/${candidate}'`));
+        const limit = Number(command.match(/^head -c (\d+)/)?.[1] ?? "0");
+        const text =
           path === undefined
             ? '{"name":"app"}'
-            : (this.input.textByPath?.[path] ?? ""),
-      };
+            : (this.input.textByPath?.[path] ?? "");
+        return {
+          exitCode: 0,
+          stderr: "",
+          stdout: Buffer.from(text, "utf8").subarray(0, limit).toString("utf8"),
+        };
+      } finally {
+        this.activeEvidenceReads -= 1;
+      }
     }
 
     throw new Error(`Unexpected command: ${command}`);
   }
+
+  async uploadFiles() {}
 }

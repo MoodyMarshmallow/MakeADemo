@@ -1,4 +1,7 @@
-# Do Not Run Agentic Security Review During Repo Preparation
+# Superseded: Do Not Run Agentic Security Review During Repo Preparation
+
+This decision is superseded by ADR 0023. The review remains outside Repo
+Preparation, but Stage 02 now includes a separate read-only agent decision.
 
 After the deterministic Repo Security Screen passes, Repo Preparation proceeds directly to the autonomous preparation agent. We chose this over adding a second agentic security-review phase because the pipeline should keep the safety model simple and deterministic: obvious repository risk is handled by the non-agent Repo Security Screen, and prepared output is still gated by non-agent Project Validation before downstream stages trust it. Daytona sandbox-firewall Runtime Network Lockdown is a deferred hardening policy, not a current gate; browser-level request interception remains part of validation and can still fail a capture path.
 

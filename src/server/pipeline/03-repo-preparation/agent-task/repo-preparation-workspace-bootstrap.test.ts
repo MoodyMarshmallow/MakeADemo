@@ -25,6 +25,22 @@ afterEach(async () => {
 });
 
 describe("bootstrapRepoPreparationWorkspace", () => {
+  it("fails closed without an unprivileged repository-command boundary", async () => {
+    await expect(
+      bootstrapRepoPreparationWorkspace({
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
+        logger: createPipelineEventLogger({ sinks: [] }),
+        repoUrl: "https://github.com/example/app",
+        workspace: {
+          async execute() {
+            return { exitCode: 0, stderr: "", stdout: "privileged" };
+          },
+          async uploadFiles() {},
+        },
+      }),
+    ).rejects.toThrow("Unprivileged repository command execution is required");
+  });
+
   it("uses the provider's repository-command boundary for the parent clone and Git inventory", async () => {
     const repositoryCommands: string[] = [];
     const trustedCommands: string[] = [];
@@ -48,6 +64,7 @@ describe("bootstrapRepoPreparationWorkspace", () => {
     };
 
     const result = await bootstrapRepoPreparationWorkspace({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       logger: createPipelineEventLogger({ sinks: [] }),
       repoUrl: "https://github.com/example/app",
       workspace,
@@ -62,12 +79,11 @@ describe("bootstrapRepoPreparationWorkspace", () => {
     expect(trustedCommands).toEqual([]);
   });
 
-  it("preserves committed dotenv files and Git history in both workspaces", async () => {
+  it("clones the pinned revision once into the parent workspace", async () => {
     const sentinel = "DOTENV_CANARY_ORIGINAL";
     const root = await createTemporaryDirectory();
     const source = join(root, "source");
     const parent = join(root, "parent");
-    const submitted = join(root, "submitted");
     await mkdir(join(source, "apps", "web"), { recursive: true });
     await writeFile(
       join(source, ".env"),
@@ -84,7 +100,6 @@ describe("bootstrapRepoPreparationWorkspace", () => {
     await git(source, ["add", "-A"]);
     await git(source, ["commit", "--quiet", "-m", "original"]);
     await cp(source, parent, { recursive: true });
-    await cp(source, submitted, { recursive: true });
     const events: string[] = [];
     const commands: string[] = [];
     const logs: unknown[] = [];
@@ -93,7 +108,6 @@ describe("bootstrapRepoPreparationWorkspace", () => {
       events,
       logs,
       parent,
-      submitted,
     });
 
     const result = await bootstrapRepoPreparationWorkspace({
@@ -108,11 +122,9 @@ describe("bootstrapRepoPreparationWorkspace", () => {
       "apps/web/.env.production",
       "package.json",
     ]);
-    expect(events).toEqual(["parent-clone", "submitted-clone"]);
+    expect(events).toEqual(["parent-clone"]);
     expect(await readFile(join(parent, ".env"), "utf8")).toContain(sentinel);
-    expect(await readFile(join(submitted, ".env"), "utf8")).toContain(sentinel);
     expect(await readAllGitText(parent)).toContain(sentinel);
-    expect(await readAllGitText(submitted)).toContain(sentinel);
   });
 });
 
@@ -127,15 +139,17 @@ function createLocalBootstrapWorkspace(input: {
   events: string[];
   logs: unknown[];
   parent: string;
-  submitted: string;
 }): PreparationWorkspace {
   return {
     execute: createExecutor(input.commands, input.events, "parent"),
-    executeSubmittedCode: createExecutor(
+    executeRepositoryCommand: createExecutor(
       input.commands,
       input.events,
-      "submitted",
+      "parent",
     ),
+    async executeSubmittedCode() {
+      throw new Error("submitted-code workspace must not clone the repository");
+    },
     async getPreviewUrl() {
       throw new Error("getPreviewUrl should not be called");
     },

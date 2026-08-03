@@ -11,11 +11,13 @@ export const users = pgTable("users", {
 });
 
 export const projects = pgTable("projects", {
+  commitSha: text("commit_sha"),
   context: jsonb("context").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),
   githubInstallationId: text("github_installation_id"),
+  failureReason: text("failure_reason"),
   id: uuid("id").defaultRandom().primaryKey(),
   repoUrl: text("repo_url").notNull(),
   repoVisibility: text("repo_visibility").notNull(),

@@ -1,4 +1,4 @@
-import type { RepoSecurityInput } from "../repo-security-screen";
+import { isRepoSecurityPackageManifestPath } from "../repo-security-package-manifest";
 import type { RepoSecurityInputLoader } from "./repo-security-input-loader.interface";
 
 /** Loads Repo Security Screen input while enforcing Stage 02's text policy. */
@@ -6,19 +6,25 @@ export function readRepoSecurityInput(
   loader: RepoSecurityInputLoader,
   repoUrl: string,
   options: {
-    commitSha?: string;
+    commitSha: string;
     deadlineAt?: number;
+    githubInstallationId?: string;
+    repoVisibility?: "private" | "public";
     signal?: AbortSignal;
-  } = {},
-): Promise<RepoSecurityInput> {
+  },
+) {
   return loader.load({
-    ...(options.commitSha === undefined
-      ? {}
-      : { commitSha: options.commitSha }),
+    commitSha: options.commitSha,
     ...(options.deadlineAt === undefined
       ? {}
       : { deadlineAt: options.deadlineAt }),
     repoUrl,
+    ...(options.repoVisibility === undefined
+      ? {}
+      : { repoVisibility: options.repoVisibility }),
+    ...(options.githubInstallationId === undefined
+      ? {}
+      : { githubInstallationId: options.githubInstallationId }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     shouldReadText: readRepoSecurityInputTextPolicy,
   });
@@ -26,5 +32,5 @@ export function readRepoSecurityInput(
 
 /** Allows static screen text only from package manifests and shell scripts. */
 export function readRepoSecurityInputTextPolicy(path: string): boolean {
-  return path === "package.json" || path.endsWith(".sh");
+  return isRepoSecurityPackageManifestPath(path) || path.endsWith(".sh");
 }

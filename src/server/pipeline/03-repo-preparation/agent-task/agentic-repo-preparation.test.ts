@@ -164,6 +164,7 @@ describe("AgenticRepoPreparation", () => {
 
     await expect(
       agent.prepare({
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         normalizedSupportingDocuments: [],
         repoUrl: "https://github.com/example/app",
         structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -191,6 +192,7 @@ describe("AgenticRepoPreparation", () => {
 
     await expect(
       agent.prepare({
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         deadlineAt: Date.now() + 10,
         normalizedSupportingDocuments: [],
         repoUrl: "https://github.com/example/app",
@@ -221,6 +223,7 @@ describe("AgenticRepoPreparation", () => {
 
     await expect(
       agent.prepare({
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         deadlineAt,
         normalizedSupportingDocuments: [],
         repoUrl: "https://github.com/example/app",
@@ -266,6 +269,7 @@ describe("AgenticRepoPreparation", () => {
     const controller = new AbortController();
     const agent = createRepoPreparationAgent({ provider, timeoutMs: 1_000 });
     const preparation = agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       deadlineAt: Date.now() + 30_000,
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
@@ -313,6 +317,7 @@ describe("AgenticRepoPreparation", () => {
     const controller = new AbortController();
     const agent = createRepoPreparationAgent({ provider, timeoutMs: 1_000 });
     const preparation = agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       deadlineAt: Date.now() + 30_000,
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
@@ -354,6 +359,7 @@ describe("AgenticRepoPreparation", () => {
     };
     const agent = createRepoPreparationAgent({ provider, timeoutMs: 1_000 });
     const preparation = agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       deadlineAt: Date.now() + 30_000,
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
@@ -412,6 +418,7 @@ describe("AgenticRepoPreparation", () => {
     const controller = new AbortController();
     const agent = createRepoPreparationAgent({ provider, timeoutMs: 1_000 });
     const preparation = agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       deadlineAt: Date.now() + 30_000,
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
@@ -459,6 +466,7 @@ describe("AgenticRepoPreparation", () => {
 
     await expect(
       agent.prepare({
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         deadlineAt: Date.now() + 30_000,
         normalizedSupportingDocuments: [],
         repoUrl: "https://github.com/example/app",
@@ -622,6 +630,7 @@ describe("AgenticRepoPreparation", () => {
 
     try {
       const result = await agent.prepare({
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         normalizedSupportingDocuments: [],
         repoUrl: "https://github.com/example/app",
         structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -675,6 +684,7 @@ describe("AgenticRepoPreparation", () => {
 
     const result = await Promise.race([
       agent.prepare({
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         normalizedSupportingDocuments: [],
         repoUrl: "https://github.com/example/app",
         structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -709,6 +719,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -745,6 +756,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -785,6 +797,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -815,6 +828,7 @@ describe("AgenticRepoPreparation", () => {
 
     await expect(
       agent.prepare({
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         normalizedSupportingDocuments: [],
         repoUrl: "https://github.com/example/app",
         structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -844,6 +858,7 @@ describe("AgenticRepoPreparation", () => {
 
     await expect(
       agent.prepare({
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         normalizedSupportingDocuments: [],
         repoUrl: "https://github.com/example/app",
         structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -874,6 +889,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -897,6 +913,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -930,6 +947,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -985,6 +1003,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -1020,104 +1039,6 @@ describe("AgenticRepoPreparation", () => {
     );
   });
 
-  it("reports submitted-code clone failures with workspace context", async () => {
-    const events: unknown[] = [];
-    const agent = createRepoPreparationAgent({
-      provider: fakeProvider(events, {
-        submittedCodeCloneResult: {
-          exitCode: 128,
-          stderr:
-            "fatal: unable to access 'https://github.com/example/app/': server certificate verification failed. CAfile: none CRLfile: none",
-          stdout: "",
-        },
-      }),
-      timeoutMs: 1_000,
-    });
-
-    const result = await agent.prepare({
-      normalizedSupportingDocuments: [],
-      repoUrl: "https://github.com/example/app",
-      structuredDemoIntent: { keyProductFeatures: ["validation"] },
-      workspaceId: "workspace_123",
-    });
-
-    expect(result).toMatchObject({
-      blockers: [
-        expect.stringMatching(
-          /Repo Preparation could not clone the submitted repository in the submitted-code workspace[\s\S]*server certificate verification failed/,
-        ),
-      ],
-      status: "failed",
-      suggestedChanges: [
-        "Retry Repo Preparation after the submitted repository can be cloned from the Daytona workspace.",
-      ],
-    });
-    expect(events).toEqual(
-      expect.arrayContaining([{ release: "daytona_workspace" }]),
-    );
-  });
-
-  it("writes submitted-code clone diagnostics before skipping Agent Task", async () => {
-    const events: unknown[] = [];
-    const agent = createRepoPreparationAgent({
-      cloneFailureDiagnosticsContext: {
-        daytonaSnapshot: "makeademo-agent-snapshot",
-        daytonaSubmittedCodeSnapshot: "makeademo-submitted-code-browser",
-      },
-      provider: fakeProvider(events, {
-        cloneDiagnosticsStdout: [
-          "caCertificatesCrtExists=true",
-          "openshellCaBundleExists=false",
-          "openshellCaBundleReadable=false",
-          "openshellCaCertExists=true",
-          "openshellCaCertReadable=false",
-          `caEnvPath_SSL_CERT_FILE=/etc/openshell-tls/${"x".repeat(1_000)}`,
-          "gitVersion=git version 2.45.2",
-          `opensslVersion=OpenSSL 3.3.1 ${"x".repeat(1_000)}`,
-        ].join("\n"),
-        submittedCodeCloneResult: {
-          exitCode: 128,
-          stderr: "server certificate verification failed. CAfile: none",
-          stdout: "",
-        },
-      }),
-      timeoutMs: 1_000,
-    });
-
-    await agent.prepare({
-      normalizedSupportingDocuments: [],
-      repoUrl: "https://github.com/example/app",
-      structuredDemoIntent: { keyProductFeatures: ["validation"] },
-      workspaceId: "workspace_123",
-    });
-
-    expect(events).toEqual(
-      expect.arrayContaining([
-        {
-          submittedCodeExecute: expect.stringContaining(
-            "makeademo_clone_diagnostics",
-          ),
-        },
-        {
-          sandboxLog: expect.objectContaining({
-            caCertificatesCrtExists: true,
-            caEnvPath_SSL_CERT_FILE: expect.stringContaining("truncated"),
-            cloneFailureWorkspace: "submitted-code workspace",
-            daytonaSubmittedCodeSnapshot: "makeademo-submitted-code-browser",
-            event: "clone-failure-diagnostics",
-            gitVersion: "git version 2.45.2",
-            openshellCaBundleExists: false,
-            openshellCaBundleReadable: false,
-            openshellCaCertExists: true,
-            openshellCaCertReadable: false,
-            opensslVersion: expect.stringContaining("truncated"),
-            stage: "repo-preparation",
-          }),
-        },
-      ]),
-    );
-  });
-
   it("waits for clone-failure diagnostics to reach sandbox log sinks before releasing the workspace", async () => {
     const events: unknown[] = [];
     const agent = createRepoPreparationAgent({
@@ -1130,6 +1051,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -1170,6 +1092,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://token:secret@github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -1239,6 +1162,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -1323,6 +1247,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -1406,6 +1331,7 @@ describe("AgenticRepoPreparation", () => {
       });
 
       const result = await agent.prepare({
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         normalizedSupportingDocuments: [],
         repoUrl: "https://github.com/example/app",
         structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -1441,6 +1367,11 @@ describe("AgenticRepoPreparation", () => {
         ],
         submittedCodeInstallResult: {
           exitCode: 137,
+          resourceDiagnostics: {
+            classification: "cgroup-oom-kill",
+            memoryOomKillDelta: 1,
+            memoryPeakBytes: 4_294_967_296,
+          },
           stderr: `${"🧨".repeat(2_000)}killed`,
           stdout: `${"🛠️".repeat(2_000)}installing`,
         },
@@ -1450,6 +1381,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -1458,11 +1390,13 @@ describe("AgenticRepoPreparation", () => {
 
     expect(result).toMatchObject({
       blockers: [
-        expect.stringContaining(
-          "could be OOM pressure, provider termination, or another external kill",
-        ),
+        expect.stringContaining("cgroup evidence recorded an OOM kill"),
       ],
       failureKind: "dependency-install-sigkill",
+      resourceDiagnostics: {
+        classification: "cgroup-oom-kill",
+        memoryOomKillDelta: 1,
+      },
       status: "failed",
       suggestedChanges: [
         expect.stringContaining("provider metrics and sandbox logs"),
@@ -1480,8 +1414,11 @@ describe("AgenticRepoPreparation", () => {
     expect(diagnostic).toMatchObject({
       exitCode: 137,
       failureKind: "dependency-install-sigkill",
-      interpretation:
-        "SIGKILL observed; OOM pressure, provider termination, and external kill remain possible.",
+      resourceDiagnostics: {
+        classification: "cgroup-oom-kill",
+        memoryOomKillDelta: 1,
+      },
+      interpretation: "SIGKILL observed; cgroup evidence recorded an OOM kill.",
       level: "error",
     });
     expect(
@@ -1538,6 +1475,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/excalidraw/excalidraw",
       structuredDemoIntent: { keyProductFeatures: ["drawing"] },
@@ -1583,6 +1521,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -1598,28 +1537,34 @@ describe("AgenticRepoPreparation", () => {
     expect(runner.calls).toHaveLength(16);
   });
 
-  it("fails fast when preparation preflight cannot restore submitted-code files", async () => {
+  it("preserves terminal preflight infrastructure diagnostics without another agent turn", async () => {
+    const failureKind = "dependency-install-sigkill";
     const events: unknown[] = [];
+    const runner = new RecordingAgentTaskRunner();
+    const resourceDiagnostics = {
+      classification: "cgroup-oom-kill" as const,
+      memoryOomKillDelta: 1,
+      memoryPeakBytes: 4_294_967_296,
+    };
     const agent = createRepoPreparationAgent({
       provider: fakeProvider(events, {
-        commandStdout: ["Validation requested."],
-        validationRequest: {
-          manifestPath: "/workspace/.makeademo/preparation-manifest.json",
-        },
+        agentResults: [validationHandoff(), validationHandoff()],
       }),
+      runner,
       timeoutMs: 1_000,
       runRuntimePreflight: async () => ({
         blockedNetworkAttempts: [],
-        failureKind: "submitted-code-workspace-sync-failed",
-        failureReason:
-          "Failed to sync prepared files to submitted-code workspace.",
-        logs: ["Failed to sync prepared files to submitted-code workspace."],
+        failureKind,
+        failureReason: `preflight failed: ${failureKind}`,
+        logs: [`preflight failed: ${failureKind}`],
+        resourceDiagnostics,
         status: "failed",
         warnings: [],
       }),
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -1632,8 +1577,11 @@ describe("AgenticRepoPreparation", () => {
           "non-retryable MakeADemo infrastructure failure",
         ),
       ],
+      failureKind,
+      resourceDiagnostics,
       status: "failed",
     });
+    expect(runner.calls).toHaveLength(1);
     expect(events).not.toEqual(
       expect.arrayContaining([
         {
@@ -1643,79 +1591,6 @@ describe("AgenticRepoPreparation", () => {
         },
       ]),
     );
-  });
-
-  it("fails fast when preparation preflight cannot inspect the trusted toolchain", async () => {
-    const events: unknown[] = [];
-    const runner = new RecordingAgentTaskRunner();
-    const agent = createRepoPreparationAgent({
-      provider: fakeProvider(events, {
-        agentResults: [validationHandoff(), validationHandoff()],
-      }),
-      runner,
-      timeoutMs: 1_000,
-      runRuntimePreflight: async () => ({
-        blockedNetworkAttempts: [],
-        failureKind: "submitted-toolchain-inspection-failed",
-        failureReason: "trusted catalog unavailable",
-        logs: ["trusted catalog unavailable"],
-        status: "failed",
-        warnings: [],
-      }),
-    });
-
-    const result = await agent.prepare({
-      normalizedSupportingDocuments: [],
-      repoUrl: "https://github.com/example/app",
-      structuredDemoIntent: { keyProductFeatures: ["validation"] },
-      workspaceId: "workspace_123",
-    });
-
-    expect(result).toMatchObject({
-      blockers: [
-        expect.stringContaining(
-          "non-retryable MakeADemo infrastructure failure",
-        ),
-      ],
-      status: "failed",
-    });
-    expect(runner.calls).toHaveLength(1);
-  });
-
-  it("fails fast when preparation preflight cannot provision the trusted toolchain", async () => {
-    const runner = new RecordingAgentTaskRunner();
-    const agent = createRepoPreparationAgent({
-      provider: fakeProvider([], {
-        agentResults: [validationHandoff(), validationHandoff()],
-      }),
-      runner,
-      timeoutMs: 1_000,
-      runRuntimePreflight: async () => ({
-        blockedNetworkAttempts: [],
-        failureKind: "submitted-code-toolchain-provisioning-failed",
-        failureReason: "trusted provisioning unavailable",
-        logs: ["trusted provisioning unavailable"],
-        status: "failed",
-        warnings: [],
-      }),
-    });
-
-    const result = await agent.prepare({
-      normalizedSupportingDocuments: [],
-      repoUrl: "https://github.com/example/app",
-      structuredDemoIntent: { keyProductFeatures: ["validation"] },
-      workspaceId: "workspace_123",
-    });
-
-    expect(result).toMatchObject({
-      blockers: [
-        expect.stringContaining(
-          "non-retryable MakeADemo infrastructure failure",
-        ),
-      ],
-      status: "failed",
-    });
-    expect(runner.calls).toHaveLength(1);
   });
 
   it("does not accept a structured final result outside backend control state", async () => {
@@ -1760,6 +1635,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -1803,6 +1679,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -1870,6 +1747,7 @@ describe("AgenticRepoPreparation", () => {
 
     await expect(
       agent.prepare({
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         normalizedSupportingDocuments: [],
         repoUrl: "https://github.com/example/app",
         structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -1901,6 +1779,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -1945,6 +1824,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -1987,6 +1867,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -2010,6 +1891,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -2060,6 +1942,7 @@ describe("AgenticRepoPreparation", () => {
       });
 
       const result = await agent.prepare({
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         normalizedSupportingDocuments: [],
         repoUrl: "https://github.com/example/app",
         structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -2105,6 +1988,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -2113,6 +1997,90 @@ describe("AgenticRepoPreparation", () => {
 
     expect(result).toMatchObject({ status: "succeeded" });
     expect(runner.calls).toHaveLength(3);
+  });
+
+  it("quiesces the last attempted demo runtime before a repair dependency install mutates submitted code", async () => {
+    const events: unknown[] = [];
+    const runner = new RecordingAgentTaskRunner();
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider(events, {
+        activeSubmittedRuntimePort: 4173,
+        agentResults: [validationHandoff(), dependencyInstallHandoff()],
+      }),
+      runner,
+      timeoutMs: 1_000,
+      runRuntimePreflight: async () => ({
+        blockedNetworkAttempts: [],
+        failureKind: "browser-not-interactable",
+        failureReason: "The demo page was not interactable.",
+        localUrl: "http://127.0.0.1:4173/settings",
+        logs: [],
+        status: "failed",
+        warnings: [],
+      }),
+    });
+
+    await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(
+      events.filter(
+        (event) =>
+          typeof event === "string" &&
+          (event.startsWith("quiesce:") ||
+            event === "sync-submitted-code" ||
+            event === "install-submitted-code"),
+      ),
+    ).toEqual([
+      "quiesce:4173",
+      "sync-submitted-code",
+      "install-submitted-code",
+    ]);
+  });
+
+  it("does not synchronize or install when repair runtime quiescence fails", async () => {
+    const events: unknown[] = [];
+    const runner = new RecordingAgentTaskRunner();
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider(events, {
+        activeSubmittedRuntimePort: 4173,
+        agentResults: [validationHandoff(), dependencyInstallHandoff()],
+        runtimeQuiescenceError: new Error("runtime quiescence failed"),
+      }),
+      runner,
+      timeoutMs: 1_000,
+      runRuntimePreflight: async () => ({
+        blockedNetworkAttempts: [],
+        failureKind: "browser-not-interactable",
+        failureReason: "The demo page was not interactable.",
+        localUrl: "http://127.0.0.1:4173/settings",
+        logs: [],
+        status: "failed",
+        warnings: [],
+      }),
+    });
+
+    await expect(
+      agent.prepare({
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
+        normalizedSupportingDocuments: [],
+        repoUrl: "https://github.com/example/app",
+        structuredDemoIntent: { keyProductFeatures: ["validation"] },
+        workspaceId: "workspace_123",
+      }),
+    ).resolves.toMatchObject({
+      blockers: ["runtime quiescence failed"],
+      status: "failed",
+    });
+    expect(events).toContain("quiesce:4173");
+    expect(events).not.toContain("sync-submitted-code");
+    expect(events).not.toContain("install-submitted-code");
+    expect(runner.calls).toHaveLength(2);
   });
 
   it("lets the agent repair a package-manager release rejected by trusted metadata", async () => {
@@ -2142,6 +2110,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -2208,6 +2177,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -2239,6 +2209,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -2281,6 +2252,7 @@ describe("AgenticRepoPreparation", () => {
       });
 
       const result = await agent.prepare({
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         normalizedSupportingDocuments: [],
         repoUrl: "https://github.com/example/app",
         structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -2308,6 +2280,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -2356,6 +2329,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -2408,6 +2382,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -2448,6 +2423,7 @@ describe("AgenticRepoPreparation", () => {
 
     const result = await prepareRepo(
       {
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         normalizedSupportingDocuments: [],
         repoUrl: "https://github.com/example/app",
         structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -2481,6 +2457,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -2538,6 +2515,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -2564,59 +2542,6 @@ describe("AgenticRepoPreparation", () => {
     );
   });
 
-  it("clones the submitted repo into the submitted-code workspace when available", async () => {
-    const events: unknown[] = [];
-    const agent = createRepoPreparationAgent({
-      provider: fakeProvider(events, [JSON.stringify(successResult())]),
-      timeoutMs: 1_000,
-    });
-
-    await agent.prepare({
-      commitSha: "0123456789abcdef0123456789abcdef01234567",
-      normalizedSupportingDocuments: [],
-      repoUrl: "https://github.com/example/app",
-      structuredDemoIntent: { keyProductFeatures: ["validation"] },
-      workspaceId: "workspace_123",
-    });
-
-    expect(events).toEqual(
-      expect.arrayContaining([
-        {
-          submittedCodeExecute: expect.stringContaining(
-            "sudo mkdir -p '/workspace'",
-          ),
-        },
-        {
-          submittedCodeExecute: expect.stringContaining(
-            "checkout --detach '0123456789abcdef0123456789abcdef01234567'",
-          ),
-        },
-      ]),
-    );
-    const submittedCodeClone = events.find(
-      (event): event is { submittedCodeExecute: string } =>
-        typeof event === "object" &&
-        event !== null &&
-        "submittedCodeExecute" in event &&
-        typeof event.submittedCodeExecute === "string" &&
-        event.submittedCodeExecute.includes("git clone"),
-    )?.submittedCodeExecute;
-    expect(submittedCodeClone).toContain("/etc/ssl/certs/ca-certificates.crt");
-    expect(submittedCodeClone).toContain(
-      `test "$(git -C '/workspace' rev-parse HEAD)" = '0123456789abcdef0123456789abcdef01234567'`,
-    );
-    expect(submittedCodeClone).toContain("/etc/pki/tls/certs/ca-bundle.crt");
-    expect(submittedCodeClone).toContain("/etc/openshell-tls/ca-bundle.pem");
-    expect(submittedCodeClone).toMatch(/export GIT_SSL_CAINFO=.*git clone/s);
-    expect(submittedCodeClone).not.toContain("GIT_SSL_NO_VERIFY");
-    expect(submittedCodeClone).not.toContain("sslVerify=false");
-    expect(events).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ submittedCodeNetwork: expect.anything() }),
-      ]),
-    );
-  });
-
   it("writes Repo Preparation lifecycle events to the sandbox Pino log seam", async () => {
     const events: unknown[] = [];
     const agent = createRepoPreparationAgent({
@@ -2629,6 +2554,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -2682,6 +2608,7 @@ describe("AgenticRepoPreparation", () => {
     });
 
     const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       normalizedSupportingDocuments: [],
       repoUrl: "https://github.com/example/app",
       structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -2725,8 +2652,10 @@ function fakeProvider(
         agentResults?: Array<
           AgentTaskRunResult<RepoPreparationToolHandoff> | Error
         >;
+        activeSubmittedRuntimePort?: number;
         preparationResult?: ReturnType<typeof successResult>;
         releaseError?: Error;
+        runtimeQuiescenceError?: Error;
         queuedSandboxLogWrites?: boolean;
         sandboxLogFailureEvent?: string;
         sandboxLogDelayMs?: number;
@@ -2804,8 +2733,10 @@ function fakeWorkspace(
     agentResults?: Array<
       AgentTaskRunResult<RepoPreparationToolHandoff> | Error
     >;
+    activeSubmittedRuntimePort?: number;
     preparationResult?: ReturnType<typeof successResult>;
     releaseError?: Error;
+    runtimeQuiescenceError?: Error;
     queuedSandboxLogWrites?: boolean;
     sandboxLogFailureEvent?: string;
     sandboxLogDelayMs?: number;
@@ -2833,6 +2764,8 @@ function fakeWorkspace(
   ];
   const cloneResults = [...(input.cloneResults ?? [])];
   let dependencyInstallRequest = input.dependencyInstallRequest;
+  let activeSubmittedRuntimePort = input.activeSubmittedRuntimePort;
+  const recordRuntimeMutationOrder = activeSubmittedRuntimePort !== undefined;
   let sandboxLogChain = Promise.resolve();
   let settleSubmittedCodeExecution: (() => void) | undefined;
   let settleSubmittedCodeSync: (() => void) | undefined;
@@ -3011,6 +2944,9 @@ function fakeWorkspace(
           : (commandStdout.shift() ?? ""),
       };
     },
+    async executeRepositoryCommand(command, options) {
+      return await this.execute(command, options);
+    },
     async executeSubmittedCode(command) {
       events.push({ submittedCodeExecute: command });
       if (command.includes("git clone")) {
@@ -3045,6 +2981,7 @@ function fakeWorkspace(
       throw new Error(`Unexpected submitted-code command: ${command}`);
     },
     async executeSubmittedProject(request: SubmittedProjectExecutionRequest) {
+      if (recordRuntimeMutationOrder) events.push("install-submitted-code");
       events.push({
         submittedProjectExecute: {
           argv: [...request.argv],
@@ -3075,7 +3012,20 @@ function fakeWorkspace(
       }
       return;
     },
+    async quiesceSubmittedRuntime(request) {
+      events.push(`quiesce:${request.port}`);
+      if (input.runtimeQuiescenceError !== undefined) {
+        throw input.runtimeQuiescenceError;
+      }
+      if (activeSubmittedRuntimePort === request.port) {
+        activeSubmittedRuntimePort = undefined;
+      }
+    },
     async syncSubmittedCodeWorkspace() {
+      if (recordRuntimeMutationOrder) events.push("sync-submitted-code");
+      if (activeSubmittedRuntimePort !== undefined) {
+        throw new Error("sync attempted while submitted runtime was active");
+      }
       if (input.submittedCodeSyncError !== undefined) {
         throw input.submittedCodeSyncError;
       }

@@ -5,15 +5,10 @@ import { describe, expect, it } from "vitest";
 import { PipelineCancellationError } from "../00-orchestration/job/pipeline-cancellation";
 import type { DemoScript } from "../04-script-generation/demo-script/demo-script.schema";
 import type { CaptureManifest } from "../06-footage-capture/capture-scenes";
-import type { FinalVideoEmailNotifier } from "../final-output/final-video-email-notifier.interface";
 import {
   type CompositedVideoManifest,
   compositeVideoFromScript,
 } from "./composite-video";
-import type {
-  DemoRequestFinalVideoStore,
-  FinalVideoStorage,
-} from "./final-video-storage.interface";
 import type {
   CompositingRenderPlan,
   VideoRenderer,
@@ -144,7 +139,7 @@ describe("compositeVideoFromScript", () => {
       durationInFrames: 121,
       fps: 30,
       height: 720,
-      outputPath: join(outputRoot, "composite-001", "final-video.mp4"),
+      outputPath: join(outputRoot, "composite-001", "draft-composite.mp4"),
       scriptId: "script-001",
       title: "Generated Demo",
       width: 1280,
@@ -190,275 +185,16 @@ describe("compositeVideoFromScript", () => {
         "composite-001",
         "composite-manifest.json",
       ),
-      outputVideoPath: join(outputRoot, "composite-001", "final-video.mp4"),
+      outputVideoPath: join(outputRoot, "composite-001", "draft-composite.mp4"),
       runDirectory: join(outputRoot, "composite-001"),
       runId: "composite-001",
       scriptId: "script-001",
       title: "Generated Demo",
-      viewUrl: expect.stringContaining("final-video.mp4"),
+      viewUrl: expect.stringContaining("draft-composite.mp4"),
     } satisfies Partial<CompositedVideoManifest>);
     expect(JSON.parse(await readFile(manifest.manifestPath, "utf8"))).toEqual(
       manifest,
     );
-  });
-
-  it("uploads the final video and links it to the Demo Request without retaining local output", async () => {
-    const workspace = await mkdtemp(
-      join(tmpdir(), "makeademo-composite-test-"),
-    );
-    const outputRoot = join(workspace, "renders");
-    const scriptPath = join(workspace, "demo-script.json");
-    const captureManifestPath = join(workspace, "capture-manifest.json");
-    const capturedScenePath = join(workspace, "scene-feed.webm");
-    const storedVideos: Array<{
-      body: string;
-      demoRequestId: string;
-      key: string;
-      scriptId: string;
-    }> = [];
-    const linkedVideos: Array<{
-      demoRequestId: string;
-      generatedDemoUrl: string;
-    }> = [];
-
-    await writeFile(capturedScenePath, "captured scene");
-    await writeFile(scriptPath, JSON.stringify(makeDemoScript()));
-    await writeFile(
-      captureManifestPath,
-      JSON.stringify(
-        makeCaptureManifest({
-          manifestPath: captureManifestPath,
-          runDirectory: workspace,
-          scenes: [
-            {
-              durationSeconds: 2,
-              sceneId: "scene-feed",
-              sectionId: "demo-script",
-              videoPath: capturedScenePath,
-            },
-          ],
-        }),
-      ),
-    );
-
-    const storage: FinalVideoStorage = {
-      async storeFinalVideo(input) {
-        const key = `demo-videos/${input.demoRequestId}/${input.runId}/final-video.mp4`;
-        storedVideos.push({
-          body: new TextDecoder().decode(input.body),
-          demoRequestId: input.demoRequestId,
-          key,
-          scriptId: input.scriptId,
-        });
-        return { key, r2Url: `r2://owlet/${key}` };
-      },
-    };
-    const demoRequests: DemoRequestFinalVideoStore = {
-      async linkFinalVideo(input) {
-        linkedVideos.push(input);
-        return {
-          finalVideoEmailSentAt: null,
-          makerEmail: "maker@example.com",
-        };
-      },
-      async markFinalVideoEmailSent() {
-        throw new Error("markFinalVideoEmailSent should not be called");
-      },
-    };
-
-    const manifest = await compositeVideoFromScript({
-      captureManifestPath,
-      demoRequestId: "demo-request-001",
-      demoRequestStore: demoRequests,
-      finalVideoStorage: storage,
-      outputRoot,
-      renderer: {
-        async renderVideo(input) {
-          await writeFile(input.outputPath, "rendered mp4");
-        },
-      },
-      runId: "composite-001",
-      scriptPath,
-    });
-
-    expect(storedVideos).toEqual([
-      {
-        body: "rendered mp4",
-        demoRequestId: "demo-request-001",
-        key: "demo-videos/demo-request-001/composite-001/final-video.mp4",
-        scriptId: "script-001",
-      },
-    ]);
-    expect(linkedVideos).toEqual([
-      {
-        demoRequestId: "demo-request-001",
-        generatedDemoUrl:
-          "r2://owlet/demo-videos/demo-request-001/composite-001/final-video.mp4",
-      },
-    ]);
-    expect(manifest.outputVideoPath).toBeUndefined();
-    await expect(
-      stat(join(outputRoot, "composite-001", "final-video.mp4")),
-    ).rejects.toThrow();
-  });
-
-  it("can retain the local Draft Composite after storing final video output", async () => {
-    const workspace = await mkdtemp(
-      join(tmpdir(), "makeademo-composite-test-"),
-    );
-    const outputRoot = join(workspace, "renders");
-    const scriptPath = join(workspace, "demo-script.json");
-    const captureManifestPath = join(workspace, "capture-manifest.json");
-    const capturedScenePath = join(workspace, "scene-feed.webm");
-
-    await writeFile(capturedScenePath, "captured scene");
-    await writeFile(scriptPath, JSON.stringify(makeDemoScript()));
-    await writeFile(
-      captureManifestPath,
-      JSON.stringify(
-        makeCaptureManifest({
-          manifestPath: captureManifestPath,
-          runDirectory: workspace,
-          scenes: [
-            {
-              durationSeconds: 2,
-              sceneId: "scene-feed",
-              sectionId: "demo-script",
-              videoPath: capturedScenePath,
-            },
-          ],
-        }),
-      ),
-    );
-
-    const manifest = await compositeVideoFromScript({
-      captureManifestPath,
-      demoRequestId: "demo-request-001",
-      demoRequestStore: {
-        async linkFinalVideo() {
-          return {
-            finalVideoEmailSentAt: null,
-            makerEmail: "maker@example.com",
-          };
-        },
-        async markFinalVideoEmailSent() {},
-      },
-      finalVideoStorage: {
-        async storeFinalVideo() {
-          return {
-            key: "final-video.mp4",
-            r2Url: "r2://owlet/final-video.mp4",
-          };
-        },
-      },
-      outputRoot,
-      renderer: {
-        async renderVideo(input) {
-          await writeFile(input.outputPath, "rendered mp4");
-        },
-      },
-      retainLocalOutput: true,
-      runId: "composite-001",
-      scriptPath,
-    });
-
-    expect(manifest.outputVideoPath).toBe(
-      join(outputRoot, "composite-001", "final-video.mp4"),
-    );
-    await expect(
-      stat(manifest.outputVideoPath as string),
-    ).resolves.toBeTruthy();
-  });
-
-  it("emails the maker a stable final video link after Compositing completes", async () => {
-    const workspace = await mkdtemp(
-      join(tmpdir(), "makeademo-composite-test-"),
-    );
-    const scriptPath = join(workspace, "demo-script.json");
-    const captureManifestPath = join(workspace, "capture-manifest.json");
-    const capturedScenePath = join(workspace, "scene-feed.webm");
-    const sentEmails: Array<{
-      demoRequestId: string;
-      title: string;
-      to: string;
-      videoUrl: string;
-    }> = [];
-    const markedEmails: Array<{ demoRequestId: string; sentAt: string }> = [];
-
-    await writeFile(capturedScenePath, "captured scene");
-    await writeFile(scriptPath, JSON.stringify(makeDemoScript()));
-    await writeFile(
-      captureManifestPath,
-      JSON.stringify(
-        makeCaptureManifest({
-          manifestPath: captureManifestPath,
-          runDirectory: workspace,
-          scenes: [
-            {
-              durationSeconds: 2,
-              sceneId: "scene-feed",
-              sectionId: "demo-script",
-              videoPath: capturedScenePath,
-            },
-          ],
-        }),
-      ),
-    );
-
-    const emailNotifier: FinalVideoEmailNotifier = {
-      async sendFinalVideoReadyEmail(input) {
-        sentEmails.push(input);
-      },
-    };
-    const demoRequests: DemoRequestFinalVideoStore = {
-      async linkFinalVideo() {
-        return {
-          finalVideoEmailSentAt: null,
-          makerEmail: "maker@example.com",
-        };
-      },
-      async markFinalVideoEmailSent(input) {
-        markedEmails.push(input);
-      },
-    };
-
-    await compositeVideoFromScript({
-      captureManifestPath,
-      demoRequestId: "demo-request-001",
-      demoRequestStore: demoRequests,
-      finalVideoEmailNotifier: emailNotifier,
-      finalVideoStorage: {
-        async storeFinalVideo() {
-          return {
-            key: "demo-videos/demo-request-001/composite-001/final-video.mp4",
-            r2Url:
-              "r2://owlet/demo-videos/demo-request-001/composite-001/final-video.mp4",
-          };
-        },
-      },
-      outputRoot: join(workspace, "renders"),
-      publicAppBaseUrl: "https://makeademo.example",
-      renderer: {
-        async renderVideo(input) {
-          await writeFile(input.outputPath, "rendered mp4");
-        },
-      },
-      runId: "composite-001",
-      scriptPath,
-    });
-
-    expect(sentEmails).toEqual([
-      {
-        demoRequestId: "demo-request-001",
-        title: "Generated Demo",
-        to: "maker@example.com",
-        videoUrl:
-          "https://makeademo.example/api/demo-requests/demo-request-001/video",
-      },
-    ]);
-    expect(markedEmails).toEqual([
-      { demoRequestId: "demo-request-001", sentAt: expect.any(String) },
-    ]);
   });
 
   it("rejects a Demo Script when captured footage is missing for a declared Scene", async () => {

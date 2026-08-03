@@ -106,6 +106,143 @@ function createRawPiSdkSession() {
 }
 
 describe("PiAgentSession", () => {
+  it("creates a read-only tool-free turn without coding, global, or Context7 tools", async () => {
+    const { factory, sessions } = createSessionFactory();
+    const execute = vi.fn(async () => ({
+      exitCode: 0,
+      stderr: "",
+      stdout: "",
+    }));
+    const runner = new PiAgentSession({
+      createSession: factory,
+      globalTools: [
+        {
+          description: "Search",
+          execute: vi.fn() as never,
+          label: "Search",
+          name: "web_search_exa",
+          parameters: {} as never,
+        },
+      ],
+      resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
+    });
+
+    await runner.run({
+      attempt: 1,
+      executionMode: "tool-free-transient",
+      hardDeadlineAt: Date.now() + 1_000,
+      hardTimeoutMs: 1_000,
+      inactivityTimeoutMs: 1_000,
+      profile,
+      stage: "repo-security",
+      taskPrompt: "review this repository",
+      tools: [
+        {
+          args: {},
+          description: "Stage mutation tool",
+          execute: vi.fn(async () => "mutated"),
+          name: "stage_mutation",
+        },
+      ],
+      workspace: { execute },
+    });
+
+    expect(factory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customTools: [],
+        executionMode: "tool-free-transient",
+      }),
+    );
+    expect(sessions[0]?.setActiveToolsByName).toHaveBeenCalledWith([]);
+    expect(sessions[0]?.reconfigureTools).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each(["successful", "failed"] as const)(
+    "disposes a %s transient tool-free turn exactly once",
+    async (outcome) => {
+      const base = createSessionFactory();
+      const createSession: PiSessionFactory = vi.fn(async (input) => {
+        const created = await base.factory(input);
+        created.session.prompt = vi.fn(async () => {
+          if (outcome === "successful") {
+            created.session.state.messages = [
+              {
+                content: [{ text: '{"verdict":"approved"}', type: "text" }],
+                role: "assistant",
+              },
+            ];
+          } else {
+            created.session.state.errorMessage = "provider unavailable";
+          }
+        });
+        return created;
+      });
+      const runner = new PiAgentSession({
+        createSession,
+        resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
+      });
+
+      const result = await runner.run({
+        attempt: 1,
+        executionMode: "tool-free-transient",
+        hardDeadlineAt: Date.now() + 1_000,
+        hardTimeoutMs: 1_000,
+        inactivityTimeoutMs: 1_000,
+        profile,
+        stage: "repo-security",
+        taskPrompt: "review",
+        workspace: workspaceStub(),
+      });
+
+      expect(result).toMatchObject(
+        outcome === "successful"
+          ? { exitCode: 0, structuredOutput: { verdict: "approved" } }
+          : { exitCode: 1, providerError: "provider unavailable" },
+      );
+      expect(result).not.toHaveProperty("session");
+      expect(base.sessions[0]?.dispose).toHaveBeenCalledTimes(1);
+      if (outcome === "successful") {
+        expect(
+          (runner as unknown as { retainedSessions: Set<unknown> })
+            .retainedSessions.size,
+        ).toBe(0);
+      }
+      await runner.dispose();
+      expect(base.sessions[0]?.dispose).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("disposes a cancelled transient tool-free turn exactly once", async () => {
+    const { factory, sessions } = createSessionFactory();
+    const runner = new PiAgentSession({
+      createSession: factory,
+      resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
+    });
+    const controller = new AbortController();
+    const reason = new Error("pipeline cancelled");
+    const resultPromise = runner.run({
+      attempt: 1,
+      executionMode: "tool-free-transient",
+      hardDeadlineAt: Date.now() + 1_000,
+      hardTimeoutMs: 1_000,
+      inactivityTimeoutMs: 1_000,
+      profile,
+      signal: controller.signal,
+      stage: "repo-security",
+      taskPrompt: "review",
+      workspace: workspaceStub(),
+    });
+    const assertion = expect(resultPromise).rejects.toBe(reason);
+    await vi.waitFor(() => expect(sessions[0]?.subscribe).toHaveBeenCalled());
+
+    controller.abort(reason);
+
+    await assertion;
+    expect(sessions[0]?.abort).toHaveBeenCalledTimes(1);
+    expect(sessions[0]?.dispose).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps one opaque handle while resuming and switching models", async () => {
     const { factory, sessions } = createSessionFactory();
     const runner = new PiAgentSession({
@@ -157,6 +294,7 @@ describe("PiAgentSession", () => {
           agentDir: string;
           cwd: string;
           customTools: readonly ToolDefinition[];
+          executionMode: "default" | "tool-free-transient";
           model: unknown;
           modelID: string;
           providerID: string;
@@ -173,6 +311,7 @@ describe("PiAgentSession", () => {
       agentDir: "/tmp/makeademo/pi-registry-test",
       cwd: "/workspace",
       customTools: [],
+      executionMode: "default",
       model: { id: "test-model" },
       modelID: "test-model",
       providerID: "test-provider",

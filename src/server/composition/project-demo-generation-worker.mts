@@ -1,6 +1,6 @@
 import { processNextProjectDemoGenerationJob } from "../pipeline/00-orchestration/queue/project-demo-generation-queue";
 import { createProjectDemoGenerationWorkerLogger } from "../pipeline/00-orchestration/queue/project-demo-generation-worker-logging";
-import { compositeVideoFromScript } from "../pipeline/07-compositing/composite-video";
+import { createFinalVideoPublisher } from "../pipeline/07-compositing/final-video-publisher";
 import { finalVideoEmailsEnabled } from "../pipeline/final-output/final-video-email-feature";
 import { createResendFinalVideoEmailNotifierFromEnv } from "../shared/integrations/email/resend-final-video-email-notifier";
 import { createR2UploadPresignerFromEnv } from "../shared/integrations/storage/r2-client";
@@ -56,23 +56,25 @@ do {
       });
       try {
         const pipelineResult = await productionPipeline.run({
+          commitSha: job.commitSha,
           demoBrief: job.demoBrief,
+          ...(job.githubInstallationId === undefined
+            ? {}
+            : { githubInstallationId: job.githubInstallationId }),
           normalizedSupportingDocuments: job.normalizedSupportingDocuments,
           repoUrl: job.repoUrl,
+          repoVisibility: job.repoVisibility,
           workspaceId: job.workspaceId,
           runOptions: {
-            async compositeVideo(input) {
-              return compositeVideoFromScript({
-                ...input,
-                demoRequestId: job.demoRequestId,
-                demoRequestStore,
-                ...(finalVideoEmailNotifier === undefined
-                  ? {}
-                  : { finalVideoEmailNotifier }),
-                finalVideoStorage,
-                ...(publicAppBaseUrl === undefined ? {} : { publicAppBaseUrl }),
-              });
-            },
+            finalVideoPublisher: createFinalVideoPublisher({
+              demoRequestId: job.demoRequestId,
+              demoRequestStore,
+              ...(finalVideoEmailNotifier === undefined
+                ? {}
+                : { finalVideoEmailNotifier }),
+              finalVideoStorage,
+              ...(publicAppBaseUrl === undefined ? {} : { publicAppBaseUrl }),
+            }),
             onProgress: (event) => workerLogger.pipelineProgress(event),
           },
         });

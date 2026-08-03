@@ -1,9 +1,14 @@
+import { isRepoSecurityPackageManifestPath } from "./repo-security-package-manifest";
+import type { RepoSecurityEvidence } from "./repository-loading/repo-security-evidence";
+
 type RepoSecurityFile = {
   path: string;
   text?: string;
 };
 
 export type RepoSecurityInput = {
+  /** Bounded static evidence available to the read-only Stage 02 reviewer. */
+  evidence: RepoSecurityEvidence;
   files: RepoSecurityFile[];
   repoStats: {
     fileCount: number;
@@ -11,10 +16,39 @@ export type RepoSecurityInput = {
   };
 };
 
+type RepoSecurityFindingCode =
+  | "auth-dependency"
+  | "large-repository"
+  | "lifecycle-postinstall"
+  | "lifecycle-remote-code-execution"
+  | "lifecycle-root-delete"
+  | "lifecycle-suspicious-command"
+  | "malformed-application-manifest"
+  | "missing-lockfile"
+  | "missing-supported-application-manifest"
+  | "nested-application-manifest"
+  | "non-object-application-manifest"
+  | "private-key-filename"
+  | "unreadable-application-manifest";
+
+/**
+ * Stable deterministic Repo Security Screen finding. Only
+ * `lifecycle-root-delete` may use `hard-rejection`; all ambiguous evidence is
+ * a warning for the read-only agent reviewer to decide.
+ */
+type RepoSecurityFinding = {
+  code: RepoSecurityFindingCode;
+  dependencyName?: string;
+  message: string;
+  path?: string;
+  scriptName?: string;
+  severity: "hard-rejection" | "warning";
+};
+
 export type RepoSecurityResult = {
-  rejections: string[];
+  rejections: RepoSecurityFinding[];
   status: "passed" | "rejected";
-  warnings: string[];
+  warnings: RepoSecurityFinding[];
 };
 
 const LARGE_REPO_FILE_COUNT = 20_000;
@@ -36,24 +70,60 @@ export function screenRepoSecurity(
     path: file.path.replace(/^\.\//, ""),
   }));
   const paths = new Set(normalizedFiles.map((file) => file.path));
-  const rejections: string[] = [];
-  const warnings: string[] = [];
+  const rejections: RepoSecurityFinding[] = [];
+  const warnings: RepoSecurityFinding[] = [];
+  const packageFiles = normalizedFiles.filter((file) =>
+    isRepoSecurityPackageManifestPath(file.path),
+  );
 
-  if (!paths.has("package.json")) {
-    rejections.push("package.json is required for JavaScript/TypeScript repos");
+  if (packageFiles.length === 0) {
+    warnings.push(
+      warning(
+        "missing-supported-application-manifest",
+        "repo has no supported JavaScript application manifest; Repo Preparation must locate a browser app before execution",
+      ),
+    );
+  } else if (!paths.has("package.json")) {
+    for (const packageFile of packageFiles) {
+      warnings.push(
+        warning(
+          "nested-application-manifest",
+          `repo uses a bounded nested JavaScript application manifest at ${packageFile.path}`,
+          { path: packageFile.path },
+        ),
+      );
+    }
   }
 
   for (const file of normalizedFiles) {
     if (isCommittedPrivateKey(file.path)) {
-      rejections.push(`repo contains committed secret file ${file.path}`);
+      warnings.push(
+        warning(
+          "private-key-filename",
+          `repo contains private-key filename ${file.path} and requires agent safety review`,
+          { path: file.path },
+        ),
+      );
     }
   }
 
-  const packageFile = normalizedFiles.find(
-    (file) => file.path === "package.json",
-  );
-  if (packageFile?.text) {
-    inspectPackageJson(packageFile.text, rejections, warnings);
+  for (const packageFile of packageFiles) {
+    if (packageFile.text === undefined) {
+      warnings.push(
+        warning(
+          "unreadable-application-manifest",
+          `package manifest ${packageFile.path} could not be inspected and requires agent safety review`,
+          { path: packageFile.path },
+        ),
+      );
+      continue;
+    }
+    inspectPackageJson(
+      packageFile.path,
+      packageFile.text,
+      rejections,
+      warnings,
+    );
   }
 
   if (
@@ -61,13 +131,22 @@ export function screenRepoSecurity(
     input.repoStats.sizeBytes > LARGE_REPO_SIZE_BYTES
   ) {
     warnings.push(
-      "repo size or file count may degrade agent exploration quality",
+      warning(
+        "large-repository",
+        "repo size or file count may degrade agent exploration quality",
+      ),
     );
   }
 
-  if (![...paths].some((path) => lockfiles.has(path))) {
+  if (
+    packageFiles.length > 0 &&
+    !packageFiles.some((file) => hasSiblingLockfile(file.path, paths))
+  ) {
     warnings.push(
-      "repo has no lockfile; dependency installation may be less deterministic",
+      warning(
+        "missing-lockfile",
+        "repo has no lockfile; dependency installation may be less deterministic",
+      ),
     );
   }
 
@@ -84,33 +163,47 @@ function isCommittedPrivateKey(path: string) {
 }
 
 function inspectPackageJson(
+  path: string,
   text: string,
-  rejections: string[],
-  warnings: string[],
+  rejections: RepoSecurityFinding[],
+  warnings: RepoSecurityFinding[],
 ) {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    rejections.push("package.json must be valid JSON");
+    warnings.push(
+      warning(
+        "malformed-application-manifest",
+        `package manifest ${path} is malformed and requires agent safety review`,
+        { path },
+      ),
+    );
     return;
   }
 
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    rejections.push("package.json must be an object");
+    warnings.push(
+      warning(
+        "non-object-application-manifest",
+        `package manifest ${path} is not an object and requires agent safety review`,
+        { path },
+      ),
+    );
     return;
   }
 
   const packageRecord = parsed as Record<string, unknown>;
-  inspectScripts(packageRecord.scripts, rejections, warnings);
-  inspectDependencies(packageRecord.dependencies, warnings);
-  inspectDependencies(packageRecord.devDependencies, warnings);
+  inspectScripts(path, packageRecord.scripts, rejections, warnings);
+  inspectDependencies(path, packageRecord.dependencies, warnings);
+  inspectDependencies(path, packageRecord.devDependencies, warnings);
 }
 
 function inspectScripts(
+  packagePath: string,
   scripts: unknown,
-  rejections: string[],
-  warnings: string[],
+  rejections: RepoSecurityFinding[],
+  warnings: RepoSecurityFinding[],
 ) {
   if (
     typeof scripts !== "object" ||
@@ -125,22 +218,59 @@ function inspectScripts(
       continue;
     }
 
-    if (
-      /rm\s+-rf\s+\//.test(command) ||
-      /mkfs|forkbomb|crypto.?miner/i.test(command)
-    ) {
-      rejections.push(`package script ${name} contains a destructive command`);
+    const normalizedCommand = command.trim().replace(/\s+/g, " ");
+    if (normalizedCommand === "rm -rf /") {
+      rejections.push({
+        code: "lifecycle-root-delete",
+        message: `package script ${name} contains a destructive command`,
+        path: packagePath,
+        scriptName: name,
+        severity: "hard-rejection",
+      });
+    } else if (/rm\s+-rf\s+\/|mkfs|forkbomb|crypto.?miner/i.test(command)) {
+      warnings.push(
+        warning(
+          "lifecycle-suspicious-command",
+          `package script ${packagePath}#${name} contains suspicious command text and requires agent safety review`,
+          { path: packagePath, scriptName: name },
+        ),
+      );
+    }
+
+    if (/(?:curl|wget)\b[^\n]*(?:\||&&)\s*(?:ba)?sh\b/i.test(command)) {
+      warnings.push(
+        warning(
+          "lifecycle-remote-code-execution",
+          `package script ${packagePath}#${name} downloads and executes remote code and requires agent safety review`,
+          { path: packagePath, scriptName: name },
+        ),
+      );
     }
 
     if (name === "postinstall") {
       warnings.push(
-        "package script postinstall may run setup code during dependency installation",
+        warning(
+          "lifecycle-postinstall",
+          `package script ${packagePath}#postinstall requires agent safety review`,
+          { path: packagePath, scriptName: name },
+        ),
       );
     }
   }
 }
 
-function inspectDependencies(dependencies: unknown, warnings: string[]) {
+function hasSiblingLockfile(packagePath: string, paths: Set<string>): boolean {
+  const directory = packagePath.slice(0, -"package.json".length);
+  return [...lockfiles].some((lockfile) =>
+    paths.has(`${directory}${lockfile}`),
+  );
+}
+
+function inspectDependencies(
+  packagePath: string,
+  dependencies: unknown,
+  warnings: RepoSecurityFinding[],
+) {
   if (
     typeof dependencies !== "object" ||
     dependencies === null ||
@@ -152,8 +282,23 @@ function inspectDependencies(dependencies: unknown, warnings: string[]) {
   for (const name of Object.keys(dependencies)) {
     if (/clerk|auth|oauth/i.test(name)) {
       warnings.push(
-        `auth package ${name} may require local demo bypass or mocks`,
+        warning(
+          "auth-dependency",
+          `auth package ${name} may require local demo bypass or mocks`,
+          { dependencyName: name, path: packagePath },
+        ),
       );
     }
   }
+}
+
+function warning(
+  code: Exclude<RepoSecurityFindingCode, "lifecycle-root-delete">,
+  message: string,
+  details: Pick<
+    RepoSecurityFinding,
+    "dependencyName" | "path" | "scriptName"
+  > = {},
+): RepoSecurityFinding {
+  return { code, message, severity: "warning", ...details };
 }

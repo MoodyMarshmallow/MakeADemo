@@ -1,10 +1,11 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import { createAgentSession } from "../../../test-support/create-agent-session";
+import { repoSecurityEvidenceFixture } from "../../../test-support/repo-security-evidence-fixture";
 import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
 import type { CaptureManifest } from "../../06-footage-capture/capture-scenes";
 import type { CompositedVideoManifest } from "../../07-compositing/composite-video";
@@ -204,6 +205,53 @@ describe("runDraftCompositeReviewLoop", () => {
         warnings: [],
       });
       expect(calls).toEqual(["capture", "composite"]);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("keeps the private Draft Composite and sampled evidence available through review", async () => {
+    const root = await mkdtemp(join(tmpdir(), "makeademo-review-"));
+    const draftPath = join(root, "composite-1.mp4");
+    const sampledFramePath = join(root, "sample-001.jpg");
+    try {
+      const input = loopInput(root, {
+        compositeVideo: async () => {
+          await writeFile(draftPath, "private draft");
+          return {
+            ...compositeManifest(root, "composite-1"),
+            outputVideoPath: draftPath,
+            viewUrl: `file://${draftPath}`,
+          };
+        },
+        reviewDraftComposite: async ({ derivedEvidence }) => {
+          expect(derivedEvidence).toMatchObject({
+            rawDraftCompositePath: draftPath,
+            sampledFramePaths: [sampledFramePath],
+          });
+          await expect(stat(draftPath)).resolves.toBeTruthy();
+          return { decision: "accept" };
+        },
+      });
+      input.options.inspectDraftCompositeEvidence = async ({
+        draftComposite,
+      }) => {
+        expect(draftComposite.outputVideoPath).toBe(draftPath);
+        await expect(stat(draftPath)).resolves.toBeTruthy();
+        return {
+          audioPresent: true,
+          contactSheetPaths: [],
+          ffmpegFindings: [],
+          sampledFramePaths: [sampledFramePath],
+          staticProbeFailedSceneIds: [],
+          staticSceneIds: [],
+        };
+      };
+
+      await expect(runDraftCompositeReviewLoop(input)).resolves.toMatchObject({
+        finalVideo: { outputVideoPath: draftPath },
+        reviewSummary: { status: "accepted" },
+      });
     } finally {
       await rm(root, { force: true, recursive: true });
     }
@@ -412,9 +460,11 @@ function loopInput(
     dependencies:
       overrides.dependencies ?? loopDependencies(() => succeededPreparedDemo()),
     input: {
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
       demoBrief: { keyProductFeatures: ["article feed"] },
       normalizedSupportingDocuments: [],
       repoSecurity: {
+        evidence: repoSecurityEvidenceFixture(),
         files: [{ path: "package.json", text: "{}" }],
         repoStats: { fileCount: 1, sizeBytes: 1 },
       },
@@ -446,6 +496,12 @@ function loopDependencies(
         status: "succeeded",
       };
     },
+    reviewRepoSecurity: async () => ({
+      concerns: [],
+      rationale: "Test fixture approval.",
+      status: "succeeded",
+      verdict: "approved",
+    }),
     screenRepoSecurity: () => ({
       rejections: [],
       status: "passed",

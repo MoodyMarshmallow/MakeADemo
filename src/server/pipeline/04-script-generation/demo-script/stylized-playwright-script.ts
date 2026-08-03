@@ -8,24 +8,33 @@ export type PrepareStylizedPlaywrightScriptInput = {
   headed: boolean;
   mode?: "recording" | "validation";
   pauseAfterSceneMs: number;
+  playwrightModuleSpecifier?: string;
   runtimeNetworkPolicy?: RuntimeNetworkPolicy;
   videoDirectory?: string;
 };
 
-const humanTypingDelayMs = 100;
 const validationActionTimeoutMs = 10_000;
 
 export function prepareStylizedPlaywrightScript(
   script: string,
   input: PrepareStylizedPlaywrightScriptInput,
 ) {
-  const demoScript = removeCaptureSdkImportsFromBody(script);
+  const playwrightModuleSpecifier =
+    input.playwrightModuleSpecifier ?? "@playwright/test";
+  const demoScript = replacePlaywrightModuleSpecifier(
+    removeCaptureSdkImportsFromBody(script),
+    playwrightModuleSpecifier,
+  );
   if ((input.mode ?? "recording") === "validation") {
     return prepareValidationPlaywrightScript(demoScript, input);
   }
 
   if (!demoScript.includes("chromium.launch")) {
-    return wrapActionBody(stylizeBrowserActions(demoScript), input);
+    return wrapActionBody(
+      stylizeBrowserActions(demoScript),
+      input,
+      playwrightModuleSpecifier,
+    );
   }
 
   let prepared = demoScript.replaceAll("http://localhost:3000", input.baseUrl);
@@ -57,6 +66,7 @@ export function prepareStylizedPlaywrightScript(
 function wrapActionBody(
   script: string,
   input: PrepareStylizedPlaywrightScriptInput,
+  playwrightModuleSpecifier: string,
 ) {
   const launchOptions = input.headed ? "{ headless: false }" : "";
   const pauseLine =
@@ -64,10 +74,10 @@ function wrapActionBody(
       ? `await page.waitForTimeout(${input.pauseAfterSceneMs});`
       : "";
 
-  return `import { chromium, expect } from "@playwright/test";
-import { setup, scene } from "./makeademo-capture-sdk.js";
+  return `import { chromium, expect } from ${JSON.stringify(playwrightModuleSpecifier)};
+import { setup, scene } from "./makeademo-capture-sdk.mjs";
 
-${recordingHelperSource()}
+${interactionHelperSource()}
 
 const baseUrl = ${JSON.stringify(input.baseUrl)};
 const browser = await chromium.launch(${launchOptions});
@@ -106,9 +116,12 @@ function prepareValidationPlaywrightScript(
   }
 
   const launchOptions = input.headed ? "{ headless: false }" : "";
+  const validationScript = stylizeBrowserActions(script);
 
-  return `import { chromium, expect } from "@playwright/test";
-import { setup, scene } from "./makeademo-capture-sdk.js";
+  return `import { chromium, expect } from ${JSON.stringify(input.playwrightModuleSpecifier ?? "@playwright/test")};
+import { setup, scene } from "./makeademo-capture-sdk.mjs";
+
+${interactionHelperSource("validation")}
 
 const baseUrl = ${JSON.stringify(input.baseUrl)};
 const browser = await chromium.launch(${launchOptions});
@@ -132,7 +145,7 @@ const makeADemoFailureScreenshotPath = new URL(
 try {
   // Generated protocol: parent validation parses these stdout/stderr markers; keep non-Pino.
   console.log("[makeademo:validation] script started", JSON.stringify({ baseUrl }));
-${indentScriptBody(script)}
+${indentScriptBody(validationScript)}
   console.log("[makeademo:validation] script succeeded", JSON.stringify({ title: await page.title(), url: page.url() }));
 } catch (error) {
   let screenshotPath;
@@ -219,6 +232,16 @@ function removeCaptureSdkImportsFromBody(script: string) {
     .join("\n");
 }
 
+function replacePlaywrightModuleSpecifier(
+  script: string,
+  playwrightModuleSpecifier: string,
+) {
+  return script.replaceAll(
+    /from\s+(["'])@playwright\/test\1/g,
+    `from ${JSON.stringify(playwrightModuleSpecifier)}`,
+  );
+}
+
 function injectRecordingHelpers(script: string) {
   if (script.includes("async function animatedClick(page, locator)")) {
     return script;
@@ -226,12 +249,12 @@ function injectRecordingHelpers(script: string) {
 
   const importMatch = script.match(/^import .*?;\n+/m);
   if (!importMatch?.[0]) {
-    return `${recordingHelperSource()}\n${script}`;
+    return `${interactionHelperSource()}\n${script}`;
   }
 
   return script.replace(
     importMatch[0],
-    `${importMatch[0]}${recordingHelperSource()}\n`,
+    `${importMatch[0]}${interactionHelperSource()}\n`,
   );
 }
 
@@ -275,8 +298,19 @@ function stylizeBrowserActionLine(line: string) {
   return line;
 }
 
-function recordingHelperSource() {
-  return `const humanTypingDelayMs = ${humanTypingDelayMs};
+function interactionHelperSource(
+  timingProfile: "recording" | "validation" = "recording",
+) {
+  const validationTiming = timingProfile === "validation";
+
+  return `const humanTypingDelayMs = ${validationTiming ? 0 : 100};
+const pointerAnimationDurationMs = ${validationTiming ? 0 : 520};
+const pointerMoveSteps = ${validationTiming ? 1 : 18};
+const pointerPulseDownMs = ${validationTiming ? 0 : 90};
+const pointerPulseUpMs = ${validationTiming ? 0 : 120};
+const hoverPauseMs = ${validationTiming ? 0 : 450};
+const scrollAnimationDurationMs = ${validationTiming ? 0 : 760};
+const presentationCuesEnabled = ${validationTiming ? "false" : "true"};
 
 async function animatedClick(page, locator) {
   const target = locator.first();
@@ -313,8 +347,10 @@ async function animatedHover(page, locator) {
   };
 
   await showRecordingPointer(page, targetPoint);
-  await page.mouse.move(targetPoint.x, targetPoint.y, { steps: 18 });
-  await page.waitForTimeout(450);
+  await page.mouse.move(targetPoint.x, targetPoint.y, { steps: pointerMoveSteps });
+  if (hoverPauseMs > 0) {
+    await page.waitForTimeout(hoverPauseMs);
+  }
 }
 
 async function humanType(page, locator, text) {
@@ -334,15 +370,20 @@ async function animatedScrollTo(page, locator, position) {
       x: box.x + box.width - 18,
       y: box.y + box.height / 2,
     });
-    await showScrollCue(page, box, position);
+    if (presentationCuesEnabled) {
+      await showScrollCue(page, box, position);
+    }
   }
 
   try {
-    await target.evaluate(async (element, position) => {
+    await target.evaluate(async (element, { durationMs, position }) => {
       const start = element.scrollTop;
       const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
       const end = position === "bottom" ? maxScrollTop : 0;
-      const durationMs = 760;
+      if (durationMs === 0) {
+        element.scrollTop = end;
+        return;
+      }
       const startedAt = performance.now();
 
       await new Promise((resolve) => {
@@ -362,9 +403,9 @@ async function animatedScrollTo(page, locator, position) {
 
         requestAnimationFrame(animate);
       });
-    }, position);
+    }, { durationMs: scrollAnimationDurationMs, position });
   } finally {
-    if (box) {
+    if (box && presentationCuesEnabled) {
       await hideScrollCue(page);
     }
   }
@@ -438,7 +479,7 @@ async function hideScrollCue(page) {
 }
 
 async function showRecordingPointer(page, targetPoint) {
-  await page.evaluate(async ({ targetPoint }) => {
+  await page.evaluate(async ({ durationMs, targetPoint }) => {
     const pointerId = "makeademo-recording-pointer";
     const existingPointer = document.getElementById(pointerId);
     const pointer = existingPointer ?? document.createElement("div");
@@ -464,7 +505,12 @@ async function showRecordingPointer(page, targetPoint) {
     window[stateKey] = pointerState;
 
     const start = { x: pointerState.x, y: pointerState.y };
-    const durationMs = 520;
+    if (durationMs === 0) {
+      pointer.style.transform = \`translate(\${targetPoint.x}px, \${targetPoint.y}px)\`;
+      pointerState.x = targetPoint.x;
+      pointerState.y = targetPoint.y;
+      return;
+    }
     const startedAt = performance.now();
 
     await new Promise((resolve) => {
@@ -487,23 +533,23 @@ async function showRecordingPointer(page, targetPoint) {
 
       requestAnimationFrame(animate);
     });
-  }, { targetPoint });
+  }, { durationMs: pointerAnimationDurationMs, targetPoint });
 }
 
 async function pulseRecordingPointer(page) {
-  await page.evaluate(async () => {
+  await page.evaluate(async ({ downMs, upMs }) => {
     const pointer = document.getElementById("makeademo-recording-pointer");
-    if (!pointer) {
+    if (!pointer || (downMs === 0 && upMs === 0)) {
       return;
     }
 
     pointer.style.transition = "transform 80ms ease, opacity 80ms ease";
     pointer.style.opacity = "0.75";
-    await new Promise((resolve) => setTimeout(resolve, 90));
+    await new Promise((resolve) => setTimeout(resolve, downMs));
     pointer.style.opacity = "1";
-    await new Promise((resolve) => setTimeout(resolve, 120));
+    await new Promise((resolve) => setTimeout(resolve, upMs));
     pointer.style.transition = "";
-  });
+  }, { downMs: pointerPulseDownMs, upMs: pointerPulseUpMs });
 }`;
 }
 

@@ -6,7 +6,30 @@ import {
   createGitHubAuthorizationUrl,
   createGitHubInstallUrl,
   listGitHubInstallationRepositories,
+  resolveGitHubRepositoryRevision,
 } from "./github-app";
+
+describe("resolveGitHubRepositoryRevision", () => {
+  it("resolves one full immutable revision for Project Intake", async () => {
+    const commitSha = "c".repeat(40);
+    const requests: string[] = [];
+
+    await expect(
+      resolveGitHubRepositoryRevision(
+        { repoUrl: "https://github.com/example/app" },
+        {
+          async fetchJson(url) {
+            requests.push(url);
+            return { sha: commitSha };
+          },
+        },
+      ),
+    ).resolves.toBe(commitSha);
+    expect(requests).toEqual([
+      "https://api.github.com/repos/example/app/commits/HEAD",
+    ]);
+  });
+});
 
 describe("GitHub App integration", () => {
   afterEach(() => {

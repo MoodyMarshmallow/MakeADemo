@@ -8,6 +8,7 @@ export type ProductionAgentProfiles = {
   capturePathRepair: AgentSessionProfile;
   draftCompositeReview: AgentSessionProfile;
   repoPreparation: AgentSessionProfile;
+  repoSecurityReview: AgentSessionProfile;
   scriptGeneration: AgentSessionProfile;
 };
 
@@ -34,6 +35,12 @@ export function createProductionAgentProfiles(input: {
     },
     repoPreparation: {
       label: "Repo Preparation",
+      modelID: input.modelID,
+      providerID: input.providerID,
+      thinkingLevel: defaultAgentModel.reasoningEffort,
+    },
+    repoSecurityReview: {
+      label: "Repo Security review agent",
       modelID: input.modelID,
       providerID: input.providerID,
       thinkingLevel: defaultAgentModel.reasoningEffort,

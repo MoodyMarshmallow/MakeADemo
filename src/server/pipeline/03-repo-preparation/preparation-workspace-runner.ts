@@ -3,6 +3,11 @@ import type { SubmittedCodeToolchainPlan } from "./submitted-code-toolchain.sche
 
 export type PreparationWorkspaceHandle = {
   /**
+   * Permanently deletes an unapproved workspace without archiving submitted
+   * contents. Security rejection paths must prefer this operation to release.
+   */
+  discard?(): Promise<void>;
+  /**
    * Releases a usable Repo Preparation workspace exactly once. Implementations
    * own provider-specific cleanup and should make this operation idempotent;
    * callers must not depend on a particular stop, archive, or delete policy.

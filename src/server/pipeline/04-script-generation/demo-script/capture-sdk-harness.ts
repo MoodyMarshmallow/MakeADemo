@@ -12,7 +12,7 @@ export async function writeGeneratedCaptureSdkHarness(
   options: { runtimeNetworkPolicy?: RuntimeNetworkPolicy } = {},
 ): Promise<void> {
   await Promise.all([
-    writeFile(join(directory, "makeademo-capture-sdk.js"), runtimeSource()),
+    writeFile(join(directory, "makeademo-capture-sdk.mjs"), runtimeSource()),
     writeFile(
       join(directory, "makeademo-capture-sdk.d.ts"),
       declarationSource(),

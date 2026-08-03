@@ -50,7 +50,7 @@ describe("DefaultCapturePathSceneValidator", () => {
       runDirectory: expect.stringContaining(
         "/workspace/.makeademo/capture-path-validation-runs/",
       ),
-      scriptPath: expect.stringContaining("scene_workspace.ts"),
+      scriptPath: expect.stringContaining("scene_workspace.mjs"),
       status: "succeeded",
       stderrPath: expect.stringContaining("scene_workspace.stderr.log"),
       stdoutPath: expect.stringContaining("scene_workspace.stdout.log"),
@@ -72,6 +72,7 @@ describe("DefaultCapturePathSceneValidator", () => {
     );
 
     expect(result).toMatchObject({
+      failureKind: "validator-dependency-failed",
       failureReason:
         "MakeADemo validator dependency failure: Playwright is not available inside the submitted-code sandbox.",
       status: "failed",
@@ -177,7 +178,7 @@ describe("DefaultCapturePathSceneValidator", () => {
       runDirectory: expect.stringContaining(
         "/workspace/.makeademo/capture-path-validation-runs/",
       ),
-      scriptPath: expect.stringContaining("scene_timeout.ts"),
+      scriptPath: expect.stringContaining("scene_timeout.mjs"),
       status: "failed",
       stderrPath: expect.stringContaining("scene_timeout.stderr.log"),
       stdoutPath: expect.stringContaining("scene_timeout.stdout.log"),
@@ -233,9 +234,10 @@ function preparedWorkspaceReturning(
         throw new Error("outer workspace execution must not validate scenes");
       },
       async executeSubmittedCode(command) {
-        return command.includes(" bun ")
-          ? runResult
-          : { exitCode: 0, stderr: "", stdout: "" };
+        return { exitCode: 0, stderr: "", stdout: "" };
+      },
+      async executeMakeADemoCapture() {
+        return runResult;
       },
       async getPreviewUrl() {
         return "https://preview.example.test/";

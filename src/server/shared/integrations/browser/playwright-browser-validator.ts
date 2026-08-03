@@ -30,7 +30,7 @@ type BrowserValidationPage = {
     pattern: string,
     handler: (route: BrowserValidationRoute) => Promise<void>,
   ): Promise<void>;
-  textContent(selector: string): Promise<string | null>;
+  innerText(selector: string): Promise<string>;
   requestedUrls?(): Promise<string[]>;
 };
 
@@ -246,7 +246,7 @@ export class PlaywrightBrowserValidator implements BrowserValidator {
     if (blockedRequests.length > 0) {
       return formatBlockedNetworkResult(blockedRequests);
     }
-    const bodyText = (await page.textContent("body")) ?? "";
+    const bodyText = await page.innerText("body");
     const screenshotArtifactId = await page.screenshot();
     const interactable =
       bodyText.trim().length > 0 && !looksLikeRuntimeError(bodyText);
@@ -331,9 +331,17 @@ function createSubmittedCodeBrowserValidationCommand(
   ].join("\n");
 }
 
+const fatalRenderedPagePatternSource = [
+  "^\\s*Unhandled Runtime Error(?:\\r?\\n|$)",
+  "^\\s*Vite Error(?:\\r?\\n|$)",
+  "^\\s*Application error:\\s*(?:a client-side exception has occurred|the server encountered)",
+  "^(?:500\\s*\\r?\\n\\s*)?Internal Server Error\\s*\\r?\\n\\s*(?:Error|500)\\b",
+].join("|");
+
 const submittedCodeBrowserValidationScript = String.raw`
 const targetUrl = process.argv[2];
 const runtimeNetworkPolicy = process.argv[3];
+const fatalRenderedPagePattern = new RegExp(${JSON.stringify(fatalRenderedPagePatternSource)}, "i");
 const localHost = new URL(targetUrl).hostname;
 const blockedRequests = [];
 let browser;
@@ -406,7 +414,7 @@ async function main() {
     }));
     process.exit(0);
   }
-  const bodyText = (await page.textContent("body")) ?? "";
+  const bodyText = await page.innerText("body");
   let screenshotPath = "/workspace/.makeademo/validation-screenshot.png";
   try {
     require("node:fs").mkdirSync("/workspace/.makeademo", { recursive: true });
@@ -415,7 +423,7 @@ async function main() {
     require("node:fs").mkdirSync(".makeademo", { recursive: true });
   }
   const screenshot = await page.screenshot({ path: screenshotPath, type: "png" });
-  const interactable = bodyText.trim().length > 0 && !/error|exception|stack trace|not found/i.test(bodyText);
+  const interactable = bodyText.trim().length > 0 && !fatalRenderedPagePattern.test(bodyText);
   console.log(JSON.stringify({
     interactable,
     logs: ["Loaded " + targetUrl, "Captured screenshot proof.", ...consoleErrors, ...pageErrors, bodyText.slice(0, 2048)],
@@ -553,8 +561,8 @@ async function createPlaywrightPage(): Promise<BrowserValidationPage> {
         });
       });
     },
-    async textContent(selector) {
-      return page.textContent(selector);
+    async innerText(selector) {
+      return page.innerText(selector);
     },
   };
 }
@@ -637,7 +645,5 @@ function isAllowedRuntimeHost(host: string, localHost: string): boolean {
 }
 
 function looksLikeRuntimeError(text: string): boolean {
-  return /Unhandled Runtime Error|Application error|Internal Server Error|Vite Error/i.test(
-    text,
-  );
+  return new RegExp(fatalRenderedPagePatternSource, "i").test(text);
 }

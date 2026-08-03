@@ -20,6 +20,7 @@ import {
   createPrettyPipelineLogSink,
 } from "../shared/logging/pipeline-event-logger";
 import { createAgentOutputRouter } from "./agent-output";
+import { createBenchmarkControlOutput } from "./benchmark-control-output";
 import {
   finalizeFullPipelineCli,
   runFullPipelineCliOperation,
@@ -36,6 +37,10 @@ const { outputRoot, pipelineDeadlineAt, preCaptureArgs } = readFullPipelineArgs(
   process.argv.slice(2),
 );
 const { pipeline: options, agentModel } = await readOptions(preCaptureArgs);
+if (options.commitSha === undefined) {
+  throw new Error("--commit is required to pin the submitted source revision");
+}
+const commitSha = options.commitSha;
 const daytonaSnapshot = readOptionalEnv("MAKEADEMO_DAYTONA_SNAPSHOT");
 const daytonaSubmittedCodeSnapshot = readOptionalEnv(
   "MAKEADEMO_DAYTONA_SUBMITTED_CODE_SNAPSHOT",
@@ -85,16 +90,25 @@ const agentOutputRouter = createAgentOutputRouter({
   writeDiagnostic: (chunk) => process.stderr.write(chunk),
   writeStandard: (text) => process.stdout.write(text),
 });
+const benchmarkControlOutput = createBenchmarkControlOutput({
+  ...(process.env.MAKEADEMO_BENCHMARK_CONTROL_FD === "3" ? { fd: 3 } : {}),
+});
 const productionPipeline = createProductionPipeline({
   agentModel,
   logger: cliLogger.child({ component: "agent-harness" }),
   onRepoPreparationDiagnostic: agentOutputRouter.repoPreparation.onDiagnostic,
-  onRepoPreparationEvent: agentOutputRouter.repoPreparation.onEvent,
+  onRepoPreparationEvent: (event) => {
+    agentOutputRouter.repoPreparation.onEvent(event);
+    benchmarkControlOutput.onAgentEvent(event);
+  },
   onRepoPreparationStandard: agentOutputRouter.repoPreparation.onStandard,
   repoSecurityLogger: cliLogger.child({ component: "repo-security-screen" }),
   sandboxLogSinks: [cliLogSink, localSandboxLogSink],
   onAgentDiagnostic: agentOutputRouter.agentTasks.onDiagnostic,
-  onAgentEvent: agentOutputRouter.agentTasks.onEvent,
+  onAgentEvent: (event) => {
+    agentOutputRouter.agentTasks.onEvent(event);
+    benchmarkControlOutput.onAgentEvent(event);
+  },
   onAgentStandard: agentOutputRouter.agentTasks.onStandard,
   sandbox,
 });
@@ -193,9 +207,7 @@ function executeFullPipeline(input: {
   normalizedSupportingDocuments: NormalizedSupportingDocument[];
 }) {
   return productionPipeline.run({
-    ...(options.commitSha === undefined
-      ? {}
-      : { commitSha: options.commitSha }),
+    commitSha,
     demoBrief: readDemoBrief({ keyProductFeatures: options.features }),
     normalizedSupportingDocuments: input.normalizedSupportingDocuments,
     repoUrl: options.repoUrl,
@@ -209,6 +221,7 @@ function executeFullPipeline(input: {
       ...(pipelineDeadlineAt === undefined
         ? {}
         : { deadlineAt: pipelineDeadlineAt }),
+      onProgress: benchmarkControlOutput.onPipelineProgress,
       signal: cancellationController.signal,
       scriptGenerationAuditLogPath:
         agentOutputRouter.scriptGenerationAuditLogPath,

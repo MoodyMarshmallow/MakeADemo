@@ -293,7 +293,7 @@ export function resolveSubmittedCodeToolchain(
   if (manager === undefined) {
     throw new Error("Submitted toolchain package manager is missing.");
   }
-  const install = immutableInstallCommand(manager);
+  const install = readSubmittedPackageManagerPolicy(manager).install;
 
   return {
     catalogRevision,
@@ -866,6 +866,33 @@ function immutableInstallCommand(
         : ["install", "--immutable"],
     executable: "yarn",
   };
+}
+
+/**
+ * Returns the one backend-owned execution policy for a resolved package
+ * manager. Consumers must reject metadata whose version or generation does not
+ * match this policy rather than inventing adapter-specific compatibility.
+ */
+export function readSubmittedPackageManagerPolicy(
+  manager: NonNullable<SubmittedCodeToolchainPlan["packageManager"]>,
+) {
+  if (
+    !/^\d+\.\d+\.\d+$/.test(manager.version) ||
+    !isCompatiblePackageManagerVersion(manager.name, manager.version)
+  ) {
+    throw new Error(
+      `Unsupported package-manager compatibility generation: ${manager.name}@${manager.version}`,
+    );
+  }
+  if (
+    manager.generation !==
+    packageManagerGeneration(manager.name, manager.version)
+  ) {
+    throw new Error(
+      `Package-manager generation does not match ${manager.name}@${manager.version}.`,
+    );
+  }
+  return { install: immutableInstallCommand(manager) };
 }
 
 function collectManagerDeclarations(packageJson: PackageJson): Array<{

@@ -1,5 +1,9 @@
 import type { AgentSession } from "../../../agent-harness/agent-session";
 import type {
+  RepoSecurityAgentReviewInput,
+  RepoSecurityAgentReviewer,
+} from "../../02-repo-security-screen/agent-review/repo-security-agent-reviewer.interface";
+import type {
   RepoSecurityInput,
   RepoSecurityResult,
 } from "../../02-repo-security-screen/repo-security-screen";
@@ -14,6 +18,7 @@ import type {
   CapturePathValidationInput,
   CapturePathValidationResult,
 } from "../../05-capture-path-validation/capture-path-validator.interface";
+import { isPipelineInfrastructureFailureKind } from "../../pipeline-infrastructure-failure";
 import {
   isPipelineCancellationError,
   runSettledPipelineOperation,
@@ -33,6 +38,7 @@ export type PipelineOrchestratorDependencies = {
   generateDemoScript(input: ScriptGenerationInput): Promise<DemoScript>;
   prepareRepo(input: RepoPreparationInput): Promise<RepoPreparationResult>;
   repairCapturePathFailure?: CapturePathRepairer["repairCapturePathFailure"];
+  reviewRepoSecurity: RepoSecurityAgentReviewer["review"];
   screenRepoSecurity(input: RepoSecurityInput): RepoSecurityResult;
   validateCapturePath(
     input: CapturePathValidationInput,
@@ -138,7 +144,17 @@ export async function runPipelineJob(
     throw error;
   }
 
+  const securityReviewInput: RepoSecurityAgentReviewInput = {
+    ...(options.deadlineAt === undefined
+      ? {}
+      : { deadlineAt: options.deadlineAt }),
+    evidence: input.repoSecurity.evidence,
+    scan: security,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  };
+
   if (security.status === "rejected") {
+    await discardRejectedWorkspace(input.preparationWorkspace);
     reportStageFinished("repo-security-screen", "failed", {
       context,
       now,
@@ -152,6 +168,56 @@ export async function runPipelineJob(
       status: "failed",
     });
     return { security, status: "security-rejected" };
+  }
+
+  const review = await dependencies.reviewRepoSecurity(securityReviewInput);
+  throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
+  if (review.status === "failed") {
+    await discardRejectedWorkspace(input.preparationWorkspace);
+    reportStageFinished("repo-security-screen", "failed", {
+      context,
+      now,
+      observer,
+      onProgress: options.onProgress,
+      startedAt: securityStartedAt,
+      warningCount: security.warnings.length,
+    });
+    await emitProgress(options, {
+      stage: "repo-security-screen",
+      status: "failed",
+    });
+    return {
+      failureKind: review.failureKind,
+      failureReason:
+        "Repo Security agent review could not complete because agent infrastructure was unavailable.",
+      stage: "repo-security-screen",
+      status: "infrastructure-failed",
+    };
+  }
+  if (review.verdict === "rejected") {
+    await discardRejectedWorkspace(input.preparationWorkspace);
+    reportStageFinished("repo-security-screen", "failed", {
+      context,
+      now,
+      observer,
+      onProgress: options.onProgress,
+      startedAt: securityStartedAt,
+      warningCount: security.warnings.length,
+    });
+    await emitProgress(options, {
+      stage: "repo-security-screen",
+      status: "failed",
+    });
+    return {
+      review: {
+        concerns: review.concerns,
+        rationale: review.rationale,
+        status: "succeeded",
+        verdict: "rejected",
+      },
+      security,
+      status: "security-rejected",
+    };
   }
   reportStageFinished("repo-security-screen", "succeeded", {
     context,
@@ -181,9 +247,17 @@ export async function runPipelineJob(
   let preparation: RepoPreparationResult;
   try {
     preparation = await dependencies.prepareRepo({
-      ...(input.commitSha === undefined ? {} : { commitSha: input.commitSha }),
+      commitSha: input.commitSha,
+      ...(input.baselineSourceControlledPaths === undefined
+        ? {}
+        : {
+            baselineSourceControlledPaths: input.baselineSourceControlledPaths,
+          }),
       normalizedSupportingDocuments: input.normalizedSupportingDocuments,
       repoUrl: input.repoUrl,
+      ...(input.preparationWorkspace === undefined
+        ? {}
+        : { preparationWorkspace: input.preparationWorkspace }),
       structuredDemoIntent: input.demoBrief,
       workspaceId: input.workspaceId,
       ...(options.deadlineAt === undefined
@@ -221,14 +295,32 @@ export async function runPipelineJob(
       stage: "repo-preparation",
       status: "failed",
     });
+    if (
+      preparation.infrastructure !== undefined ||
+      isPipelineInfrastructureFailureKind(preparation.failureKind)
+    ) {
+      return {
+        failureKind: isPipelineInfrastructureFailureKind(
+          preparation.failureKind,
+        )
+          ? preparation.failureKind
+          : "sandbox-infrastructure-failed",
+        failureReason: preparation.fallbackPrompt,
+        ...(preparation.infrastructure === undefined
+          ? {}
+          : { infrastructure: preparation.infrastructure }),
+        ...(preparation.resourceDiagnostics === undefined
+          ? {}
+          : { resourceDiagnostics: preparation.resourceDiagnostics }),
+        stage: "repo-preparation",
+        status: "infrastructure-failed",
+      };
+    }
     return {
       fallbackPrompt: preparation.fallbackPrompt,
       ...(preparation.failureKind === undefined
         ? {}
         : { failureKind: preparation.failureKind }),
-      ...(preparation.infrastructure === undefined
-        ? {}
-        : { infrastructure: preparation.infrastructure }),
       status: "preparation-failed",
     };
   }
@@ -345,8 +437,20 @@ export async function runPipelineJob(
   });
   throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
   if (capturePathLifecycle.status === "failed") {
+    const failure = capturePathLifecycle.capturePathValidation;
+    if (isPipelineInfrastructureFailureKind(failure.failureKind)) {
+      return {
+        failureKind: failure.failureKind,
+        failureReason: failure.failureReason ?? "",
+        ...(failure.resourceDiagnostics === undefined
+          ? {}
+          : { resourceDiagnostics: failure.resourceDiagnostics }),
+        stage: "capture-path-validation",
+        status: "infrastructure-failed",
+      };
+    }
     return {
-      capturePathValidation: capturePathLifecycle.capturePathValidation,
+      capturePathValidation: failure,
       status: "capture-path-validation-failed",
     };
   }
@@ -361,6 +465,17 @@ export async function runPipelineJob(
     status: "succeeded",
     demoScript: capturePathLifecycle.demoScript,
   };
+}
+
+async function discardRejectedWorkspace(
+  workspace: PipelineJobInput["preparationWorkspace"],
+) {
+  if (workspace === undefined) return;
+  if (workspace.discard !== undefined) {
+    await workspace.discard();
+    return;
+  }
+  await workspace.release();
 }
 
 const repoPreparationMaximumDurationMs = 1_800_000;
@@ -416,6 +531,12 @@ export async function runCapturePathValidationAndRepair(
         preparationManifest,
         status: "succeeded",
       };
+    }
+
+    if (
+      isPipelineInfrastructureFailureKind(capturePathValidation.failureKind)
+    ) {
+      return { capturePathValidation, status: "failed" };
     }
 
     if (

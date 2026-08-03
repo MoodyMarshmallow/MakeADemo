@@ -22,6 +22,11 @@ import type {
 } from "../../07-compositing/composite-video";
 import type { DraftCompositeEvidence } from "../../07-compositing/draft-composite-quality-review";
 import type { DraftCompositeReviewer } from "../../07-compositing/draft-composite-reviewer.interface";
+import type {
+  FinalVideoPublicationWarning,
+  FinalVideoPublisher,
+} from "../../07-compositing/final-video-publisher.interface";
+import type { PipelineInfrastructureFailureKind } from "../../pipeline-infrastructure-failure";
 import {
   type DraftCompositeReviewSummary,
   type ScriptPersistence,
@@ -30,6 +35,7 @@ import {
 import {
   type PipelineCancellationReason,
   isPipelineCancellationError,
+  runSettledPipelineOperation,
   throwIfPipelineDeadlineReached,
 } from "./pipeline-cancellation";
 import type { PipelineJobInput } from "./pipeline-job";
@@ -52,6 +58,7 @@ export type FullPipelineResult = {
     Awaited<ReturnType<typeof runPipelineJob>>,
     { status: "succeeded" }
   >;
+  publicationWarnings?: FinalVideoPublicationWarning[];
   status: "succeeded";
 };
 
@@ -67,8 +74,7 @@ export type FullPipelineFailureContext = {
         Awaited<ReturnType<typeof runPipelineJob>>,
         { status: "succeeded" }
       >["status"]
-    | "cancelled"
-    | "infrastructure-failed";
+    | "cancelled";
 };
 
 type PreparationWorkspaceCleanupMetadata = {
@@ -139,12 +145,13 @@ type FullPipelineArtifactSummary = {
   runDirectory: string;
   runId: string;
   sandboxProvider?: "daytona";
+  publicationWarnings?: FinalVideoPublicationWarning[];
   script: {
     sceneCount: number;
     scriptId: string;
     title: string;
   };
-  status: "succeeded";
+  status: "ready-for-publication" | "succeeded";
 };
 
 type FullPipelineLogEntry = {
@@ -173,6 +180,7 @@ export type FullPipelineRunnerOptions = PipelineOrchestratorOptions & {
   demoRequestScriptStore?: DemoRequestScriptStore;
   /** Maximum duration for each ffmpeg or ffprobe evidence command. */
   evidenceCommandTimeoutMs?: number;
+  finalVideoPublisher?: FinalVideoPublisher;
   onLog?: (entry: FullPipelineLogEntry) => void;
   logSinks?: PipelineLogSink[];
   outputRoot?: string;
@@ -217,18 +225,26 @@ export async function runFullPipelineJob(
   const preparationWorkspaces = new Set<
     NonNullable<PreparedDemoResult["preparationWorkspace"]>
   >();
+  const approvedPreparationWorkspaces = new Set<
+    NonNullable<PreparedDemoResult["preparationWorkspace"]>
+  >();
+  if (input.preparationWorkspace !== undefined) {
+    preparationWorkspaces.add(input.preparationWorkspace);
+  }
   const orchestratorDependencies: PipelineOrchestratorDependencies = {
     ...dependencies,
     async prepareRepo(preparationInput) {
       const result = await dependencies.prepareRepo(preparationInput);
       if (result.status === "succeeded" && result.workspace !== undefined) {
         preparationWorkspaces.add(result.workspace);
+        approvedPreparationWorkspaces.add(result.workspace);
       }
       return result;
     },
   };
   let terminalFailureLogged = false;
   let terminalFailure: FullPipelineStageFailure | undefined;
+  let pendingArtifactSummary: FullPipelineArtifactSummary | undefined;
   const reportPipelineProgress: NonNullable<
     PipelineOrchestratorOptions["onProgress"]
   > = async (event) => {
@@ -309,7 +325,7 @@ export async function runFullPipelineJob(
         pipelineOptions,
       );
       if (initialPreparedDemo.status !== "succeeded") {
-        const status = pipelineFailureStatus(initialPreparedDemo);
+        const status = initialPreparedDemo.status;
         const resultPath = join(runDirectory, "full-pipeline-result.json");
         const failureSummary = createFailureSummary({
           logPath,
@@ -395,7 +411,8 @@ export async function runFullPipelineJob(
       preparedDemo = reviewResult.preparedDemo;
       scriptSummary = summarizeDemoScript(preparedDemo.demoScript);
       scriptPersistence = reviewResult.scriptPersistence;
-      const { captureManifest, finalVideo, reviewSummary } = reviewResult;
+      const { captureManifest, reviewSummary } = reviewResult;
+      const finalVideo = reviewResult.finalVideo;
       await writeDraftCompositeReviewMetadata({
         finalVideo,
         reviewSummary,
@@ -439,11 +456,13 @@ export async function runFullPipelineJob(
           scriptId: preparedDemo.demoScript.scriptId,
           title: preparedDemo.demoScript.title,
         },
-        status: "succeeded",
+        status: "ready-for-publication",
       };
+      pendingArtifactSummary = artifactSummary;
       await log({
-        event: "pipeline-succeeded",
-        message: "Full pipeline succeeded.",
+        event: "pipeline-ready-for-publication",
+        message:
+          "Full pipeline bookkeeping completed before final publication.",
         severity: "info",
         viewUrl: finalVideo.viewUrl,
       });
@@ -478,6 +497,7 @@ export async function runFullPipelineJob(
       if (isPipelineCancellationError(error)) {
         const resultPath = join(runDirectory, "full-pipeline-result.json");
         const cleanup = await cleanupPreparationWorkspaces({
+          approvedHandles: approvedPreparationWorkspaces,
           handles: preparationWorkspaces,
           log,
         });
@@ -575,6 +595,7 @@ export async function runFullPipelineJob(
     (error: unknown) => ({ error, status: "failed" as const }),
   );
   const cleanup = await cleanupPreparationWorkspaces({
+    approvedHandles: approvedPreparationWorkspaces,
     handles: preparationWorkspaces,
     log,
   });
@@ -637,7 +658,140 @@ export async function runFullPipelineJob(
     });
   }
   if (completed.status === "failed") throw completed.error;
-  return completed.result;
+  try {
+    throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
+    const finalVideoPublisher = options.finalVideoPublisher;
+    let publicationCommitted = finalVideoPublisher === undefined;
+    const publication = finalVideoPublisher
+      ? await (async () => {
+          const operation = finalVideoPublisher.publishFinalVideo({
+            ...(options.deadlineAt === undefined
+              ? {}
+              : { deadlineAt: options.deadlineAt }),
+            draftComposite: completed.result.finalVideo,
+            onPublicationCommitted() {
+              publicationCommitted = true;
+            },
+            ...(options.signal === undefined ? {} : { signal: options.signal }),
+          });
+          try {
+            return await runSettledPipelineOperation({
+              deadlineAt: options.deadlineAt,
+              onCancel: async () => undefined,
+              operation,
+              signal: options.signal,
+            });
+          } catch (error) {
+            if (!publicationCommitted || !isPipelineCancellationError(error)) {
+              throw error;
+            }
+            return await operation;
+          }
+        })()
+      : { finalVideo: completed.result.finalVideo, warnings: [] };
+    const { finalVideo, warnings: publicationWarnings } = publication;
+    const artifactSummary = pendingArtifactSummary;
+    if (artifactSummary === undefined) {
+      throw new Error(
+        "Full pipeline publication bookkeeping was not prepared.",
+      );
+    }
+    const publishedArtifactSummary: FullPipelineArtifactSummary = {
+      ...artifactSummary,
+      artifacts: {
+        ...artifactSummary.artifacts,
+        compositeManifestPath: finalVideo.manifestPath,
+        finalVideoPath: finalVideo.outputVideoPath ?? finalVideo.viewUrl,
+        renderPlanPath: finalVideo.renderPlanPath,
+        viewUrl: finalVideo.viewUrl,
+      },
+      ...(publicationWarnings.length === 0 ? {} : { publicationWarnings }),
+      status: "succeeded",
+    };
+    await writeFile(
+      completed.result.resultPath,
+      `${JSON.stringify(publishedArtifactSummary, null, 2)}\n`,
+    );
+    await log({
+      event: "pipeline-succeeded",
+      message: "Full pipeline succeeded.",
+      severity: "info",
+      viewUrl: finalVideo.viewUrl,
+    });
+    await log({
+      event: "result-written",
+      message: "Full pipeline result written after final publication.",
+      resultPath: completed.result.resultPath,
+      severity: "info",
+    });
+    return {
+      ...completed.result,
+      finalVideo,
+      ...(publicationWarnings.length === 0 ? {} : { publicationWarnings }),
+    };
+  } catch (error) {
+    if (isPipelineCancellationError(error)) {
+      const cancellationSummary = createCancellationSummary({
+        agentAuditLogPath: options.agentAuditLogPath,
+        cancellationReason: error.reason,
+        cleanup: undefined,
+        logPath,
+        runDirectory,
+        runId,
+        sandboxLogPath,
+        sandboxProvider: options.sandboxProvider,
+        scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
+      });
+      await writeFile(
+        completed.result.resultPath,
+        `${JSON.stringify(cancellationSummary, null, 2)}\n`,
+      );
+      logBestEffort(log, {
+        cancellationReason: error.reason,
+        event: "pipeline-cancelled",
+        message: error.message,
+        severity: "warn",
+        status: "cancelled",
+      });
+      throw new FullPipelineStageFailure({
+        failure: cancellationSummary.failure,
+        logPath,
+        agentAuditLogPath: options.agentAuditLogPath,
+        resultPath: completed.result.resultPath,
+        stage: "pipeline",
+        status: "cancelled",
+      });
+    }
+
+    const failureSummary = createUnexpectedFailureSummary({
+      agentAuditLogPath: options.agentAuditLogPath,
+      logPath,
+      runDirectory,
+      runId,
+      sandboxLogPath,
+      sandboxProvider: options.sandboxProvider,
+      scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
+    });
+    await log({
+      error: readErrorMessage(error),
+      event: "pipeline-failed",
+      message: "Final publication failed.",
+      severity: "error",
+    });
+    await writeFile(
+      completed.result.resultPath,
+      `${JSON.stringify(failureSummary, null, 2)}\n`,
+    );
+    throw new FullPipelineStageFailure({
+      cause: error,
+      failure: failureSummary.failure,
+      logPath,
+      agentAuditLogPath: options.agentAuditLogPath,
+      resultPath: completed.result.resultPath,
+      stage: "pipeline",
+      status: "infrastructure-failed",
+    });
+  }
 }
 
 function createCancellationSummary(input: {
@@ -718,7 +872,8 @@ function createRepoSecurityInputFailureSummary(input: {
       blockers: [
         "Repo Security Screen input could not be loaded because sandbox infrastructure was unavailable.",
       ],
-      failureKind: "sandbox-infrastructure-failed" as const,
+      failureKind:
+        "sandbox-infrastructure-failed" satisfies PipelineInfrastructureFailureKind,
       suggestedChanges: [],
     },
     runDirectory: input.runDirectory,
@@ -756,7 +911,8 @@ function createUnexpectedFailureSummary(input: {
       blockers: [
         "Full Pipeline infrastructure failed unexpectedly. Please report this issue to MakeADemo.",
       ],
-      failureKind: "unexpected-pipeline-error" as const,
+      failureKind:
+        "unexpected-pipeline-error" satisfies PipelineInfrastructureFailureKind,
       suggestedChanges: [],
     },
     runDirectory: input.runDirectory,
@@ -796,7 +952,8 @@ function createPreparationWorkspaceCleanupFailureSummary(input: {
         "Preparation Workspace release could not be confirmed after the Pipeline completed. Demo artifacts are inconclusive.",
       ],
       cleanup: input.cleanup,
-      failureKind: "preparation-workspace-cleanup-failed" as const,
+      failureKind:
+        "preparation-workspace-cleanup-failed" satisfies PipelineInfrastructureFailureKind,
       suggestedChanges: [],
     },
     runDirectory: input.runDirectory,
@@ -809,13 +966,18 @@ function createPreparationWorkspaceCleanupFailureSummary(input: {
 }
 
 async function cleanupPreparationWorkspaces(input: {
+  approvedHandles: ReadonlySet<
+    NonNullable<PreparedDemoResult["preparationWorkspace"]>
+  >;
   handles: Iterable<NonNullable<PreparedDemoResult["preparationWorkspace"]>>;
   log: (entry: FullPipelineLogInput) => Promise<void>;
 }): Promise<PreparationWorkspaceCleanupMetadata | undefined> {
   const workspaces: PreparationWorkspaceCleanupMetadata["workspaces"] = [];
   for (const handle of input.handles) {
     const startedAt = Date.now();
-    const release = handle.release();
+    const release = input.approvedHandles.has(handle)
+      ? handle.release()
+      : (handle.discard?.() ?? handle.release());
     logBestEffort(input.log, {
       event: "preparation-workspace-cleanup.started",
       message: "Preparation workspace cleanup started.",
@@ -1067,20 +1229,8 @@ function createFailureSummary(input: {
     ...(input.sandboxProvider === undefined
       ? {}
       : { sandboxProvider: input.sandboxProvider }),
-    status: pipelineFailureStatus(input.preparedDemo),
+    status: input.preparedDemo.status,
   };
-}
-
-function pipelineFailureStatus(
-  preparedDemo: Exclude<
-    Awaited<ReturnType<typeof runPipelineJob>>,
-    { status: "succeeded" }
-  >,
-) {
-  return preparedDemo.status === "preparation-failed" &&
-    preparedDemo.infrastructure !== undefined
-    ? ("infrastructure-failed" as const)
-    : preparedDemo.status;
 }
 
 function readPipelineFailure(
@@ -1089,15 +1239,35 @@ function readPipelineFailure(
     { status: "succeeded" }
   >,
 ) {
+  if (preparedDemo.status === "infrastructure-failed") {
+    return {
+      blockers:
+        preparedDemo.stage === "capture-path-validation"
+          ? [
+              "Capture Path Validation failed. Please report this issue to MakeADemo.",
+              ...(preparedDemo.failureReason.trim().length === 0
+                ? []
+                : [
+                    `Capture Path Validation reason: ${preparedDemo.failureReason}`,
+                  ]),
+            ]
+          : [preparedDemo.failureReason],
+      failureKind: preparedDemo.failureKind,
+      ...(preparedDemo.infrastructure === undefined
+        ? {}
+        : { infrastructure: preparedDemo.infrastructure }),
+      ...(preparedDemo.resourceDiagnostics === undefined
+        ? {}
+        : { resourceDiagnostics: preparedDemo.resourceDiagnostics }),
+      suggestedChanges: [],
+    };
+  }
   if (preparedDemo.status === "preparation-failed") {
     return {
       blockers: [preparedDemo.fallbackPrompt],
       ...(preparedDemo.failureKind === undefined
         ? {}
         : { failureKind: preparedDemo.failureKind }),
-      ...(preparedDemo.infrastructure === undefined
-        ? {}
-        : { infrastructure: preparedDemo.infrastructure }),
       suggestedChanges: [],
     };
   }
@@ -1116,10 +1286,12 @@ function readPipelineFailure(
       ],
       capturePathValidation: removeUndefinedFields({
         diagnosticsLogPath: capturePathValidation.diagnosticsLogPath,
+        failureKind: capturePathValidation.failureKind,
         failedAction: capturePathValidation.failedAction,
         failedSceneId: capturePathValidation.failedSceneId,
         failureReason: capturePathValidation.failureReason,
         runDirectory: capturePathValidation.runDirectory,
+        resourceDiagnostics: capturePathValidation.resourceDiagnostics,
         screenshotArtifactId: capturePathValidation.screenshotArtifactId,
         scriptPath: capturePathValidation.scriptPath,
         stderrPath: capturePathValidation.stderrPath,
@@ -1130,8 +1302,20 @@ function readPipelineFailure(
   }
 
   return {
-    blockers: preparedDemo.security.rejections,
-    suggestedChanges: preparedDemo.security.warnings,
+    blockers: [
+      ...preparedDemo.security.rejections.map((finding) => finding.message),
+      ...(preparedDemo.review === undefined
+        ? []
+        : [
+            `Repo Security agent rejected execution: ${preparedDemo.review.rationale}`,
+            ...preparedDemo.review.concerns.map(
+              (concern) => `Repo Security concern: ${concern}`,
+            ),
+          ]),
+    ],
+    suggestedChanges: preparedDemo.security.warnings.map(
+      (finding) => finding.message,
+    ),
   };
 }
 

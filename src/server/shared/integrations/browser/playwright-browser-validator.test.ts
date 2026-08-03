@@ -44,6 +44,52 @@ describe("PlaywrightBrowserValidator", () => {
     });
   });
 
+  it("ignores hidden framework payload errors when the rendered page is healthy", async () => {
+    const validator = new PlaywrightBrowserValidator({
+      pageFactory: async () =>
+        fakePage({
+          bodyText: "Welcome to the Midday dashboard",
+          rawBodyText:
+            'Welcome to the Midday dashboard <script>self.__next_f.push(["Application error: route metadata"])</script>',
+        }),
+    });
+
+    await expect(
+      validator.validate({ url: "http://localhost:3000" }),
+    ).resolves.toMatchObject({ interactable: true });
+  });
+
+  it.each([
+    "No errors found. Browse exception reports and not found documentation.",
+    "The help article mentions Application error handling.",
+    "Internal Server Error is one possible response documented here.",
+  ])(
+    "accepts ordinary visible text mentioning framework error phrases: %s",
+    async (bodyText) => {
+      const validator = new PlaywrightBrowserValidator({
+        pageFactory: async () => fakePage({ bodyText }),
+      });
+
+      await expect(
+        validator.validate({ url: "http://localhost:3000" }),
+      ).resolves.toMatchObject({ interactable: true });
+    },
+  );
+
+  it("rejects a rendered fatal framework screen", async () => {
+    const validator = new PlaywrightBrowserValidator({
+      pageFactory: async () =>
+        fakePage({ bodyText: "Unhandled Runtime Error\nTypeError: failed" }),
+    });
+
+    await expect(
+      validator.validate({ url: "http://localhost:3000" }),
+    ).resolves.toMatchObject({
+      failureKind: "browser-not-interactable",
+      interactable: false,
+    });
+  });
+
   it("marks unreachable pages as not interactable instead of throwing", async () => {
     const validator = new PlaywrightBrowserValidator({
       pageFactory: async () =>
@@ -316,52 +362,7 @@ describe("PlaywrightBrowserValidator", () => {
     try {
       await expect(
         validator.validate({
-          preparationWorkspace: {
-            async release() {},
-            id: "workspace_123",
-            workspace: {
-              async execute() {
-                throw new Error(
-                  "outer workspace execution must not validate browser",
-                );
-              },
-              async executeSubmittedCode(command) {
-                try {
-                  const result = await execAsync(command, {
-                    cwd: workspacePath,
-                    env: {
-                      ...process.env,
-                      MAKEADEMO_PLAYWRIGHT_MODULE_ROOT: join(
-                        workspacePath,
-                        "node_modules",
-                      ),
-                      PATH: `${join(workspacePath, "bin")}:${process.env.PATH ?? ""}`,
-                    },
-                  });
-                  return {
-                    exitCode: 0,
-                    stderr: result.stderr,
-                    stdout: result.stdout,
-                  };
-                } catch (error) {
-                  const failed = error as {
-                    code?: number;
-                    stderr?: string;
-                    stdout?: string;
-                  };
-                  return {
-                    exitCode: failed.code ?? 1,
-                    stderr: failed.stderr ?? String(error),
-                    stdout: failed.stdout ?? "",
-                  };
-                }
-              },
-              async getPreviewUrl() {
-                return "https://preview.example.test";
-              },
-              async uploadFiles() {},
-            },
-          },
+          preparationWorkspace: localSubmittedWorkspace(workspacePath),
           url: "http://localhost:3000",
         }),
       ).resolves.toEqual({
@@ -379,6 +380,60 @@ describe("PlaywrightBrowserValidator", () => {
     }
   });
 
+  it("validates submitted-code pages from rendered text instead of hidden payloads", async () => {
+    const hiddenPayload = "Application error: hidden Next route payload";
+    const workspacePath = await createFakeSubmittedCodeWorkspace({
+      bodyText: "Welcome to the Midday dashboard",
+      rawBodyText: `Welcome to the Midday dashboard ${hiddenPayload}`,
+    });
+    const validator = new PlaywrightBrowserValidator();
+
+    try {
+      const result = await validator.validate({
+        preparationWorkspace: localSubmittedWorkspace(workspacePath),
+        url: "http://localhost:3000",
+      });
+
+      expect(result.interactable).toBe(true);
+      expect(result.logs).toContain("Welcome to the Midday dashboard");
+      expect(JSON.stringify(result)).not.toContain(hiddenPayload);
+    } finally {
+      await rm(workspacePath, { force: true, recursive: true });
+    }
+  });
+
+  it("uses the same narrow fatal-screen contract inside submitted code", async () => {
+    const genericWorkspace = await createFakeSubmittedCodeWorkspace({
+      bodyText:
+        "No errors found. Browse exception reports and not found documentation.",
+    });
+    const fatalWorkspace = await createFakeSubmittedCodeWorkspace({
+      bodyText: "500\nInternal Server Error\nError: request failed",
+    });
+    const validator = new PlaywrightBrowserValidator();
+
+    try {
+      await expect(
+        validator.validate({
+          preparationWorkspace: localSubmittedWorkspace(genericWorkspace),
+          url: "http://localhost:3000",
+        }),
+      ).resolves.toMatchObject({ interactable: true });
+      await expect(
+        validator.validate({
+          preparationWorkspace: localSubmittedWorkspace(fatalWorkspace),
+          url: "http://localhost:3000",
+        }),
+      ).resolves.toMatchObject({
+        failureKind: "browser-not-interactable",
+        interactable: false,
+      });
+    } finally {
+      await rm(genericWorkspace, { force: true, recursive: true });
+      await rm(fatalWorkspace, { force: true, recursive: true });
+    }
+  });
+
   it("returns submitted-code blocked network evidence when navigation fails after blocked requests", async () => {
     const workspacePath = await createFakeSubmittedCodeWorkspace({
       gotoErrorMessage: "net::ERR_BLOCKED_BY_CLIENT",
@@ -391,52 +446,7 @@ describe("PlaywrightBrowserValidator", () => {
     try {
       await expect(
         validator.validate({
-          preparationWorkspace: {
-            async release() {},
-            id: "workspace_123",
-            workspace: {
-              async execute() {
-                throw new Error(
-                  "outer workspace execution must not validate browser",
-                );
-              },
-              async executeSubmittedCode(command) {
-                try {
-                  const result = await execAsync(command, {
-                    cwd: workspacePath,
-                    env: {
-                      ...process.env,
-                      MAKEADEMO_PLAYWRIGHT_MODULE_ROOT: join(
-                        workspacePath,
-                        "node_modules",
-                      ),
-                      PATH: `${join(workspacePath, "bin")}:${process.env.PATH ?? ""}`,
-                    },
-                  });
-                  return {
-                    exitCode: 0,
-                    stderr: result.stderr,
-                    stdout: result.stdout,
-                  };
-                } catch (error) {
-                  const failed = error as {
-                    code?: number;
-                    stderr?: string;
-                    stdout?: string;
-                  };
-                  return {
-                    exitCode: failed.code ?? 1,
-                    stderr: failed.stderr ?? String(error),
-                    stdout: failed.stdout ?? "",
-                  };
-                }
-              },
-              async getPreviewUrl() {
-                return "https://preview.example.test";
-              },
-              async uploadFiles() {},
-            },
-          },
+          preparationWorkspace: localSubmittedWorkspace(workspacePath),
           url: "http://localhost:3000",
         }),
       ).resolves.toEqual({
@@ -990,6 +1000,7 @@ function fakePage(input: {
   onAbort?: (url: string) => void;
   onContinue?: (url: string) => void;
   requestedUrls?: string[];
+  rawBodyText?: string;
   screenshotNeverCompletes?: boolean;
 }) {
   let routeHandler:
@@ -1033,6 +1044,9 @@ function fakePage(input: {
       routeHandler = handler;
     },
     async textContent() {
+      return input.rawBodyText ?? input.bodyText;
+    },
+    async innerText() {
       return input.bodyText;
     },
   };
@@ -1058,7 +1072,12 @@ function fakeWorkspace(stdout: string) {
 }
 
 async function createFakeSubmittedCodeWorkspace(
-  options: { gotoErrorMessage?: string; routedUrls?: string[] } = {},
+  options: {
+    bodyText?: string;
+    gotoErrorMessage?: string;
+    rawBodyText?: string;
+    routedUrls?: string[];
+  } = {},
 ) {
   const workspacePath = await mkdtemp(join(tmpdir(), "makeademo-browser-"));
   await mkdir(join(workspacePath, "bin"), { recursive: true });
@@ -1100,7 +1119,10 @@ async function createFakeSubmittedCodeWorkspace(
               return Buffer.from("fake");
             },
             async textContent() {
-              return "Demo app loaded";
+              return ${JSON.stringify(options.rawBodyText ?? options.bodyText ?? "Demo app loaded")};
+            },
+            async innerText() {
+              return ${JSON.stringify(options.bodyText ?? "Demo app loaded")};
             },
           };
         },
@@ -1112,4 +1134,51 @@ async function createFakeSubmittedCodeWorkspace(
   );
 
   return workspacePath;
+}
+
+function localSubmittedWorkspace(workspacePath: string) {
+  return {
+    async release() {},
+    id: "workspace_123",
+    workspace: {
+      async execute() {
+        throw new Error("outer workspace execution must not validate browser");
+      },
+      async executeSubmittedCode(command: string) {
+        try {
+          const result = await execAsync(command, {
+            cwd: workspacePath,
+            env: {
+              ...process.env,
+              MAKEADEMO_PLAYWRIGHT_MODULE_ROOT: join(
+                workspacePath,
+                "node_modules",
+              ),
+              PATH: `${join(workspacePath, "bin")}:${process.env.PATH ?? ""}`,
+            },
+          });
+          return {
+            exitCode: 0,
+            stderr: result.stderr,
+            stdout: result.stdout,
+          };
+        } catch (error) {
+          const failed = error as {
+            code?: number;
+            stderr?: string;
+            stdout?: string;
+          };
+          return {
+            exitCode: failed.code ?? 1,
+            stderr: failed.stderr ?? String(error),
+            stdout: failed.stdout ?? "",
+          };
+        }
+      },
+      async getPreviewUrl() {
+        return "https://preview.example.test";
+      },
+      async uploadFiles() {},
+    },
+  };
 }

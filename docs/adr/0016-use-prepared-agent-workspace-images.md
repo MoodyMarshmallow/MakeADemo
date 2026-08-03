@@ -2,7 +2,7 @@
 
 Daytona preparation workspaces will start from a prepared image or template containing the non-secret operating-system and project toolchain support needed for Repo Preparation. The Pi runtime, Context7 integration, Exa MCP client, and model credentials run in the trusted backend and are normal application dependencies, so they are not installed in or injected into the Daytona image. We retain prepared images because they make Git checkout, project inspection, and separate submitted-code execution faster and more consistent.
 
-The parent prepared image hosts the mutable repository copy and MakeADemo workspace tooling only. Backend control commands retain the image's trusted user, but every agent-authored shell command runs through a dedicated Daytona seam as an unprivileged `pwuser` with a clean environment and writable state rooted at `/workspace`. The image keeps `/usr/local/bin`, package runtimes, MakeADemo helpers, the user's home, and common temporary roots non-writable by that user. Submitted app dependency, build, and runtime commands run in a separate Daytona sandbox created from a submitted-code runtime snapshot; the parent image's package runtimes are not executable by the agent user. The submitted-code sandbox is an independent Daytona sandbox and a logical child of the Preparation Workspace because Daytona-linked sandboxes must be ephemeral and cannot be archived after stop. The backend seam addresses both sandboxes directly, keeping pipeline execution tied to the Daytona external seam and submitted code outside the agent workspace's control plane.
+The parent prepared image hosts the mutable repository copy and MakeADemo workspace tooling only. Project Intake resolves and persists one full source commit SHA. Repo Security clones that exact revision once into a cold parent, performs only unprivileged static reads there, and retains the same parent for Repo Preparation after approval. Rejection deletes the parent immediately without archive. Backend control commands retain the image's trusted user, but every repository-loading or agent-authored shell command runs through a dedicated Daytona seam as an unprivileged `pwuser` with a clean environment and writable state rooted at `/workspace`. The image keeps `/usr/local/bin`, package runtimes, MakeADemo helpers, the user's home, and common temporary roots non-writable by that user. Only after security approval and agent preparation does the provider create the separate submitted-code sandbox from its runtime snapshot, provision the detected toolchain, and synchronize the prepared files. Submitted app dependency, build, and runtime commands run only there; the parent image's package runtimes are not executable by the agent user. The submitted-code sandbox is an independent Daytona sandbox and a logical child of the Preparation Workspace because Daytona-linked sandboxes must be ephemeral and cannot be archived after stop. The backend seam addresses both sandboxes directly, keeping pipeline execution tied to the Daytona external seam and submitted code outside the agent workspace's control plane.
 
 Secrets must not be baked into either snapshot. LLM provider credentials and agent research integrations remain in the backend Agent Harness and are never sent to Daytona. Submitted repo build and runtime commands execute in the separate submitted-code sandbox with a scrubbed environment and no inherited agent secrets. Both sandboxes remain network-enabled during development (`networkBlockAll: false`); Daytona sandbox-firewall Runtime Network Lockdown is deferred and dependency execution does not reseal the network. Browser-level request interception remains available where validation/capture supports it.
 
@@ -27,6 +27,31 @@ and `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` at its submitted-code execution
 seam. Validator and Demo Script execution resolve Playwright only from that
 trusted module root. Caller-provided environment variables cannot select a
 different module or browser store.
+
+Capture Path Validation and Footage Capture use a second explicit runtime
+boundary inside the submitted-code Sandbox. The submitted app's install,
+build, and server commands continue to use its dynamic Submitted Toolchain
+Plan. MakeADemo first compiles generated Demo Script TypeScript to JavaScript,
+then executes only that artifact with the image-owned absolute
+`/opt/makeademo/capture-runtime/bin/node` binary. The capture request accepts
+no submitted toolchain plan, caller environment, package-manager executable,
+or arbitrary command. Its root-owned Playwright bridge imports only the pinned
+runtime under `/opt/makeademo/playwright-runtime`, avoiding writable run-dir
+`node_modules` links and Node `PATH` or module-discovery assumptions. Image
+verification checks the capture Node digest, version, ownership, recursively
+non-writable tree, explicit `process.execPath`, trusted Playwright launch, and
+the same real generated Capture SDK contract across npm, pnpm, Yarn Classic,
+Yarn Berry, and Bun submitted projects. Both the generated Demo Script and its
+runtime Capture SDK use explicit `.mjs` extensions, so a submitted package's
+CommonJS or unspecified module scope cannot reinterpret either artifact.
+
+The submitted-code image pins the Playwright base image by immutable manifest
+digest. The expected capture Node version and Linux x64 binary SHA-256 are
+source-controlled build arguments derived from that pinned image, and the
+build fails before and after copying Node unless both values match. Runtime
+image verification compares the installed binary and attestation files against
+the same source-controlled values rather than trusting a digest generated from
+whatever binary happened to be present during the build.
 
 Image verification walks the complete browser tree for ownership and writable
 mode violations. After provisioning an exact submitted Node runtime,

@@ -1,6 +1,11 @@
 import { submittedCodeKnownGoodNodeReleaseSnapshot } from "../src/server/pipeline/03-repo-preparation/submitted-code-node-release-catalog.interface";
 import { resolveSubmittedCodeToolchain } from "../src/server/pipeline/03-repo-preparation/submitted-code-toolchain.schema";
+import { executeDemoScriptInSandbox } from "../src/server/pipeline/04-script-generation/demo-script/demo-script-sandbox-executor";
 import { DaytonaSdkPreparationWorkspaceProvider } from "../src/server/shared/integrations/daytona/daytona-sdk-preparation-workspace-provider";
+
+const makeADemoCaptureNodeVersion = "v22.12.0";
+const makeADemoCaptureNodeSha256 =
+  "177208bfc4a9403121a40c72d038c670f4fd937fa16ca7df0a720e90be0fe2d9";
 
 const snapshot = process.env.MAKEADEMO_DAYTONA_SNAPSHOT;
 const submittedCodeSnapshot =
@@ -106,6 +111,15 @@ try {
       'test "$(stat -c %u "$MAKEADEMO_PLAYWRIGHT_MODULE_ROOT")" = "0"',
       'test -z "$(find /ms-playwright ! -user root -print -quit)"',
       'test -z "$(find /ms-playwright ! -type l -perm /222 -print -quit)"',
+      'test -x "/opt/makeademo/capture-runtime/bin/node"',
+      'test "$(stat -c %u /opt/makeademo/capture-runtime/bin/node)" = "0"',
+      'test -z "$(find /opt/makeademo/capture-runtime ! -user root -print -quit)"',
+      'test -z "$(find /opt/makeademo/capture-runtime ! -type l -perm /222 -print -quit)"',
+      `test "$(cat /opt/makeademo/capture-runtime/node.version)" = "${makeADemoCaptureNodeVersion}"`,
+      `test "$(cat /opt/makeademo/capture-runtime/node.sha256)" = "${makeADemoCaptureNodeSha256}"`,
+      `test "$(/opt/makeademo/capture-runtime/bin/node --version)" = "${makeADemoCaptureNodeVersion}"`,
+      `printf '%s  %s\\n' '${makeADemoCaptureNodeSha256}' /opt/makeademo/capture-runtime/bin/node | sha256sum -c -`,
+      "cd /workspace",
       "touch /workspace/.makeademo/runtime-write-test",
       "rm -f /workspace/.makeademo/runtime-write-test",
       "node --version",
@@ -217,7 +231,8 @@ try {
   if (
     handle.workspace.provisionSubmittedCodeToolchain === undefined ||
     handle.workspace.syncSubmittedCodeWorkspace === undefined ||
-    handle.workspace.executeSubmittedRuntime === undefined
+    handle.workspace.executeSubmittedRuntime === undefined ||
+    handle.workspace.executeMakeADemoCapture === undefined
   ) {
     throw new Error(
       "Prepared Daytona workspace lacks the submitted-code toolchain lifecycle.",
@@ -225,20 +240,51 @@ try {
   }
   await handle.workspace.provisionSubmittedCodeToolchain(dynamicPlan);
   await handle.workspace.syncSubmittedCodeWorkspace();
+  const captureRuntimeSmokeDirectory =
+    "/workspace/.makeademo/capture-runtime-smoke";
+  const captureRuntimeSmokeScript = [
+    'import { createRequire } from "node:module";',
+    'import { chromium } from "/opt/makeademo/capture-runtime/playwright.mjs";',
+    'if (process.execPath !== "/opt/makeademo/capture-runtime/bin/node") process.exit(1);',
+    'const requireFromTrustedRuntime = createRequire("/opt/makeademo/playwright-runtime/node_modules/playwright/package.json");',
+    'let metadata = requireFromTrustedRuntime("playwright/package.json");',
+    'if (metadata.version !== "1.49.1") process.exit(1);',
+    'metadata = requireFromTrustedRuntime("@playwright/test/package.json");',
+    'if (metadata.version !== "1.49.1") process.exit(1);',
+    'requireFromTrustedRuntime("playwright");',
+    'requireFromTrustedRuntime("@playwright/test");',
+    "const browser = await chromium.launch({ headless: true });",
+    "await browser.close();",
+    'console.log("trusted playwright chromium ok");',
+  ].join("\n");
+  const stageCaptureRuntimeSmoke =
+    await handle.workspace.executeSubmittedCode?.(
+      `mkdir -p '${captureRuntimeSmokeDirectory}' && printf '%s' '${Buffer.from(captureRuntimeSmokeScript).toString("base64")}' | base64 -d > '${captureRuntimeSmokeDirectory}/capture-smoke.mjs'`,
+    );
+  if (stageCaptureRuntimeSmoke === undefined) {
+    throw new Error("Prepared Daytona workspace lacks submitted-code staging.");
+  }
+  assertCommandSucceeded(
+    "capture runtime smoke staging",
+    stageCaptureRuntimeSmoke,
+  );
   const trustedPlaywrightRuntime =
-    await handle.workspace.executeSubmittedRuntime({
-      command: `node -e 'const { createRequire } = require("node:module"); const root = process.env.MAKEADEMO_PLAYWRIGHT_MODULE_ROOT; const requireFromTrustedRuntime = createRequire(root + "/playwright/package.json"); let metadata = requireFromTrustedRuntime("playwright/package.json"); if (metadata.version !== "1.49.1") process.exit(1); const { chromium } = requireFromTrustedRuntime("playwright"); metadata = requireFromTrustedRuntime("@playwright/test/package.json"); if (metadata.version !== "1.49.1") process.exit(1); requireFromTrustedRuntime("@playwright/test"); (async () => { const browser = await chromium.launch({ headless: true }); await browser.close(); console.log("trusted playwright chromium ok"); })().catch((error) => { console.error(error); process.exit(1); });'`,
-      plan: dynamicPlan,
+    await handle.workspace.executeMakeADemoCapture({
+      runDirectory: captureRuntimeSmokeDirectory,
+      scriptPath: `${captureRuntimeSmokeDirectory}/capture-smoke.mjs`,
+      stderrPath: `${captureRuntimeSmokeDirectory}/capture-smoke.stderr.log`,
+      stdoutPath: `${captureRuntimeSmokeDirectory}/capture-smoke.stdout.log`,
+      timeoutMs: 30_000,
     });
   assertCommandSucceeded(
-    "privately bound trusted Playwright Chromium launch",
+    "fixed MakeADemo capture runtime Playwright Chromium launch",
     trustedPlaywrightRuntime,
   );
   if (
     !trustedPlaywrightRuntime.stdout.includes("trusted playwright chromium ok")
   ) {
     throw new Error(
-      "Privately bound submitted runtime did not launch the trusted Playwright Chromium.",
+      "Fixed MakeADemo capture runtime did not launch the trusted Playwright Chromium.",
     );
   }
   const offlineToolchain = await handle.workspace.executeSubmittedRuntime({
@@ -451,7 +497,8 @@ async function verifySubmittedToolchainMatrix(input: {
         workspace.provisionSubmittedCodeToolchain === undefined ||
         workspace.syncSubmittedCodeWorkspace === undefined ||
         workspace.executeSubmittedProject === undefined ||
-        workspace.executeSubmittedRuntime === undefined
+        workspace.executeSubmittedRuntime === undefined ||
+        workspace.executeMakeADemoCapture === undefined
       ) {
         throw new Error(
           `${matrixCase.label} workspace lacks the submitted-code lifecycle.`,
@@ -480,6 +527,31 @@ async function verifySubmittedToolchainMatrix(input: {
       ) {
         throw new Error(
           `${matrixCase.label} did not plan its verified bounded argv.`,
+        );
+      }
+
+      const capture = await executeDemoScriptInSandbox({
+        baseUrl: "data:text/html,<body>toolchain independent capture</body>",
+        demoPlaywrightScript: captureRuntimeContractScript(matrixCase.label),
+        mode: "validation",
+        remoteRunDirectory:
+          "/workspace/.makeademo/toolchain-independent-capture",
+        runtimeNetworkPolicy: "unrestricted-public",
+        scriptFilename: "capture-contract.ts",
+        timeoutMs: 30_000,
+        workspace,
+      });
+      assertCommandSucceeded(
+        `${matrixCase.label} toolchain-independent capture`,
+        capture,
+      );
+      if (
+        !capture.stdout.includes(
+          `"sceneId":"${matrixCase.label}-capture-contract"`,
+        )
+      ) {
+        throw new Error(
+          `${matrixCase.label} did not run the fixed capture contract.`,
         );
       }
 
@@ -561,6 +633,21 @@ function assertCommandSucceeded(
         .join("\n")}`,
     );
   }
+}
+
+function captureRuntimeContractScript(label: string): string {
+  const sceneId = `${label}-capture-contract`;
+  return [
+    "declare const process: { execPath: string };",
+    "import { setup, scene } from './makeademo-capture-sdk';",
+    "await setup(async ({ page, baseUrl }) => {",
+    '  if (process.execPath !== "/opt/makeademo/capture-runtime/bin/node") throw new Error("unexpected capture Node");',
+    "  await page.goto(baseUrl);",
+    "});",
+    `await scene(${JSON.stringify(sceneId)}, async ({ page, expect }) => {`,
+    "  await expect(page.locator('body')).toContainText('toolchain independent capture');",
+    "});",
+  ].join("\n");
 }
 
 function hasNonEmptyValue(value: string | undefined): boolean {

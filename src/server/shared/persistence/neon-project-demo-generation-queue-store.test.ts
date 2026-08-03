@@ -18,6 +18,7 @@ describe("NeonProjectDemoGenerationQueueStore", () => {
                         return {
                           limit: async () => [
                             {
+                              commitSha: "a".repeat(40),
                               context: {
                                 structuredContext: {
                                   importantFeatures:
@@ -28,8 +29,10 @@ describe("NeonProjectDemoGenerationQueueStore", () => {
                                 },
                               },
                               demoRequestId: "demo-request-1",
+                              githubInstallationId: "installation-123",
                               projectId: "project-1",
                               repoUrl: "https://github.com/example/app",
+                              repoVisibility: "public",
                               supportingFiles: [
                                 JSON.stringify({
                                   fileName: "product.md",
@@ -90,11 +93,13 @@ describe("NeonProjectDemoGenerationQueueStore", () => {
     });
 
     await expect(store.claimNextQueuedProject()).resolves.toEqual({
+      commitSha: "a".repeat(40),
       demoBrief: {
         audience: "Founders",
         keyProductFeatures: ["script generation", "video generation"],
       },
       demoRequestId: "demo-request-1",
+      githubInstallationId: "installation-123",
       normalizedSupportingDocuments: [
         {
           normalizedText: "Product context from R2.",
@@ -104,9 +109,71 @@ describe("NeonProjectDemoGenerationQueueStore", () => {
       ],
       projectId: "project-1",
       repoUrl: "https://github.com/example/app",
+      repoVisibility: "public",
       workspaceId: "project-1",
     });
     expect(updates).toEqual([{ status: "processing" }]);
+  });
+
+  it("fails a legacy queued Project that has no pinned source revision", async () => {
+    const updates: unknown[] = [];
+    const db = {
+      select() {
+        return {
+          from: () => ({
+            innerJoin: () => ({
+              where: () => ({
+                orderBy: () => ({
+                  limit: async () => [
+                    {
+                      context: {
+                        structuredContext: { importantFeatures: "demo" },
+                      },
+                      demoRequestId: "demo-request-legacy",
+                      projectId: "project-legacy",
+                      repoUrl: "https://github.com/example/legacy",
+                      repoVisibility: "public",
+                      supportingFiles: [],
+                    },
+                  ],
+                }),
+              }),
+            }),
+          }),
+        };
+      },
+      update() {
+        return {
+          set(values: unknown) {
+            updates.push(values);
+            return {
+              where: () => ({
+                returning: async () => [{ id: "project-legacy" }],
+              }),
+            };
+          },
+        };
+      },
+    };
+
+    await expect(
+      new NeonProjectDemoGenerationQueueStore(db).claimNextQueuedProject(),
+    ).resolves.toEqual({
+      claimStatus: "failed",
+      demoRequestId: "demo-request-legacy",
+      error:
+        "Queued Project has no valid pinned source revision; legacy Projects must be resubmitted.",
+      projectId: "project-legacy",
+      workspaceId: "project-legacy",
+    });
+    expect(updates).toEqual([
+      { status: "processing" },
+      {
+        failureReason:
+          "Queued Project has no valid pinned source revision; legacy Projects must be resubmitted.",
+        status: "failed",
+      },
+    ]);
   });
 
   it("marks a claimed Project failed when Supporting Documents cannot be normalized", async () => {
@@ -124,6 +191,7 @@ describe("NeonProjectDemoGenerationQueueStore", () => {
                         return {
                           limit: async () => [
                             {
+                              commitSha: "b".repeat(40),
                               context: {
                                 structuredContext: {
                                   importantFeatures: "script generation",
@@ -134,6 +202,7 @@ describe("NeonProjectDemoGenerationQueueStore", () => {
                               demoRequestId: "demo-request-1",
                               projectId: "project-1",
                               repoUrl: "https://github.com/example/app",
+                              repoVisibility: "public",
                               supportingFiles: [
                                 JSON.stringify({
                                   fileName: "deck.pdf",
@@ -176,8 +245,18 @@ describe("NeonProjectDemoGenerationQueueStore", () => {
       },
     });
 
-    await expect(store.claimNextQueuedProject()).resolves.toBeUndefined();
-    expect(updates).toEqual([{ status: "processing" }, { status: "failed" }]);
+    await expect(store.claimNextQueuedProject()).resolves.toMatchObject({
+      claimStatus: "failed",
+      error: "PDF normalization unavailable",
+      projectId: "project-1",
+    });
+    expect(updates).toEqual([
+      { status: "processing" },
+      {
+        failureReason: "PDF normalization unavailable",
+        status: "failed",
+      },
+    ]);
   });
 
   it("marks Project queue status completed or failed without touching Demo Request status", async () => {
@@ -212,6 +291,9 @@ describe("NeonProjectDemoGenerationQueueStore", () => {
       projectId: "project-2",
     });
 
-    expect(updates).toEqual([{ status: "completed" }, { status: "failed" }]);
+    expect(updates).toEqual([
+      { failureReason: null, status: "completed" },
+      { failureReason: "renderer failed", status: "failed" },
+    ]);
   });
 });

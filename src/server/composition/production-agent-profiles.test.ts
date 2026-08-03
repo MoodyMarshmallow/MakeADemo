@@ -28,6 +28,12 @@ describe("createProductionAgentProfiles", () => {
         providerID: "openai",
         thinkingLevel: "high",
       },
+      repoSecurityReview: {
+        label: "Repo Security review agent",
+        modelID: "gpt-5.6-terra",
+        providerID: "openai",
+        thinkingLevel: "high",
+      },
       scriptGeneration: {
         countCompletedInspectionTools: true,
         label: "Script Generation agent",

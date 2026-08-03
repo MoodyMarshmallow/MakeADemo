@@ -157,6 +157,7 @@ describe("captureScenesFromScript", () => {
     const tempRoot = join(workspace, "runs");
     const executedCommands: string[] = [];
     const submittedCommands: string[] = [];
+    const captureRequests: unknown[] = [];
     const uploadedDestinations: string[] = [];
     const downloadedSources: string[] = [];
     const trimEvents: string[] = [];
@@ -218,18 +219,19 @@ describe("captureScenesFromScript", () => {
               stdout: "",
             };
           }
-          if (command.includes("bun ")) {
-            return {
-              exitCode: 0,
-              stderr:
-                '[makeademo:network-blocked] {"direction":"outbound","host":"assets.example.com","phase":"runtime"}',
-              stdout: [
-                '[makeademo:scene] {"elapsedMs":100,"event":"started","sceneId":"scene-001"}',
-                '[makeademo:scene] {"elapsedMs":900,"event":"succeeded","sceneId":"scene-001"}',
-              ].join("\n"),
-            };
-          }
           return { exitCode: 0, stderr: "", stdout: "" };
+        },
+        async executeMakeADemoCapture(request) {
+          captureRequests.push(request);
+          return {
+            exitCode: 0,
+            stderr:
+              '[makeademo:network-blocked] {"direction":"outbound","host":"assets.example.com","phase":"runtime"}',
+            stdout: [
+              '[makeademo:scene] {"elapsedMs":100,"event":"started","sceneId":"scene-001"}',
+              '[makeademo:scene] {"elapsedMs":900,"event":"succeeded","sceneId":"scene-001"}',
+            ].join("\n"),
+          };
         },
         async getPreviewUrl() {
           return "https://preview.example.test/";
@@ -270,17 +272,19 @@ describe("captureScenesFromScript", () => {
     expect(uploadedDestinations).toEqual(
       expect.arrayContaining([
         expect.stringContaining(
-          "/workspace/.makeademo/footage-capture-runs/capture-sandbox/work/continuous-take/demo-script.ts",
+          "/workspace/.makeademo/footage-capture-runs/capture-sandbox/work/continuous-take/demo-script.mjs",
         ),
-        expect.stringContaining("makeademo-capture-sdk.js"),
+        expect.stringContaining("makeademo-capture-sdk.mjs"),
       ]),
     );
     expect(submittedCommands.join("\n")).toContain(
       "/workspace/.makeademo/footage-capture-runs/capture-sandbox",
     );
-    expect(submittedCommands.join("\n")).toContain(
-      "/opt/makeademo/playwright-runtime/node_modules",
-    );
+    expect(captureRequests).toEqual([
+      expect.objectContaining({
+        scriptPath: expect.stringContaining("demo-script.mjs"),
+      }),
+    ]);
     expect(submittedCommands.join("\n")).not.toContain("npm root -g");
     expect(submittedCommands.join("\n")).toContain("ffmpeg");
     expect(submittedCommands.join("\n")).toContain("ffprobe");
@@ -325,14 +329,6 @@ describe("captureScenesFromScript", () => {
         },
         async executeSubmittedCode(command) {
           submittedCommands.push(command);
-          if (command.includes("bun ")) {
-            return {
-              exitCode: 0,
-              stderr:
-                '[makeademo:network-blocked] {"direction":"outbound","host":"analytics.example.com","phase":"runtime"}',
-              stdout: "",
-            };
-          }
           if (
             command.includes("find ") ||
             command.includes("ffmpeg") ||
@@ -341,6 +337,14 @@ describe("captureScenesFromScript", () => {
             throw new Error("post-network-block capture command must not run");
           }
           return { exitCode: 0, stderr: "", stdout: "" };
+        },
+        async executeMakeADemoCapture() {
+          return {
+            exitCode: 0,
+            stderr:
+              '[makeademo:network-blocked] {"direction":"outbound","host":"analytics.example.com","phase":"runtime"}',
+            stdout: "",
+          };
         },
         async getPreviewUrl() {
           return "https://preview.example.test/";
@@ -361,7 +365,7 @@ describe("captureScenesFromScript", () => {
     ).rejects.toThrow(
       "Footage Capture blocked runtime network access from the generated Demo Script: analytics.example.com",
     );
-    expect(submittedCommands.join("\n")).toContain("bun ");
+    expect(submittedCommands.join("\n")).not.toContain("bun ");
     expect(submittedCommands.join("\n")).not.toContain("ffmpeg");
     expect(submittedCommands.join("\n")).not.toContain("ffprobe");
     expect(downloadedSources).toEqual([]);
@@ -400,13 +404,13 @@ describe("captureScenesFromScript", () => {
         },
         async executeSubmittedCode(command) {
           submittedCommands.push(command);
-          if (command.includes("bun ")) {
-            return { exitCode: 124, stderr: "command timed out", stdout: "" };
-          }
           if (command.includes("find ") || command.includes("ffprobe")) {
             throw new Error("video discovery must not run after timeout");
           }
           return { exitCode: 0, stderr: "", stdout: "" };
+        },
+        async executeMakeADemoCapture() {
+          return { exitCode: 124, stderr: "command timed out", stdout: "" };
         },
         async getPreviewUrl() {
           return "https://preview.example.test/";
@@ -445,7 +449,7 @@ describe("captureScenesFromScript", () => {
         async downloadSubmittedCodeFiles() {},
         async executeSubmittedCode(command) {
           submittedCommands.push(command);
-          if (command.includes("bun ") || command.includes("continuous-take")) {
+          if (command.includes("continuous-take")) {
             return {
               exitCode: 0,
               stderr: "",
@@ -461,6 +465,14 @@ describe("captureScenesFromScript", () => {
             };
           }
           return { exitCode: 0, stderr: "", stdout: "" };
+        },
+        async executeMakeADemoCapture() {
+          return {
+            exitCode: 0,
+            stderr: "",
+            stdout:
+              '[makeademo:scene] {"elapsedMs":100,"event":"started","sceneId":"scene-001"}',
+          };
         },
         async getPreviewUrl() {
           return "https://preview.example.test/";

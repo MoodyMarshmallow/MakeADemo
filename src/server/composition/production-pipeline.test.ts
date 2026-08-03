@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentSessionRunner } from "../agent-harness/agent-session-runner.interface";
-import { runPipelineJob } from "../pipeline/00-orchestration/job/pipeline-orchestrator";
+import {
+  type PipelineOrchestratorDependencies,
+  runPipelineJob,
+} from "../pipeline/00-orchestration/job/pipeline-orchestrator";
 import type { PreparationWorkspaceHandle } from "../pipeline/03-repo-preparation/preparation-workspace-runner";
 import type { RepoPreparationAgent } from "../pipeline/03-repo-preparation/repo-preparation-agent.interface";
 import { submittedCodeKnownGoodNodeReleaseCatalog } from "../pipeline/03-repo-preparation/submitted-code-node-release-catalog.interface";
@@ -10,6 +13,7 @@ import type { ScriptGenerationAgent } from "../pipeline/04-script-generation/scr
 import type { CapturePathRepairer } from "../pipeline/05-capture-path-validation/capture-path-repairer.interface";
 import type { BrowserValidator } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/browser-validator.interface";
 import type { SandboxRunner } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/sandbox-runner.interface";
+import { repoSecurityEvidenceFixture } from "../test-support/repo-security-evidence-fixture";
 import { resolveProductionAgentModelConfig } from "./production-agent-model-config";
 import {
   createDaytonaFreshCaptureStatePreparer,
@@ -95,9 +99,11 @@ describe("production Pipeline assembly", () => {
 
     const result = await runPipelineJob(
       {
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         demoBrief: { keyProductFeatures: ["validation"] },
         normalizedSupportingDocuments: [],
         repoSecurity: {
+          evidence: repoSecurityEvidenceFixture(),
           files: [{ path: "package.json", text: "{}" }, { path: "bun.lock" }],
           repoStats: { fileCount: 2, sizeBytes: 1_000 },
         },
@@ -108,6 +114,7 @@ describe("production Pipeline assembly", () => {
         browserValidator,
         nodeReleaseCatalog: submittedCodeKnownGoodNodeReleaseCatalog,
         repoPreparationAgent,
+        repoSecurityReviewer: approvingRepoSecurityReviewer(),
         sandboxRunner,
         sceneValidator: {
           async validateScene() {
@@ -181,6 +188,7 @@ describe("production Pipeline assembly", () => {
           throw new Error("not used");
         },
       },
+      repoSecurityReviewer: approvingRepoSecurityReviewer(),
       sandboxRunner: {
         async runValidation() {
           throw new Error("not used");
@@ -287,6 +295,19 @@ function succeededPreparedDemo(
     preparationManifest: preparationManifest(),
     preparationWorkspace,
     status: "succeeded" as const,
+  };
+}
+
+function approvingRepoSecurityReviewer() {
+  return {
+    async review() {
+      return {
+        concerns: [],
+        rationale: "Test fixture approval.",
+        status: "succeeded" as const,
+        verdict: "approved" as const,
+      };
+    },
   };
 }
 

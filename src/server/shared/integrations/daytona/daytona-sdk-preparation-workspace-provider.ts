@@ -2,32 +2,41 @@ import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, normalize } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { satisfies as semverSatisfies } from "semver";
 
 import { Daytona } from "@daytona/sdk";
 
+import {
+  generatedWorkspaceCacheFindPredicates,
+  generatedWorkspaceCachePathPatterns,
+} from "../../../pipeline/03-repo-preparation/generated-workspace-cache-policy";
 import { createBoundedInstallEnvironment } from "../../../pipeline/03-repo-preparation/planned-dependency-install";
 import type {
   PreparationWorkspaceHandle,
   PreparationWorkspaceProvider,
 } from "../../../pipeline/03-repo-preparation/preparation-workspace-runner";
 import type {
+  MakeADemoCaptureExecutionRequest,
   PreparationWorkspace,
   PreparationWorkspaceCommandResult,
   PreparationWorkspaceDownloadFile,
   PreparationWorkspaceDownloadOptions,
   PreparationWorkspaceExecuteOptions,
   PreparationWorkspaceLogEntry,
+  PreparationWorkspaceResourceDiagnostics,
   PreparationWorkspaceUploadFile,
   PreparationWorkspaceUploadOptions,
   SubmittedProjectExecutionRequest,
   SubmittedProjectRuntimeRequest,
+  SubmittedRuntimeQuiescenceRequest,
 } from "../../../pipeline/03-repo-preparation/preparation-workspace.interface";
+import { SubmittedCodeToolchainRepairRequiredError } from "../../../pipeline/03-repo-preparation/submitted-code-execution";
 import {
   type SubmittedCodeToolchainPlan,
+  readSubmittedPackageManagerPolicy,
   submittedCodeToolchainCatalog,
 } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
 import { resolveSubmittedProjectCwd } from "../../../pipeline/03-repo-preparation/submitted-project-root";
@@ -42,16 +51,6 @@ import {
   createTrustedSubmittedNodeProvisionCommand,
   readTrustedSubmittedNodeAttestation,
 } from "./trusted-submitted-node-runtime";
-
-class TrustedPackageManagerProvisioningError extends Error {
-  constructor(
-    readonly code: "deprecated_release" | "package_manager_release_unavailable",
-    message: string,
-  ) {
-    super(message);
-    this.name = "TrustedPackageManagerProvisioningError";
-  }
-}
 
 type DaytonaSdkClient = {
   create(
@@ -95,6 +94,7 @@ type DaytonaSdkSandbox = {
   ): Promise<{ url?: string }>;
   id?: string;
   name?: string;
+  state?: string;
   stop(): Promise<void>;
   process: {
     createPty(options: {
@@ -166,7 +166,6 @@ export type DaytonaSdkPreparationWorkspaceProviderOptions = {
   ptyConnectionTimeoutMs?: number;
   sandboxCreateTimeoutSeconds?: number;
   sandboxLogSinks?: PipelineLogSink[];
-  secrets?: Record<string, string>;
   snapshot?: string;
   submittedCodeSnapshot?: string;
 };
@@ -195,6 +194,10 @@ const submittedSystemUtilitiesPath =
 const submittedCodePlaywrightModuleRoot =
   "/opt/makeademo/playwright-runtime/node_modules";
 const submittedCodePlaywrightBrowsersPath = "/ms-playwright";
+const makeADemoCaptureNodePath = "/opt/makeademo/capture-runtime/bin/node";
+const makeADemoCaptureEvidenceGraceMs = 5_000;
+const runtimePortStillOccupiedExitCode = 70;
+const runtimeQuiescenceSettlementGraceMs = 2_000;
 const parentSubmittedRuntimePaths = [
   "/usr/local/bin/node",
   "/usr/local/bin/npm",
@@ -253,7 +256,6 @@ export class DaytonaSdkPreparationWorkspaceProvider
   private readonly ptyConnectionTimeoutMs: number;
   private readonly sandboxCreateTimeoutSeconds: number;
   private readonly sandboxLogSinks: PipelineLogSink[];
-  private readonly secrets: Record<string, string> | undefined;
   private readonly snapshot: string | undefined;
   private readonly submittedCodeSnapshot: string | undefined;
 
@@ -264,7 +266,6 @@ export class DaytonaSdkPreparationWorkspaceProvider
         options.apiKey === undefined ? undefined : { apiKey: options.apiKey },
       ) as DaytonaSdkClient);
     this.commandTimeoutMs = options.commandTimeoutMs ?? defaultCommandTimeoutMs;
-    this.secrets = options.secrets;
     this.snapshot = options.snapshot;
     this.submittedCodeSnapshot = options.submittedCodeSnapshot;
     this.diskGB = options.diskGB ?? defaultSandboxDiskGB;
@@ -287,7 +288,6 @@ export class DaytonaSdkPreparationWorkspaceProvider
         autoStopInterval: 15,
         disk: this.diskGB,
         networkBlockAll: false,
-        ...(this.secrets === undefined ? {} : { secrets: this.secrets }),
         ...(this.snapshot === undefined ? {} : { snapshot: this.snapshot }),
       },
       createOptions,
@@ -296,25 +296,6 @@ export class DaytonaSdkPreparationWorkspaceProvider
     if (id === undefined || id.trim() === "") {
       await this.client.delete(sandbox);
       throw new Error("Daytona did not return a sandbox id.");
-    }
-
-    let submittedCodeSandbox: DaytonaSdkSandbox | undefined;
-    try {
-      submittedCodeSandbox =
-        this.submittedCodeSnapshot === undefined
-          ? undefined
-          : await this.createSandboxWithConnectionRetry(
-              {
-                autoDeleteInterval: -1,
-                networkBlockAll: false,
-                snapshot: this.submittedCodeSnapshot,
-                user: "root",
-              },
-              createOptions,
-            );
-    } catch (error) {
-      await this.client.delete(sandbox);
-      throw error;
     }
 
     return createPreparationWorkspaceHandle({
@@ -326,7 +307,20 @@ export class DaytonaSdkPreparationWorkspaceProvider
       ptyConnectionTimeoutMs: this.ptyConnectionTimeoutMs,
       sandboxLogSinks: this.sandboxLogSinks,
       sandbox,
-      ...(submittedCodeSandbox === undefined ? {} : { submittedCodeSandbox }),
+      ...(this.submittedCodeSnapshot === undefined
+        ? {}
+        : {
+            createSubmittedCodeSandbox: () =>
+              this.createSandboxWithConnectionRetry(
+                {
+                  autoDeleteInterval: -1,
+                  networkBlockAll: false,
+                  snapshot: this.submittedCodeSnapshot,
+                  user: "root",
+                },
+                createOptions,
+              ),
+          }),
     });
   }
 
@@ -362,17 +356,17 @@ export class DaytonaSdkPreparationWorkspaceProvider
 function createPreparationWorkspaceHandle(input: {
   client: DaytonaSdkClient;
   commandTimeoutMs: number;
+  createSubmittedCodeSandbox?: () => Promise<DaytonaSdkSandbox>;
   id: string;
   logWriteTimeoutMs: number;
   previewUrlTimeoutMs: number;
   ptyConnectionTimeoutMs: number;
   sandboxLogSinks?: PipelineLogSink[];
   sandbox: DaytonaSdkSandbox;
-  submittedCodeSandbox?: DaytonaSdkSandbox;
 }): PreparationWorkspaceHandle {
   const workspace = new DaytonaSdkPreparationWorkspace(
     input.sandbox,
-    input.submittedCodeSandbox,
+    input.createSubmittedCodeSandbox,
     input.id,
     input.commandTimeoutMs,
     input.logWriteTimeoutMs,
@@ -381,27 +375,53 @@ function createPreparationWorkspaceHandle(input: {
     input.sandboxLogSinks ?? [],
   );
 
-  let releasePromise: Promise<void> | undefined;
+  let settlementPromise: Promise<void> | undefined;
   return {
-    release() {
-      releasePromise ??= (async () => {
+    discard() {
+      settlementPromise ??= (async () => {
         let firstError: unknown;
         try {
           await workspace.cancelActiveCommands();
         } catch (error) {
           firstError = error;
         }
-        if (input.submittedCodeSandbox !== undefined) {
+        const submittedCodeSandbox = workspace.readSubmittedCodeSandbox();
+        if (submittedCodeSandbox !== undefined) {
+          try {
+            await input.client.delete(submittedCodeSandbox);
+          } catch (error) {
+            firstError ??= error;
+          }
+        }
+        try {
+          await input.client.delete(input.sandbox);
+        } catch (error) {
+          firstError ??= error;
+        }
+        if (firstError !== undefined) throw firstError;
+      })();
+      return settlementPromise;
+    },
+    release() {
+      settlementPromise ??= (async () => {
+        let firstError: unknown;
+        try {
+          await workspace.cancelActiveCommands();
+        } catch (error) {
+          firstError = error;
+        }
+        const submittedCodeSandbox = workspace.readSubmittedCodeSandbox();
+        if (submittedCodeSandbox !== undefined) {
           let submittedCodeStopped = false;
           try {
-            await input.submittedCodeSandbox.stop();
+            await submittedCodeSandbox.stop();
             submittedCodeStopped = true;
           } catch (error) {
             firstError ??= error;
           }
           if (submittedCodeStopped) {
             try {
-              await input.submittedCodeSandbox.archive();
+              await submittedCodeSandbox.archive();
             } catch (error) {
               firstError ??= error;
             }
@@ -425,7 +445,7 @@ function createPreparationWorkspaceHandle(input: {
           throw firstError;
         }
       })();
-      return releasePromise;
+      return settlementPromise;
     },
     id: input.id,
     workspace,
@@ -438,10 +458,15 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     state: "unprovisioned",
   };
   private readonly sandboxLogger: PipelineEventLogger;
+  private submittedRuntimeMutation = Promise.resolve();
+  private submittedRuntimeProcessGroupId: number | undefined;
+  private submittedCodeSandbox: DaytonaSdkSandbox | undefined;
 
   constructor(
     private readonly sandbox: DaytonaSdkSandbox,
-    private readonly submittedCodeSandbox: DaytonaSdkSandbox | undefined,
+    private readonly createSubmittedCodeSandbox:
+      | (() => Promise<DaytonaSdkSandbox>)
+      | undefined,
     private readonly workspaceId: string,
     private readonly commandTimeoutMs: number,
     private readonly logWriteTimeoutMs: number,
@@ -460,18 +485,15 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     });
   }
 
+  readSubmittedCodeSandbox(): DaytonaSdkSandbox | undefined {
+    return this.submittedCodeSandbox;
+  }
+
   async execute(
     command: string,
     options: PreparationWorkspaceExecuteOptions = {},
   ): Promise<PreparationWorkspaceCommandResult> {
-    if (options.onStdout !== undefined || options.onStderr !== undefined) {
-      return this.executeStreaming(command, options);
-    }
-    return this.executeCancellableCommandInSandbox(
-      this.sandbox,
-      command,
-      options,
-    );
+    return this.executeSandboxCommand(this.sandbox, command, options);
   }
 
   async executeAgentCommand(
@@ -483,13 +505,17 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
       ...options,
       env: {},
     };
-    if (options.onStdout !== undefined || options.onStderr !== undefined) {
-      return this.executeStreaming(agentCommand, agentOptions);
-    }
-    return this.executeCancellableCommandInSandbox(
+    return this.executeSandboxCommand(this.sandbox, agentCommand, agentOptions);
+  }
+
+  async executeRepositoryCommand(
+    command: string,
+    options: PreparationWorkspaceExecuteOptions = {},
+  ): Promise<PreparationWorkspaceCommandResult> {
+    return this.executeSandboxCommand(
       this.sandbox,
-      agentCommand,
-      agentOptions,
+      createUnprivilegedAgentCommand(command),
+      { ...options, env: {} },
     );
   }
 
@@ -618,33 +644,46 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
       throw new Error("Submitted-code Daytona sandbox is not configured.");
     }
 
-    const lifecycle = this.submittedToolchainLifecycle;
-    if (lifecycle.state === "failed") {
-      throw failedSubmittedCodeToolchainProvisioningRequiresFreshSandbox();
-    }
-    const submittedExecution =
-      lifecycle.state === "unprovisioned"
-        ? { command, env: createSubmittedRuntimeEnv(options.env) }
-        : createArtifactBoundSubmittedExecution(
-            command,
-            lifecycle.artifact,
-            options.env,
-          );
+    const artifact = this.requireSynchronizedSubmittedToolchain();
+    const submittedExecution = createArtifactBoundSubmittedExecution(
+      command,
+      artifact,
+      options.env,
+    );
     const execution = createUnprivilegedSubmittedCodeExecution(
       submittedExecution.command,
       submittedExecution.env,
     );
-    if (options.onStdout !== undefined || options.onStderr !== undefined) {
-      return this.executeStreamingInSandbox(
-        this.submittedCodeSandbox,
-        execution.command,
-        { ...options, env: {} },
-      );
-    }
-    return this.executeCancellableCommandInSandbox(
+    return this.executeSandboxCommand(
       this.submittedCodeSandbox,
       execution.command,
       { ...options, env: {} },
+    );
+  }
+
+  async executeMakeADemoCapture(
+    request: MakeADemoCaptureExecutionRequest,
+    options: Omit<PreparationWorkspaceExecuteOptions, "env" | "timeoutMs"> = {},
+  ): Promise<PreparationWorkspaceCommandResult> {
+    if (this.submittedCodeSandbox === undefined) {
+      throw new Error("Submitted-code Daytona sandbox is not configured.");
+    }
+    this.requireSynchronizedSubmittedToolchain();
+    validateMakeADemoCaptureExecutionRequest(request);
+    const command = createUnprivilegedSubmittedCodeExecution(
+      createMakeADemoCaptureCommand(request),
+      createMakeADemoCaptureRuntimeEnv(),
+    ).command;
+    const captureOptions: PreparationWorkspaceExecuteOptions = {
+      ...options,
+      env: {},
+      timeoutMs: request.timeoutMs + makeADemoCaptureEvidenceGraceMs,
+    };
+    return this.executeSandboxCommand(
+      this.submittedCodeSandbox,
+      command,
+      captureOptions,
+      request.runDirectory,
     );
   }
 
@@ -675,58 +714,150 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
       execution.command,
       execution.env,
     ).command;
-    if (options.onStdout !== undefined || options.onStderr !== undefined) {
-      return this.executeStreamingInSandbox(
-        this.submittedCodeSandbox,
-        command,
-        projectOptions,
-        execution.cwd,
-      );
-    }
-    return this.executeCancellableCommandInSandbox(
+    const beforeResources =
+      request.installProfile === "bounded"
+        ? await this.readSubmittedResourceSnapshot()
+        : undefined;
+    const result = await this.executeSandboxCommand(
       this.submittedCodeSandbox,
       command,
       projectOptions,
       execution.cwd,
     );
+    if (request.installProfile !== "bounded" || result.exitCode !== 137) {
+      return result;
+    }
+    const afterResources = await this.readSubmittedResourceSnapshot();
+    return {
+      ...result,
+      resourceDiagnostics: createResourceDiagnostics(
+        beforeResources,
+        afterResources,
+        readSafeProviderState(this.submittedCodeSandbox),
+      ),
+    };
+  }
+
+  private async readSubmittedResourceSnapshot(): Promise<
+    ResourceSnapshot | undefined
+  > {
+    if (this.submittedCodeSandbox === undefined) return undefined;
+    try {
+      const result = await this.executeCancellableCommandInSandbox(
+        this.submittedCodeSandbox,
+        createResourceSnapshotCommand(),
+        { env: createTrustedToolchainProvisioningEnv(), timeoutMs: 2_000 },
+        "/",
+      );
+      return result.exitCode === 0
+        ? parseResourceSnapshot(result.stdout)
+        : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   async executeSubmittedRuntime(
     request: SubmittedProjectRuntimeRequest,
     options: PreparationWorkspaceExecuteOptions = {},
   ): Promise<PreparationWorkspaceCommandResult> {
-    if (this.submittedCodeSandbox === undefined) {
-      throw new Error("Submitted-code Daytona sandbox is not configured.");
-    }
-    const provisioned = this.requireBoundSubmittedToolchain(request.plan);
-    const execution = createSubmittedRuntimeExecution(request, provisioned);
-    const runtimeOptions = {
-      ...options,
-      env: {},
-    };
-    const command = createUnprivilegedSubmittedCodeExecution(
-      execution.command,
-      execution.env,
-    ).command;
-    if (options.onStdout !== undefined || options.onStderr !== undefined) {
-      return this.executeStreamingInSandbox(
+    return await this.serializeSubmittedRuntimeMutation(async () => {
+      if (this.submittedCodeSandbox === undefined) {
+        throw new Error("Submitted-code Daytona sandbox is not configured.");
+      }
+      if (this.submittedRuntimeProcessGroupId !== undefined) {
+        throw new Error(
+          "A submitted runtime is already active; quiesce it before starting another.",
+        );
+      }
+      const provisioned = this.requireBoundSubmittedToolchain(request.plan);
+      const execution = createSubmittedRuntimeExecution(request, provisioned);
+      const runtimeOptions = {
+        ...options,
+        env: {},
+      };
+      const command = createUnprivilegedSubmittedCodeExecution(
+        execution.command,
+        execution.env,
+      ).command;
+      const result = await this.executeSandboxCommand(
         this.submittedCodeSandbox,
         command,
         runtimeOptions,
         execution.cwd,
       );
+      this.retainSubmittedRuntimeIdentity(result);
+      return result;
+    });
+  }
+
+  async quiesceSubmittedRuntime(
+    request: SubmittedRuntimeQuiescenceRequest,
+  ): Promise<void> {
+    await this.serializeSubmittedRuntimeMutation(async () => {
+      if (this.submittedCodeSandbox === undefined) {
+        throw new Error("Submitted-code Daytona sandbox is not configured.");
+      }
+      validateSubmittedRuntimeQuiescenceRequest(request);
+      const result = await this.executeCancellableCommandInSandbox(
+        this.submittedCodeSandbox,
+        createSubmittedRuntimeQuiescenceCommand({
+          ...request,
+          ...(this.submittedRuntimeProcessGroupId === undefined
+            ? {}
+            : { processGroupId: this.submittedRuntimeProcessGroupId }),
+        }),
+        {
+          env: createSubmittedRuntimeEnv(),
+          timeoutMs: request.timeoutMs + runtimeQuiescenceSettlementGraceMs,
+        },
+      );
+      if (result.exitCode !== 0) {
+        throw new Error(
+          result.exitCode === runtimePortStillOccupiedExitCode
+            ? `Submitted runtime port ${request.port} remains occupied after quiescence.`
+            : "Submitted runtime process group could not be quiesced.",
+        );
+      }
+      this.submittedRuntimeProcessGroupId = undefined;
+    });
+  }
+
+  private retainSubmittedRuntimeIdentity(
+    result: PreparationWorkspaceCommandResult,
+  ): void {
+    if (result.exitCode !== 0) return;
+    const identity = /^\s*(\d+)\s*$/m.exec(result.stdout)?.[1];
+    if (identity !== undefined) {
+      this.submittedRuntimeProcessGroupId = Number(identity);
     }
-    return this.executeCancellableCommandInSandbox(
-      this.submittedCodeSandbox,
-      command,
-      runtimeOptions,
-      execution.cwd,
-    );
+  }
+
+  private async serializeSubmittedRuntimeMutation<T>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const predecessor = this.submittedRuntimeMutation;
+    let release!: () => void;
+    this.submittedRuntimeMutation = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await predecessor;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   }
 
   async provisionSubmittedCodeToolchain(
     plan: SubmittedProjectExecutionRequest["plan"],
   ): Promise<void> {
+    if (
+      this.submittedCodeSandbox === undefined &&
+      this.createSubmittedCodeSandbox !== undefined
+    ) {
+      this.submittedCodeSandbox = await this.createSubmittedCodeSandbox();
+    }
     if (this.submittedCodeSandbox === undefined) {
       throw new Error("Submitted-code Daytona sandbox is not configured.");
     }
@@ -808,13 +939,13 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
           if (
             result.stderr.includes("MAKEADEMO_REGISTRY_RELEASE_UNAVAILABLE")
           ) {
-            throw new TrustedPackageManagerProvisioningError(
+            throw new SubmittedCodeToolchainRepairRequiredError(
               "package_manager_release_unavailable",
               `The exact trusted package-manager release ${manager.name}@${manager.version} is unavailable.`,
             );
           }
           if (result.stderr.includes("MAKEADEMO_REGISTRY_RELEASE_DEPRECATED")) {
-            throw new TrustedPackageManagerProvisioningError(
+            throw new SubmittedCodeToolchainRepairRequiredError(
               "deprecated_release",
               `Trusted registry metadata marks ${manager.name}@${manager.version} as deprecated.`,
             );
@@ -860,6 +991,12 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
       })();
       await this.verifyTrustedToolchainArtifact(artifact);
     } catch (error) {
+      if (error instanceof SubmittedCodeToolchainRepairRequiredError) {
+        // A repairable catalog outcome must leave the sandbox retryable after
+        // the preparation agent updates package-manager metadata.
+        this.submittedToolchainLifecycle = { state: "unprovisioned" };
+        throw error;
+      }
       this.submittedToolchainLifecycle = { state: "failed" };
       throw error;
     }
@@ -872,6 +1009,12 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
   }
 
   async syncSubmittedCodeWorkspace(): Promise<void> {
+    await this.serializeSubmittedRuntimeMutation(() =>
+      this.syncSubmittedCodeWorkspaceInternal(),
+    );
+  }
+
+  private async syncSubmittedCodeWorkspaceInternal(): Promise<void> {
     if (this.submittedCodeSandbox === undefined) {
       throw new Error("Submitted-code Daytona sandbox is not configured.");
     }
@@ -976,6 +1119,19 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     ) {
       throw new Error(
         `Submitted toolchain ${manager.name}@${manager.version} requires synchronization after provisioning.`,
+      );
+    }
+    return lifecycle.artifact;
+  }
+
+  private requireSynchronizedSubmittedToolchain(): HydratedSubmittedCodeToolchainArtifact {
+    const lifecycle = this.submittedToolchainLifecycle;
+    if (lifecycle.state === "failed") {
+      throw failedSubmittedCodeToolchainProvisioningRequiresFreshSandbox();
+    }
+    if (lifecycle.state !== "synchronized") {
+      throw new Error(
+        "Submitted-code execution requires synchronization after provisioning.",
       );
     }
     return lifecycle.artifact;
@@ -1330,6 +1486,23 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
     }
   }
 
+  private executeSandboxCommand(
+    sandbox: DaytonaSdkSandbox,
+    command: string,
+    options: PreparationWorkspaceExecuteOptions,
+    cwd = "/workspace",
+  ): Promise<PreparationWorkspaceCommandResult> {
+    if (options.onStdout !== undefined || options.onStderr !== undefined) {
+      return this.executeStreamingInSandbox(sandbox, command, options, cwd);
+    }
+    return this.executeCancellableCommandInSandbox(
+      sandbox,
+      command,
+      options,
+      cwd,
+    );
+  }
+
   private async executeStreamingInSandbox(
     sandbox: DaytonaSdkSandbox,
     command: string,
@@ -1579,7 +1752,7 @@ function createSubmittedProjectExecution(
 ): { command: string; cwd: string; env: Record<string, string> } {
   const { plan } = request;
   const { cwd, manager } = validateSubmittedToolchainPlan(plan);
-  const install = immutableInstallCommand(manager);
+  const install = readSubmittedPackageManagerPolicy(manager).install;
   const expectedArgv = install?.argv;
   if (
     install === null ||
@@ -1647,7 +1820,7 @@ function createSubmittedRuntimeExecution(
   validateSubmittedRuntimePlan(request.plan);
   return {
     ...createArtifactBoundSubmittedExecution(request.command, provisioned),
-    cwd: "/workspace",
+    cwd: resolveSubmittedProjectCwd(request.plan.projectRoot),
   };
 }
 
@@ -1712,8 +1885,7 @@ function validateSubmittedToolchainPlan(
       "Submitted toolchain plan has no catalog install capability.",
     );
   }
-  assertCompatibleManager(manager);
-  const install = immutableInstallCommand(manager);
+  const install = readSubmittedPackageManagerPolicy(manager).install;
   if (
     install === null ||
     plan.install.executable !== install.executable ||
@@ -1773,6 +1945,217 @@ function createSubmittedRuntimeEnv(
   };
 }
 
+function createMakeADemoCaptureRuntimeEnv(): Record<string, string> {
+  return {
+    MAKEADEMO_PLAYWRIGHT_MODULE_ROOT: submittedCodePlaywrightModuleRoot,
+    PATH: submittedSystemUtilitiesPath,
+    PLAYWRIGHT_BROWSERS_PATH: submittedCodePlaywrightBrowsersPath,
+  };
+}
+
+function validateSubmittedRuntimeQuiescenceRequest(
+  request: SubmittedRuntimeQuiescenceRequest,
+): void {
+  if (
+    !Number.isSafeInteger(request.port) ||
+    request.port < 1 ||
+    request.port > 65_535
+  ) {
+    throw new Error(
+      "Submitted runtime quiescence requires a valid local port.",
+    );
+  }
+  if (
+    !Number.isSafeInteger(request.timeoutMs) ||
+    request.timeoutMs < 100 ||
+    request.timeoutMs > 30_000
+  ) {
+    throw new Error(
+      "Submitted runtime quiescence timeout must be between 100 and 30000 milliseconds.",
+    );
+  }
+}
+
+type ResourceSnapshot = {
+  memoryOomKill: number;
+  memoryPeakBytes?: number;
+  pidsCurrent?: number;
+  pidsLimit?: number;
+  pidsMaxEvents: number;
+};
+
+function createResourceSnapshotCommand(): string {
+  return [
+    'read_number() { test -r "$1" && cat "$1" 2>/dev/null || echo 0; }',
+    'read_event() { test -r "$1" && awk -v key="$2" \'$1 == key { print $2; found=1 } END { if (!found) print 0 }\' "$1" 2>/dev/null || echo 0; }',
+    "echo MAKEADEMO_RESOURCE_SNAPSHOT=1",
+    "echo memory_oom_kill=$(read_event /sys/fs/cgroup/memory.events oom_kill)",
+    "if test -r /sys/fs/cgroup/memory.peak; then echo memory_peak_bytes=$(read_number /sys/fs/cgroup/memory.peak); elif test -r /sys/fs/cgroup/memory/memory.max_usage_in_bytes; then echo memory_peak_bytes=$(read_number /sys/fs/cgroup/memory/memory.max_usage_in_bytes); fi",
+    "if test -r /sys/fs/cgroup/pids.current; then echo pids_current=$(read_number /sys/fs/cgroup/pids.current); elif test -r /sys/fs/cgroup/pids/pids.current; then echo pids_current=$(read_number /sys/fs/cgroup/pids/pids.current); fi",
+    "if test -r /sys/fs/cgroup/pids.max; then echo pids_limit=$(read_number /sys/fs/cgroup/pids.max); elif test -r /sys/fs/cgroup/pids/pids.max; then echo pids_limit=$(read_number /sys/fs/cgroup/pids/pids.max); fi",
+    "if test -r /sys/fs/cgroup/pids.events; then echo pids_max_events=$(read_event /sys/fs/cgroup/pids.events max); elif test -r /sys/fs/cgroup/pids/pids.events; then echo pids_max_events=$(read_event /sys/fs/cgroup/pids/pids.events max); else echo pids_max_events=0; fi",
+  ].join("; ");
+}
+
+function parseResourceSnapshot(output: string): ResourceSnapshot | undefined {
+  if (!output.includes("MAKEADEMO_RESOURCE_SNAPSHOT=1")) return undefined;
+  const values = new Map(
+    output.split(/\r?\n/).flatMap((line) => {
+      const match = /^([a-z_]+)=(\d+|max)$/.exec(line.trim());
+      return match?.[1] === undefined || match[2] === undefined
+        ? []
+        : [[match[1], match[2]] as const];
+    }),
+  );
+  const number = (key: string): number | undefined => {
+    const value = values.get(key);
+    if (value === undefined || value === "max") return undefined;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
+  };
+  const memoryPeakBytes = number("memory_peak_bytes");
+  const pidsCurrent = number("pids_current");
+  const pidsLimit = number("pids_limit");
+  return {
+    memoryOomKill: number("memory_oom_kill") ?? 0,
+    ...(memoryPeakBytes === undefined ? {} : { memoryPeakBytes }),
+    ...(pidsCurrent === undefined ? {} : { pidsCurrent }),
+    ...(pidsLimit === undefined ? {} : { pidsLimit }),
+    pidsMaxEvents: number("pids_max_events") ?? 0,
+  };
+}
+
+function createResourceDiagnostics(
+  before: ResourceSnapshot | undefined,
+  after: ResourceSnapshot | undefined,
+  providerState: PreparationWorkspaceResourceDiagnostics["providerState"],
+): PreparationWorkspaceResourceDiagnostics {
+  if (before === undefined || after === undefined) {
+    return {
+      classification:
+        providerState === "stopped" || providerState === "unavailable"
+          ? "provider-state"
+          : "unproven",
+      ...(providerState === undefined ? {} : { providerState }),
+    };
+  }
+  const memoryOomKillDelta = Math.max(
+    0,
+    after.memoryOomKill - before.memoryOomKill,
+  );
+  const pidsMaxEventDelta = Math.max(
+    0,
+    after.pidsMaxEvents - before.pidsMaxEvents,
+  );
+  return {
+    classification:
+      memoryOomKillDelta > 0
+        ? "cgroup-oom-kill"
+        : pidsMaxEventDelta > 0
+          ? "pid-limit"
+          : providerState === "stopped" || providerState === "unavailable"
+            ? "provider-state"
+            : "unproven",
+    ...(memoryOomKillDelta === 0 ? {} : { memoryOomKillDelta }),
+    ...(after.memoryPeakBytes === undefined
+      ? {}
+      : { memoryPeakBytes: after.memoryPeakBytes }),
+    ...(after.pidsCurrent === undefined
+      ? {}
+      : { pidsCurrent: after.pidsCurrent }),
+    ...(after.pidsLimit === undefined ? {} : { pidsLimit: after.pidsLimit }),
+    ...(pidsMaxEventDelta === 0 ? {} : { pidsMaxEventDelta }),
+    ...(providerState === undefined ? {} : { providerState }),
+  };
+}
+
+function readSafeProviderState(
+  sandbox: DaytonaSdkSandbox,
+): PreparationWorkspaceResourceDiagnostics["providerState"] {
+  const state = sandbox.state?.toLowerCase();
+  if (state === undefined) return undefined;
+  if (["stopped", "stopping", "archived"].includes(state)) return "stopped";
+  if (["error", "failed", "unavailable"].includes(state)) {
+    return "unavailable";
+  }
+  if (["started", "starting", "running"].includes(state)) return "running";
+  return undefined;
+}
+
+function createSubmittedRuntimeQuiescenceCommand(input: {
+  port: number;
+  processGroupId?: number;
+  timeoutMs: number;
+}): string {
+  const attempts = Math.max(1, Math.ceil(input.timeoutMs / 200));
+  const processGroupId = input.processGroupId;
+  const lines = [
+    ...(processGroupId === undefined
+      ? []
+      : [
+          `makeademo_pid=${shellQuote(String(processGroupId))}`,
+          'kill -TERM -- -"$makeademo_pid" >/dev/null 2>&1 || kill -TERM "$makeademo_pid" >/dev/null 2>&1 || true',
+          `makeademo_attempts=${attempts}`,
+          'while test "$makeademo_attempts" -gt 0 && kill -0 -- -"$makeademo_pid" >/dev/null 2>&1; do sleep 0.1; makeademo_attempts=$((makeademo_attempts - 1)); done',
+          'if kill -0 -- -"$makeademo_pid" >/dev/null 2>&1; then kill -KILL -- -"$makeademo_pid" >/dev/null 2>&1 || true; fi',
+          `makeademo_attempts=${attempts}`,
+          'while test "$makeademo_attempts" -gt 0 && kill -0 -- -"$makeademo_pid" >/dev/null 2>&1; do sleep 0.1; makeademo_attempts=$((makeademo_attempts - 1)); done',
+          'if kill -0 -- -"$makeademo_pid" >/dev/null 2>&1; then exit 71; fi',
+          'if test -f /tmp/makeademo-demo.pid && test "$(cat /tmp/makeademo-demo.pid 2>/dev/null)" = "$makeademo_pid"; then rm -f /tmp/makeademo-demo.pid; fi',
+        ]),
+    `/bin/bash -c ${shellQuote(`if exec 3<>/dev/tcp/127.0.0.1/${input.port}; then exec 3>&-; exit ${runtimePortStillOccupiedExitCode}; fi`)}`,
+  ];
+  return lines.join(" && ");
+}
+
+function createMakeADemoCaptureCommand(
+  request: MakeADemoCaptureExecutionRequest,
+): string {
+  return [
+    `cd ${shellQuote(request.runDirectory)}`,
+    `/usr/bin/timeout -s TERM ${Math.ceil(request.timeoutMs / 1_000)} ${shellQuote(makeADemoCaptureNodePath)} ${shellQuote(request.scriptPath)} > ${shellQuote(request.stdoutPath)} 2> ${shellQuote(request.stderrPath)}`,
+    "code=$?",
+    `/bin/cat ${shellQuote(request.stdoutPath)}`,
+    `/bin/cat ${shellQuote(request.stderrPath)} >&2`,
+    "exit $code",
+  ].join("; ");
+}
+
+function validateMakeADemoCaptureExecutionRequest(
+  request: MakeADemoCaptureExecutionRequest,
+): void {
+  const internalRoot = "/workspace/.makeademo/";
+  for (const path of [
+    request.runDirectory,
+    request.scriptPath,
+    request.stderrPath,
+    request.stdoutPath,
+  ]) {
+    if (
+      !path.startsWith(internalRoot) ||
+      path.includes("\0") ||
+      normalize(path) !== path
+    ) {
+      throw new Error(
+        "MakeADemo capture paths must stay under /workspace/.makeademo.",
+      );
+    }
+  }
+  if (
+    dirname(request.scriptPath) !== request.runDirectory ||
+    dirname(request.stderrPath) !== request.runDirectory ||
+    dirname(request.stdoutPath) !== request.runDirectory ||
+    !request.scriptPath.endsWith(".mjs")
+  ) {
+    throw new Error(
+      "MakeADemo capture artifacts must be direct files in the capture run directory.",
+    );
+  }
+  if (!Number.isSafeInteger(request.timeoutMs) || request.timeoutMs <= 0) {
+    throw new Error("MakeADemo capture timeout must be a positive integer.");
+  }
+}
+
 function createCorepackDescriptor(input: {
   corepackHash?: string;
   name: string;
@@ -1792,76 +2175,6 @@ function sameArgv(left: readonly string[], right: readonly string[]): boolean {
     left.length === right.length &&
     left.every((value, index) => value === right[index])
   );
-}
-
-function immutableInstallCommand(
-  manager: NonNullable<
-    SubmittedProjectExecutionRequest["plan"]["packageManager"]
-  >,
-): {
-  argv: readonly string[];
-  executable: string;
-} {
-  if (manager.name === "npm") {
-    return { argv: ["ci", "--maxsockets=4"], executable: "npm" };
-  }
-  if (manager.name === "pnpm") {
-    return {
-      argv: [
-        "install",
-        "--frozen-lockfile",
-        "--child-concurrency=2",
-        "--network-concurrency=4",
-      ],
-      executable: "pnpm",
-    };
-  }
-  if (manager.name === "bun") {
-    return { argv: ["install", "--frozen-lockfile"], executable: "bun" };
-  }
-  return {
-    argv:
-      manager.generation === "yarn-classic"
-        ? ["install", "--frozen-lockfile", "--network-concurrency", "4"]
-        : ["install", "--immutable"],
-    executable: "yarn",
-  };
-}
-
-function assertCompatibleManager(
-  manager: NonNullable<
-    SubmittedProjectExecutionRequest["plan"]["packageManager"]
-  >,
-): void {
-  const ranges: Record<typeof manager.name, string> = {
-    bun: ">=1.2.16 <2",
-    npm: ">=8 <12",
-    pnpm: ">=8 <12",
-    yarn: ">=1 <5",
-  };
-  if (
-    !/^\d+\.\d+\.\d+$/.test(manager.version) ||
-    !semverSatisfies(manager.version, ranges[manager.name])
-  ) {
-    throw new Error(
-      `Unsupported package-manager compatibility generation: ${manager.name}@${manager.version}`,
-    );
-  }
-  const expectedGeneration =
-    manager.name === "yarn"
-      ? manager.version.startsWith("1.")
-        ? "yarn-classic"
-        : "yarn-berry"
-      : manager.name === "bun"
-        ? "bun-1"
-        : manager.name === "npm"
-          ? "npm-modern"
-          : "pnpm-modern";
-  if (manager.generation !== expectedGeneration) {
-    throw new Error(
-      `Package-manager generation does not match ${manager.name}@${manager.version}.`,
-    );
-  }
 }
 
 function submittedToolchainPlanIdentity(
@@ -2622,42 +2935,7 @@ function createPreparedWorkspaceArchiveCommand(archivePath: string): string {
     "./*/.git/*",
     "./.makeademo",
     "./.makeademo/*",
-    "./node_modules",
-    "./node_modules/*",
-    "./*/node_modules",
-    "./*/node_modules/*",
-    "./.vite",
-    "./.vite/*",
-    "./*/.vite",
-    "./*/.vite/*",
-    "./.turbo",
-    "./.turbo/*",
-    "./*/.turbo",
-    "./*/.turbo/*",
-    "./.npm",
-    "./.npm/*",
-    "./*/.npm",
-    "./*/.npm/*",
-    "./.pnpm-store",
-    "./.pnpm-store/*",
-    "./*/.pnpm-store",
-    "./*/.pnpm-store/*",
-    "./.yarn/cache",
-    "./.yarn/cache/*",
-    "./*/.yarn/cache",
-    "./*/.yarn/cache/*",
-    "./.next/cache",
-    "./.next/cache/*",
-    "./*/.next/cache",
-    "./*/.next/cache/*",
-    "./.bun",
-    "./.bun/*",
-    "./*/.bun",
-    "./*/.bun/*",
-    "./.cache",
-    "./.cache/*",
-    "./*/.cache",
-    "./*/.cache/*",
+    ...generatedWorkspaceCachePathPatterns,
   ];
   const excludeFlags = excludedArchivePaths
     .map((path) => `--exclude=${shellQuote(path)}`)
@@ -2674,17 +2952,8 @@ function createPreparedWorkspaceArchiveCommand(archivePath: string): string {
 function createSubmittedCodeWorkspaceExtractCommand(
   archivePath: string,
 ): string {
-  const preservedWorkspacePaths = [
-    "-name node_modules",
-    "-name .vite",
-    "-name .turbo",
-    "-name .npm",
-    "-name .pnpm-store",
-    "-path '*/.yarn/cache'",
-    "-path '*/.next/cache'",
-    "-name .bun",
-    "-name .cache",
-  ].join(" -o ");
+  const preservedWorkspacePaths =
+    generatedWorkspaceCacheFindPredicates.join(" -o ");
 
   return `sh -lc ${shellQuote(
     [

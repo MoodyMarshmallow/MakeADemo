@@ -139,6 +139,25 @@ describe("Daytona image verifier", () => {
     expect(script).toContain(
       'test -z "$(find /ms-playwright ! -type l -perm /222 -print -quit)"',
     );
+    expect(script).toContain(
+      'test -x "/opt/makeademo/capture-runtime/bin/node"',
+    );
+    expect(script).toContain(
+      "find /opt/makeademo/capture-runtime ! -user root",
+    );
+    expect(script).toContain(
+      "find /opt/makeademo/capture-runtime ! -type l -perm /222",
+    );
+    expect(script).toContain('const makeADemoCaptureNodeVersion = "v22.12.0"');
+    expect(script).toContain(
+      '"177208bfc4a9403121a40c72d038c670f4fd937fa16ca7df0a720e90be0fe2d9"',
+    );
+    expect(script).toContain(
+      "/opt/makeademo/capture-runtime/bin/node | sha256sum -c -",
+    );
+    expect(script).toContain(
+      'process.execPath !== "/opt/makeademo/capture-runtime/bin/node"',
+    );
     expect(script).toContain('metadata.version !== "1.49.1"');
     expect(script).toContain('requireFromTrustedRuntime("playwright")');
     expect(script).toContain('requireFromTrustedRuntime("@playwright/test")');
@@ -147,22 +166,30 @@ describe("Daytona image verifier", () => {
     expect(script).toContain("touch /workspace/.makeademo/runtime-write-test");
   });
 
-  it("launches the trusted Playwright runtime only through the private provisioned binding", async () => {
+  it("launches trusted Playwright only through the fixed MakeADemo capture runtime", async () => {
     const script = await readVerifierScript();
     const provisionIndex = script.indexOf(
       "await handle.workspace.provisionSubmittedCodeToolchain(dynamicPlan)",
     );
-    const trustedLaunchIndex = script.indexOf("trusted playwright chromium ok");
-    const boundRuntimeIndex = script.lastIndexOf(
-      "handle.workspace.executeSubmittedRuntime({",
-      trustedLaunchIndex,
+    const smokeScriptIndex = script.indexOf("captureRuntimeSmokeScript");
+    const boundRuntimeIndex = script.indexOf(
+      "handle.workspace.executeMakeADemoCapture({",
+      smokeScriptIndex,
+    );
+    const trustedLaunchIndex = script.indexOf(
+      'trustedPlaywrightRuntime.stdout.includes("trusted playwright chromium ok")',
+      boundRuntimeIndex,
     );
 
     expect(provisionIndex).toBeGreaterThanOrEqual(0);
+    expect(smokeScriptIndex).toBeGreaterThan(provisionIndex);
     expect(boundRuntimeIndex).toBeGreaterThan(provisionIndex);
     expect(trustedLaunchIndex).toBeGreaterThan(boundRuntimeIndex);
     expect(script.slice(0, provisionIndex)).not.toContain(
       "trusted playwright chromium ok",
+    );
+    expect(script.slice(boundRuntimeIndex, trustedLaunchIndex)).not.toContain(
+      "plan:",
     );
   });
 

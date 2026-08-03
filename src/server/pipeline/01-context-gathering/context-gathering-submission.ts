@@ -36,6 +36,7 @@ type ContextGatheringProjectContext = {
 
 export type ContextGatheringStoreInput = {
   project: {
+    commitSha: string;
     context: ContextGatheringProjectContext;
     githubInstallationId?: string;
     repoUrl: string;
@@ -65,18 +66,39 @@ export interface ContextGatheringStore {
   ): Promise<ContextGatheringSubmitResult>;
 }
 
+/** Resolves the immutable source revision selected during Project Intake. */
+export interface RepositoryRevisionResolver {
+  resolve(input: {
+    githubInstallationId?: string;
+    repoUrl: string;
+  }): Promise<string>;
+}
+
 export async function submitContextGathering(
   input: ContextGatheringSubmission,
-  dependencies: { store: ContextGatheringStore },
+  dependencies: {
+    revisionResolver: RepositoryRevisionResolver;
+    store: ContextGatheringStore;
+  },
 ): Promise<ContextGatheringSubmitResult> {
   validateSubmission(input);
+  const supportingFiles = input.supportingFiles.map(serializeSupportingFile);
+  const commitSha = readCommitSha(
+    await dependencies.revisionResolver.resolve({
+      repoUrl: input.repoUrl,
+      ...(input.githubInstallationId === undefined
+        ? {}
+        : { githubInstallationId: input.githubInstallationId }),
+    }),
+  );
 
   return dependencies.store.createQueuedProject({
     project: {
+      commitSha,
       context: createProjectContext(input.structuredContext),
       repoUrl: input.repoUrl,
       repoVisibility: input.repoVisibility,
-      supportingFiles: input.supportingFiles.map(serializeSupportingFile),
+      supportingFiles,
       ...(input.githubInstallationId === undefined
         ? {}
         : { githubInstallationId: input.githubInstallationId }),
@@ -86,6 +108,13 @@ export async function submitContextGathering(
       name: input.contact.name,
     },
   });
+}
+
+function readCommitSha(value: string) {
+  if (!/^[0-9a-f]{40}$/i.test(value)) {
+    throw new Error("repository revision must resolve to a full commit SHA");
+  }
+  return value.toLowerCase();
 }
 
 function createProjectContext(

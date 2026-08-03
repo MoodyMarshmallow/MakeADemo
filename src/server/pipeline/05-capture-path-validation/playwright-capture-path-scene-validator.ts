@@ -50,6 +50,7 @@ export class DefaultCapturePathSceneValidator
     } catch (error) {
       if (error instanceof DemoScriptTypeValidationError) {
         return {
+          failureKind: "demo-script-type-validation-failed",
           failureReason:
             "Demo Script failed Capture SDK TypeScript validation.",
           logs: [error.message],
@@ -95,6 +96,7 @@ export class DefaultCapturePathSceneValidator
       }
       if (isMissingSandboxPlaywrightError(logs)) {
         return {
+          failureKind: "validator-dependency-failed",
           failureReason: missingSandboxPlaywrightFailureReason,
           logs,
           runDirectory,

@@ -47,14 +47,10 @@ export async function runPlannedDependencyInstall(
       `Submitted code toolchain cannot install dependencies (${blocker?.code ?? "missing_immutable_install"}): ${blocker?.reason ?? "No catalog-owned immutable install is available."}`,
     );
   }
-  return executeSubmittedProject(
-    input.workspace,
-    {
-      argv: install.argv,
-      executable: install.executable,
-      installProfile: "bounded",
-      plan: input.toolchainPlan,
-    },
-    { env: createBoundedInstallEnvironment(input.toolchainPlan) },
-  );
+  return executeSubmittedProject(input.workspace, {
+    argv: install.argv,
+    executable: install.executable,
+    installProfile: "bounded",
+    plan: input.toolchainPlan,
+  });
 }

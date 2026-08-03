@@ -67,77 +67,11 @@ describe("runPlannedDependencyInstall", () => {
           "--child-concurrency=2",
           "--network-concurrency=4",
         ],
-        env: {
-          CHILD_CONCURRENCY: "2",
-          CI: "true",
-          CMAKE_BUILD_PARALLEL_LEVEL: "2",
-          HUSKY: "0",
-          MAKEFLAGS: "-j2",
-          TURBO_CONCURRENCY: "2",
-        },
+        env: undefined,
         executable: "pnpm",
         installProfile: "bounded",
         projectRoot: ".",
       },
-    ]);
-  });
-
-  it("binds Yarn Berry's documented concurrency configuration", async () => {
-    const requests: unknown[] = [];
-    const workspace: PreparationWorkspace = {
-      async execute() {
-        throw new Error(
-          "outer workspace execution must not run submitted code",
-        );
-      },
-      async executeSubmittedProject(request, options) {
-        requests.push({ ...request, env: options?.env });
-        return { exitCode: 0, stderr: "", stdout: "" };
-      },
-      async getPreviewUrl() {
-        return "https://preview.example.test";
-      },
-      async uploadFiles() {},
-    };
-    const toolchainPlan = resolveSubmittedCodeToolchain(
-      {
-        candidates: [
-          {
-            files: {
-              "package.json": JSON.stringify({
-                engines: { node: "22" },
-                packageManager: "yarn@4.12.0",
-              }),
-              "yarn.lock": "__metadata:\n  version: 8\n",
-            },
-            projectRoot: ".",
-          },
-        ],
-      },
-      submittedCodeKnownGoodNodeReleaseSnapshot,
-    );
-
-    await runPlannedDependencyInstall({
-      toolchainPlan,
-      workspace,
-    });
-
-    expect(requests).toEqual([
-      expect.objectContaining({
-        argv: ["install", "--immutable"],
-        executable: "yarn",
-        env: {
-          CHILD_CONCURRENCY: "2",
-          CI: "true",
-          CMAKE_BUILD_PARALLEL_LEVEL: "2",
-          HUSKY: "0",
-          MAKEFLAGS: "-j2",
-          TURBO_CONCURRENCY: "2",
-          YARN_NETWORK_CONCURRENCY: "4",
-          YARN_TASK_POOL_CONCURRENCY: "2",
-        },
-        installProfile: "bounded",
-      }),
     ]);
   });
 

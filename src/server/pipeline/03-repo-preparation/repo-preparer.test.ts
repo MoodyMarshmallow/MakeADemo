@@ -32,6 +32,7 @@ describe("prepareRepo", () => {
 
     const result = await prepareRepo(
       {
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         normalizedSupportingDocuments: [],
         repoUrl: "https://github.com/example/app",
         structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -75,6 +76,7 @@ describe("prepareRepo", () => {
 
     const result = await prepareRepo(
       {
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         normalizedSupportingDocuments: [],
         repoUrl: "https://github.com/example/app",
         structuredDemoIntent: { keyProductFeatures: ["validation"] },
@@ -104,6 +106,7 @@ describe("prepareRepo", () => {
 
     const result = await prepareRepo(
       {
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         normalizedSupportingDocuments: [],
         repoUrl: "https://github.com/example/app",
         structuredDemoIntent: { keyProductFeatures: ["dashboard"] },
@@ -140,6 +143,7 @@ describe("prepareRepo", () => {
 
     const result = await prepareRepo(
       {
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         normalizedSupportingDocuments: [],
         repoUrl: "https://github.com/example/app",
         structuredDemoIntent: { keyProductFeatures: ["dashboard"] },
@@ -183,6 +187,7 @@ describe("prepareRepo", () => {
 
     const result = await prepareRepo(
       {
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         normalizedSupportingDocuments: [],
         repoUrl: "https://github.com/example/app",
         structuredDemoIntent: { keyProductFeatures: ["dashboard"] },
@@ -230,6 +235,7 @@ describe("prepareRepo", () => {
 
     const result = await prepareRepo(
       {
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         normalizedSupportingDocuments: [],
         repoUrl: "https://github.com/example/app",
         structuredDemoIntent: { keyProductFeatures: ["dashboard"] },

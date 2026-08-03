@@ -1,10 +1,14 @@
+import { generatedWorkspaceCachePathPatterns } from "../../../pipeline/03-repo-preparation/generated-workspace-cache-policy";
 import { runPlannedDependencyInstall } from "../../../pipeline/03-repo-preparation/planned-dependency-install";
 import type { PreparationManifest } from "../../../pipeline/03-repo-preparation/preparation-manifest";
+import { describeDependencyInstallSigkill } from "../../../pipeline/03-repo-preparation/preparation-workspace-resource-diagnostics";
 import type { PreparationWorkspaceHandle } from "../../../pipeline/03-repo-preparation/preparation-workspace-runner";
+import type { PreparationWorkspaceCommandResult } from "../../../pipeline/03-repo-preparation/preparation-workspace.interface";
 import {
   executeSubmittedCode,
   executeSubmittedRuntime,
   provisionSubmittedCodeToolchain,
+  quiesceSubmittedRuntime,
   syncSubmittedCodeWorkspace,
 } from "../../../pipeline/03-repo-preparation/submitted-code-execution";
 import type { SubmittedCodeToolchainPlan } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
@@ -71,6 +75,10 @@ export class PreparedWorkspaceSandboxRunner implements SandboxRunner {
     try {
       await writeSandboxLog({ event: "demo-runtime-preflight.started" });
       await provisionSubmittedCodeToolchain(handle.workspace, toolchainPlan);
+      await quiesceSubmittedRuntime(handle.workspace, {
+        port: readPortFromLocalUrl(input.url),
+        timeoutMs: runtimeQuiescenceTimeoutMs,
+      });
       await syncSubmittedCodeWorkspace(handle.workspace);
       await writeSandboxLog({
         event: "demo-runtime-preflight.repo-files.started",
@@ -101,27 +109,64 @@ export class PreparedWorkspaceSandboxRunner implements SandboxRunner {
         });
       } else if (installResult.exitCode !== 0) {
         await this.cleanup(handle);
+        const installWasSigkill = installResult.exitCode === 137;
         return {
           blockedNetworkAttempts: [],
-          failureKind: "dependency-install-failed",
-          failureReason: "Dependency installation failed inside the sandbox.",
+          failureKind: installWasSigkill
+            ? "dependency-install-sigkill"
+            : "dependency-install-failed",
+          failureReason: installWasSigkill
+            ? describeDependencyInstallSigkill(
+                installResult.resourceDiagnostics,
+                "preflight",
+              )
+            : "Dependency installation failed inside the sandbox.",
           logs: [
             ...collectLogs(repoFilesResult),
             ...collectLogs(installResult),
           ],
           repoFiles,
+          ...(installResult.resourceDiagnostics === undefined
+            ? {}
+            : { resourceDiagnostics: installResult.resourceDiagnostics }),
           runtimeExitCode: installResult.exitCode,
         };
       }
+      await writeSandboxLog({
+        event: "demo-runtime-preflight.fresh-capture-baseline.started",
+      });
+      const baselineResult = await executeSubmittedCode(
+        handle.workspace,
+        createFreshCaptureBaselineCommand(),
+      );
+      if (baselineResult.exitCode !== 0) {
+        await writeSandboxLog({
+          event: "demo-runtime-preflight.fresh-capture-baseline.failed",
+          stderr: baselineResult.stderr,
+          stdout: baselineResult.stdout,
+        });
+        return {
+          blockedNetworkAttempts: [],
+          cleanup: () => this.cleanup(handle),
+          failureKind: "fresh-capture-baseline-failed",
+          failureReason: "Fresh Capture baseline could not be created.",
+          logs: [
+            ...collectLogs(repoFilesResult),
+            ...collectLogs(installResult),
+            ...collectLogs(baselineResult),
+          ],
+          repoFiles,
+          runtimeExitCode: 1,
+        };
+      }
+      await writeSandboxLog({
+        event: "demo-runtime-preflight.fresh-capture-baseline.created",
+      });
       await writeSandboxLog({
         command: input.demoCommand,
         event: "demo-runtime-preflight.demo-command.started",
         url: input.url,
       });
-      await executeSubmittedCode(
-        handle.workspace,
-        createStopDemoCommand(input.demoCommand),
-      );
       const runtimeResult = await executeDemoStart(handle, input.demoCommand);
       await writeSandboxLog({
         event: "demo-runtime-preflight.demo-command.launched",
@@ -179,38 +224,6 @@ export class PreparedWorkspaceSandboxRunner implements SandboxRunner {
         event: "demo-runtime-preflight.demo-readiness.succeeded",
         url: input.url,
       });
-      await writeSandboxLog({
-        event: "demo-runtime-preflight.fresh-capture-baseline.started",
-      });
-      const baselineResult = await executeSubmittedCode(
-        handle.workspace,
-        createFreshCaptureBaselineCommand(),
-      );
-      if (baselineResult.exitCode !== 0) {
-        await writeSandboxLog({
-          event: "demo-runtime-preflight.fresh-capture-baseline.failed",
-          stderr: baselineResult.stderr,
-          stdout: baselineResult.stdout,
-        });
-        return {
-          blockedNetworkAttempts: [],
-          cleanup: () => this.cleanup(handle),
-          failureKind: "fresh-capture-baseline-failed",
-          failureReason: "Fresh Capture baseline could not be created.",
-          logs: [
-            ...collectLogs(repoFilesResult),
-            ...collectLogs(installResult),
-            ...collectLogs(runtimeResult),
-            ...collectLogs(readinessResult),
-            ...collectLogs(baselineResult),
-          ],
-          repoFiles,
-          runtimeExitCode: 1,
-        };
-      }
-      await writeSandboxLog({
-        event: "demo-runtime-preflight.fresh-capture-baseline.created",
-      });
       const demoLogsResult = await readDemoServerLog(handle);
       await writeDemoServerLog(writeSandboxLog, demoLogsResult.stdout);
       await writeSandboxLog({
@@ -267,7 +280,7 @@ export class PreparedWorkspaceSandboxRunner implements SandboxRunner {
   private async runDependencyInstall(input: {
     handle: PreparationWorkspaceHandle;
     writeSandboxLog: (entry: Record<string, unknown>) => Promise<void>;
-  }): Promise<{ exitCode: number; stderr: string; stdout: string }> {
+  }): Promise<PreparationWorkspaceCommandResult> {
     const toolchainPlan = requireToolchainPlan(
       input.handle,
       "Prepared workspace validation",
@@ -293,6 +306,9 @@ export class PreparedWorkspaceSandboxRunner implements SandboxRunner {
         event: "demo-runtime-preflight.dependency-install.failed",
         executable: toolchainPlan.install.executable,
         exitCode: installResult.exitCode,
+        ...(installResult.resourceDiagnostics === undefined
+          ? {}
+          : { resourceDiagnostics: installResult.resourceDiagnostics }),
         stderr: installResult.stderr,
         stdout: installResult.stdout,
       });
@@ -333,10 +349,10 @@ export async function restartPreparedDemoForFreshCapture(input: {
     event: "footage-capture.fresh-state.restart.started",
     url: input.preparationManifest.url,
   });
-  await executeSubmittedCode(
-    input.preparationWorkspace.workspace,
-    createStopDemoCommand(input.preparationManifest.demoCommand),
-  );
+  await quiesceSubmittedRuntime(input.preparationWorkspace.workspace, {
+    port: readPortFromLocalUrl(input.preparationManifest.url),
+    timeoutMs: runtimeQuiescenceTimeoutMs,
+  });
   const restoreResult = await executeSubmittedCode(
     input.preparationWorkspace.workspace,
     createFreshCaptureRestoreCommand(),
@@ -579,35 +595,6 @@ async function readDemoServerLog(handle: PreparationWorkspaceHandle) {
   );
 }
 
-function createStopDemoCommand(demoCommand: string): string {
-  return `sh -lc ${shellQuote(
-    [
-      "kill_demo_pid() {",
-      '  pid="$1"',
-      '  if test -n "$pid" && kill -0 "$pid" >/dev/null 2>&1; then',
-      '    kill -- -"$pid" >/dev/null 2>&1 || true',
-      '    kill "$pid" >/dev/null 2>&1 || true',
-      "  fi",
-      "}",
-      "if test -f /tmp/makeademo-demo.pid; then",
-      '  kill_demo_pid "$(cat /tmp/makeademo-demo.pid 2>/dev/null)"',
-      "  rm -f /tmp/makeademo-demo.pid",
-      "fi",
-      `demo_command=${shellQuote(demoCommand)}`,
-      "for cmdline_path in /proc/[0-9]*/cmdline; do",
-      '  test -r "$cmdline_path" || continue',
-      '  pid="${cmdline_path#/proc/}"',
-      '  pid="${pid%/cmdline}"',
-      '  test "$pid" != "$$" || continue',
-      "  cmdline=$(tr '\\0' ' ' < \"$cmdline_path\" 2>/dev/null || true)",
-      '  case "$cmdline" in',
-      '    *"/workspace"*"$demo_command"*|*"/workspace"*"apps/makeademo-demo/server.ts"*) kill_demo_pid "$pid" ;;',
-      "  esac",
-      "done",
-    ].join("\n"),
-  )}`;
-}
-
 function createFreshCaptureBaselineCommand(): string {
   const excludeArguments = freshCapturePreservedPathPatterns
     .map((pattern) => `--exclude=${shellQuote(pattern)}`)
@@ -635,39 +622,10 @@ function createFreshCaptureRestoreCommand(): string {
 const freshCapturePreservedPathPatterns = [
   "./.makeademo",
   "./.makeademo/*",
-  "./node_modules",
-  "./node_modules/*",
-  "./*/node_modules",
-  "./*/node_modules/*",
-  "./.npm",
-  "./.npm/*",
-  "./*/.npm",
-  "./*/.npm/*",
-  "./.pnpm-store",
-  "./.pnpm-store/*",
-  "./*/.pnpm-store",
-  "./*/.pnpm-store/*",
-  "./.yarn/cache",
-  "./.yarn/cache/*",
-  "./*/.yarn/cache",
-  "./*/.yarn/cache/*",
-  "./.cache",
-  "./.cache/*",
-  "./*/.cache",
-  "./*/.cache/*",
-  "./.vite",
-  "./.vite/*",
-  "./*/.vite",
-  "./*/.vite/*",
-  "./.turbo",
-  "./.turbo/*",
-  "./*/.turbo",
-  "./*/.turbo/*",
-  "./.next/cache",
-  "./.next/cache/*",
-  "./*/.next/cache",
-  "./*/.next/cache/*",
+  ...generatedWorkspaceCachePathPatterns,
 ];
+
+const runtimeQuiescenceTimeoutMs = 10_000;
 
 function toWorkspacePathPattern(tarPattern: string): string {
   return `/workspace/${tarPattern.slice(2)}`;

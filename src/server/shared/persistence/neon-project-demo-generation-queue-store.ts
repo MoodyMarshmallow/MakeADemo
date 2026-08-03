@@ -66,8 +66,11 @@ export class NeonProjectDemoGenerationQueueStore
 
   async claimNextQueuedProject() {
     const query = this.db.select({
+      commitSha: projects.commitSha,
       context: projects.context,
       demoRequestId: demoRequests.id,
+      repoVisibility: projects.repoVisibility,
+      githubInstallationId: projects.githubInstallationId,
       projectId: projects.id,
       repoUrl: projects.repoUrl,
       supportingFiles: projects.supportingFiles,
@@ -96,22 +99,35 @@ export class NeonProjectDemoGenerationQueueStore
 
     try {
       return {
+        commitSha: readCommitSha(row.commitSha),
         demoBrief: readDemoBriefFromProjectContext(row.context),
         demoRequestId: readString(row, "demoRequestId"),
+        ...(typeof row.githubInstallationId === "string" &&
+        row.githubInstallationId.length > 0
+          ? { githubInstallationId: row.githubInstallationId }
+          : {}),
         normalizedSupportingDocuments: await this.loadSupportingDocuments(row),
         projectId,
         repoUrl: readString(row, "repoUrl"),
+        repoVisibility: readRepoVisibility(row.repoVisibility),
         workspaceId: projectId,
       };
     } catch (error) {
+      const failureReason =
+        error instanceof Error
+          ? error.message
+          : "Queued Project could not be loaded.";
       await this.markProjectFailed({
-        error:
-          error instanceof Error
-            ? error.message
-            : "Supporting Document normalization failed",
+        error: failureReason,
         projectId,
       });
-      return undefined;
+      return {
+        claimStatus: "failed" as const,
+        demoRequestId: readString(row, "demoRequestId"),
+        error: failureReason,
+        projectId,
+        workspaceId: projectId,
+      };
     }
   }
 
@@ -127,17 +143,20 @@ export class NeonProjectDemoGenerationQueueStore
     error: string;
     projectId: string;
   }): Promise<void> {
-    void input.error;
-    await this.updateProjectStatus(input.projectId, "failed");
+    await this.updateProjectStatus(input.projectId, "failed", input.error);
   }
 
   private async updateProjectStatus(
     projectId: string,
     status: "completed" | "failed",
+    failureReason?: string,
   ) {
     const updateQuery = this.db.update(projects) as UpdateReturningQuery;
     const [project] = await updateQuery
-      .set({ status })
+      .set({
+        failureReason: status === "failed" ? failureReason : null,
+        status,
+      })
       .where(eq(projects.id, projectId))
       .returning({ id: projects.id });
 
@@ -156,6 +175,22 @@ export class NeonProjectDemoGenerationQueueStore
 
     return this.supportingDocumentLoader.loadSupportingDocuments(uploads);
   }
+}
+
+function readCommitSha(value: unknown) {
+  if (typeof value !== "string" || !/^[0-9a-f]{40}$/i.test(value)) {
+    throw new Error(
+      "Queued Project has no valid pinned source revision; legacy Projects must be resubmitted.",
+    );
+  }
+  return value.toLowerCase();
+}
+
+function readRepoVisibility(value: unknown): "private" | "public" {
+  if (value !== "private" && value !== "public") {
+    throw new Error("Queued Project has invalid repository visibility.");
+  }
+  return value;
 }
 
 export function createNeonProjectDemoGenerationQueueStore(

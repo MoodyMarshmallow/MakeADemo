@@ -7,11 +7,22 @@ import {
 } from "../job/pipeline-observer";
 
 type ProjectDemoGenerationJob = {
+  commitSha: string;
   demoBrief: DemoBrief;
   demoRequestId: string;
+  githubInstallationId?: string;
   normalizedSupportingDocuments: NormalizedSupportingDocument[];
   projectId: string;
   repoUrl: string;
+  repoVisibility: "private" | "public";
+  workspaceId: string;
+};
+
+type ProjectDemoGenerationClaimFailure = {
+  claimStatus: "failed";
+  demoRequestId: string;
+  error: string;
+  projectId: string;
   workspaceId: string;
 };
 
@@ -36,7 +47,9 @@ export type ProjectDemoGenerationResult =
  * Project records.
  */
 export interface ProjectDemoGenerationQueueStore {
-  claimNextQueuedProject(): Promise<ProjectDemoGenerationJob | undefined>;
+  claimNextQueuedProject(): Promise<
+    ProjectDemoGenerationClaimFailure | ProjectDemoGenerationJob | undefined
+  >;
   markProjectCompleted(input: {
     generatedDemoUrl: string;
     projectId: string;
@@ -66,10 +79,22 @@ export async function processNextProjectDemoGenerationJob(
 ): Promise<ProjectDemoGenerationResult> {
   const observer = options.observer ?? noopPipelineObserver;
   const now = options.now ?? Date.now;
-  const job = await store.claimNextQueuedProject();
-  if (!job) {
+  const claim = await store.claimNextQueuedProject();
+  if (!claim) {
     return { status: "idle" };
   }
+  if ("claimStatus" in claim) {
+    observer.record({
+      demoRequestId: claim.demoRequestId,
+      ...sanitizeObservabilityError(new Error(claim.error)),
+      event: "job.failed",
+      projectId: claim.projectId,
+      status: "failed",
+      workspaceId: claim.workspaceId,
+    });
+    return { projectId: claim.projectId, status: "failed" };
+  }
+  const job = claim;
 
   const context = {
     demoRequestId: job.demoRequestId,

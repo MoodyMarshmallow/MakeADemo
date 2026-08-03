@@ -1,13 +1,53 @@
 import { describe, expect, it } from "vitest";
 
 import { createAgentSession } from "../../../test-support/create-agent-session";
+import { repoSecurityEvidenceFixture } from "../../../test-support/repo-security-evidence-fixture";
+import type { RepoSecurityInput } from "../../02-repo-security-screen/repo-security-screen";
 import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
+import type { CapturePathValidationFailureKind } from "../../05-capture-path-validation/capture-path-validator.interface";
 import { PipelineCancellationError } from "./pipeline-cancellation";
+import type { PipelineJobInput } from "./pipeline-job";
 import { createRecordingPipelineObserver } from "./pipeline-observer";
-import { runPipelineJob } from "./pipeline-orchestrator";
+import {
+  type PipelineOrchestratorDependencies,
+  type PipelineOrchestratorOptions,
+  runPipelineJob as runPipelineJobWithDependencies,
+} from "./pipeline-orchestrator";
+
+function runPipelineJob(
+  input: Omit<PipelineJobInput, "repoSecurity"> & {
+    repoSecurity: Omit<RepoSecurityInput, "evidence"> &
+      Partial<Pick<RepoSecurityInput, "evidence">>;
+  },
+  dependencies: Omit<PipelineOrchestratorDependencies, "reviewRepoSecurity"> &
+    Partial<Pick<PipelineOrchestratorDependencies, "reviewRepoSecurity">>,
+  options?: PipelineOrchestratorOptions,
+) {
+  return runPipelineJobWithDependencies(
+    {
+      ...input,
+      repoSecurity: {
+        evidence: repoSecurityEvidenceFixture(),
+        ...input.repoSecurity,
+      },
+    },
+    {
+      async reviewRepoSecurity() {
+        return {
+          concerns: [],
+          rationale: "Test fixture approval.",
+          status: "succeeded",
+          verdict: "approved",
+        };
+      },
+      ...dependencies,
+    },
+    options,
+  );
+}
 
 describe("runPipelineJob", () => {
-  it("runs security screen, repo preparation, script generation, and capture path validation in order", async () => {
+  it("requires read-only agent approval between deterministic screening and Repo Preparation", async () => {
     const calls: string[] = [];
     const commitSha = "0123456789abcdef0123456789abcdef01234567";
 
@@ -31,15 +71,42 @@ describe("runPipelineJob", () => {
         async prepareRepo(input) {
           calls.push("repo-preparation");
           expect(input.commitSha).toBe(commitSha);
+          expect(input).not.toHaveProperty("repoSecurity");
           return {
             manifest: manifest(),
             status: "succeeded",
             workspace: fakeWorkspaceHandle(),
           };
         },
+        async reviewRepoSecurity(input) {
+          calls.push("repo-security-agent-review");
+          expect(input.scan.warnings).toEqual([
+            expect.objectContaining({
+              code: "nested-application-manifest",
+              message: "nested app manifest requires agent review",
+            }),
+          ]);
+          return {
+            concerns: [],
+            rationale: "No concrete execution safety risk was found.",
+            status: "succeeded",
+            verdict: "approved",
+          };
+        },
         screenRepoSecurity() {
           calls.push("repo-security-screen");
-          return { rejections: [], status: "passed", warnings: [] };
+          return {
+            rejections: [],
+            status: "passed",
+            warnings: [
+              {
+                code: "nested-application-manifest",
+                message: "nested app manifest requires agent review",
+                path: "webapp/package.json",
+                severity: "warning",
+              },
+            ],
+          };
         },
         async validateCapturePath(input) {
           calls.push("capture-path-validation");
@@ -62,11 +129,127 @@ describe("runPipelineJob", () => {
     }
     expect(calls).toEqual([
       "repo-security-screen",
+      "repo-security-agent-review",
       "repo-preparation",
       "script-generation",
       "capture-path-validation",
     ]);
   });
+
+  it("stops before agent review and preparation after a deterministic hard rejection", async () => {
+    const calls: string[] = [];
+    const result = await runPipelineJob(pipelineJobInput(), {
+      async generateDemoScript() {
+        throw new Error("must not generate");
+      },
+      async prepareRepo() {
+        calls.push("repo-preparation");
+        throw new Error("must not prepare");
+      },
+      async reviewRepoSecurity() {
+        calls.push("repo-security-agent-review");
+        throw new Error("must not review");
+      },
+      screenRepoSecurity() {
+        calls.push("repo-security-screen");
+        return {
+          rejections: [
+            {
+              code: "lifecycle-root-delete",
+              message:
+                "package script postinstall contains a destructive command",
+              path: "package.json",
+              scriptName: "postinstall",
+              severity: "hard-rejection",
+            },
+          ],
+          status: "rejected",
+          warnings: [],
+        };
+      },
+      async validateCapturePath() {
+        throw new Error("must not validate");
+      },
+    });
+
+    expect(result).toMatchObject({ status: "security-rejected" });
+    expect(calls).toEqual(["repo-security-screen"]);
+  });
+
+  it("stops before preparation when the read-only agent rejects execution", async () => {
+    const calls: string[] = [];
+    const result = await runPipelineJob(pipelineJobInput(), {
+      async generateDemoScript() {
+        throw new Error("must not generate");
+      },
+      async prepareRepo() {
+        calls.push("repo-preparation");
+        throw new Error("must not prepare");
+      },
+      async reviewRepoSecurity() {
+        calls.push("repo-security-agent-review");
+        return {
+          concerns: [
+            "The postinstall downloads and executes an unpinned script.",
+          ],
+          rationale: "The bounded evidence establishes an execution risk.",
+          status: "succeeded",
+          verdict: "rejected",
+        };
+      },
+      screenRepoSecurity() {
+        calls.push("repo-security-screen");
+        return { rejections: [], status: "passed", warnings: [] };
+      },
+      async validateCapturePath() {
+        throw new Error("must not validate");
+      },
+    });
+
+    expect(result).toMatchObject({
+      review: { verdict: "rejected" },
+      status: "security-rejected",
+    });
+    expect(calls).toEqual([
+      "repo-security-screen",
+      "repo-security-agent-review",
+    ]);
+  });
+
+  it.each(["unavailable", "timeout", "invalid-output"] as const)(
+    "returns typed infrastructure failure when security review is %s",
+    async (failureKind) => {
+      let prepared = false;
+      const result = await runPipelineJob(pipelineJobInput(), {
+        async generateDemoScript() {
+          throw new Error("must not generate");
+        },
+        async prepareRepo() {
+          prepared = true;
+          throw new Error("must not prepare");
+        },
+        async reviewRepoSecurity() {
+          return {
+            failureKind,
+            status: "failed",
+          };
+        },
+        screenRepoSecurity() {
+          return { rejections: [], status: "passed", warnings: [] };
+        },
+        async validateCapturePath() {
+          throw new Error("must not validate");
+        },
+      });
+
+      expect(result).toMatchObject({
+        failureKind,
+        stage: "repo-security-screen",
+        status: "infrastructure-failed",
+      });
+      expect(prepared).toBe(false);
+    },
+  );
 
   it("settles active submitted-code validation before propagating Pipeline cancellation", async () => {
     const events: string[] = [];
@@ -81,6 +264,7 @@ describe("runPipelineJob", () => {
     await expect(
       runPipelineJob(
         {
+          commitSha: "0123456789abcdef0123456789abcdef01234567",
           demoBrief: { keyProductFeatures: ["validation"] },
           normalizedSupportingDocuments: [],
           repoSecurity: {
@@ -151,6 +335,7 @@ describe("runPipelineJob", () => {
 
     const running = runPipelineJob(
       {
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         demoBrief: { keyProductFeatures: ["validation"] },
         normalizedSupportingDocuments: [],
         repoSecurity: {
@@ -203,6 +388,7 @@ describe("runPipelineJob", () => {
 
     await runPipelineJob(
       {
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         demoBrief: { keyProductFeatures: ["validation"] },
         normalizedSupportingDocuments: [],
         repoSecurity: {
@@ -260,6 +446,7 @@ describe("runPipelineJob", () => {
     await expect(
       runPipelineJob(
         {
+          commitSha: "0123456789abcdef0123456789abcdef01234567",
           demoBrief: { keyProductFeatures: ["validation"] },
           normalizedSupportingDocuments: [],
           repoSecurity: {
@@ -320,6 +507,7 @@ describe("runPipelineJob", () => {
 
     await runPipelineJob(
       {
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         demoBrief: { keyProductFeatures: ["validation"] },
         normalizedSupportingDocuments: [],
         repoSecurity: {
@@ -353,7 +541,15 @@ describe("runPipelineJob", () => {
           return {
             rejections: [],
             status: "passed",
-            warnings: ["Uses postinstall script."],
+            warnings: [
+              {
+                code: "lifecycle-postinstall",
+                message: "Uses postinstall script.",
+                path: "package.json",
+                scriptName: "postinstall",
+                severity: "warning",
+              },
+            ],
           };
         },
         async validateCapturePath() {
@@ -529,6 +725,7 @@ describe("runPipelineJob", () => {
 
     const result = await runPipelineJob(
       {
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         demoBrief: { keyProductFeatures: ["validation"] },
         normalizedSupportingDocuments: [],
         repoSecurity: {
@@ -599,6 +796,7 @@ describe("runPipelineJob", () => {
     try {
       const result = await runPipelineJob(
         {
+          commitSha: "0123456789abcdef0123456789abcdef01234567",
           demoBrief: { keyProductFeatures: ["validation"] },
           normalizedSupportingDocuments: [],
           repoSecurity: {
@@ -715,7 +913,7 @@ describe("runPipelineJob", () => {
       }),
     );
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       capturePathValidation: {
         blockedNetworkAttempts: [],
         browserUrl: "https://preview.example.test/",
@@ -725,6 +923,52 @@ describe("runPipelineJob", () => {
         status: "failed",
         warnings: ["Retry with a stable selector."],
       },
+      status: "capture-path-validation-failed",
+    });
+  });
+
+  it("returns infrastructure failures without asking an agent to repair them", async () => {
+    let repairCalls = 0;
+    const result = await runPipelineJob(
+      pipelineJobInput(),
+      capturePathFailureDependencies({
+        failureKind: "validator-dependency-failed",
+        async repairCapturePathFailure() {
+          repairCalls += 1;
+          throw new Error("infrastructure failures are not repairable");
+        },
+      }),
+    );
+
+    expect(repairCalls).toBe(0);
+    expect(result).toMatchObject({
+      failureKind: "validator-dependency-failed",
+      failureReason: "Generated selector did not match.",
+      stage: "capture-path-validation",
+      status: "infrastructure-failed",
+    });
+  });
+
+  it.each([
+    "browser-not-interactable",
+    "browser-load-failed",
+    "demo-script-type-validation-failed",
+  ] as const)("still asks an agent to repair %s", async (failureKind) => {
+    let repairCalls = 0;
+    const result = await runPipelineJob(
+      pipelineJobInput(),
+      capturePathFailureDependencies({
+        failureKind,
+        async repairCapturePathFailure() {
+          repairCalls += 1;
+          throw new Error("stop after proving repair is attempted");
+        },
+      }),
+    );
+
+    expect(repairCalls).toBe(1);
+    expect(result).toMatchObject({
+      capturePathValidation: { failureKind },
       status: "capture-path-validation-failed",
     });
   });
@@ -759,9 +1003,10 @@ describe("runPipelineJob", () => {
     ).rejects.toMatchObject({ reason: "signal" });
   });
 
-  it("returns a fallback prompt and stops when Repo Preparation fails", async () => {
+  it("returns Repo Preparation infrastructure failures directly", async () => {
     const result = await runPipelineJob(
       {
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
         demoBrief: { keyProductFeatures: ["dashboard"] },
         normalizedSupportingDocuments: [],
         repoSecurity: {
@@ -781,6 +1026,10 @@ describe("runPipelineJob", () => {
           return {
             fallbackPrompt: "Prepare local dashboard fixtures.",
             failureKind: "dependency-install-sigkill",
+            resourceDiagnostics: {
+              classification: "cgroup-oom-kill" as const,
+              memoryOomKillDelta: 1,
+            },
             status: "failed",
           };
         },
@@ -793,10 +1042,15 @@ describe("runPipelineJob", () => {
       },
     );
 
-    expect(result).toEqual({
-      fallbackPrompt: "Prepare local dashboard fixtures.",
+    expect(result).toMatchObject({
       failureKind: "dependency-install-sigkill",
-      status: "preparation-failed",
+      failureReason: "Prepare local dashboard fixtures.",
+      resourceDiagnostics: {
+        classification: "cgroup-oom-kill",
+        memoryOomKillDelta: 1,
+      },
+      stage: "repo-preparation",
+      status: "infrastructure-failed",
     });
   });
 });
@@ -822,6 +1076,7 @@ function manifest() {
 
 function pipelineJobInput() {
   return {
+    commitSha: "0123456789abcdef0123456789abcdef01234567",
     demoBrief: { keyProductFeatures: ["validation"] },
     normalizedSupportingDocuments: [],
     repoSecurity: {
@@ -834,6 +1089,7 @@ function pipelineJobInput() {
 }
 
 function capturePathFailureDependencies(input: {
+  failureKind?: CapturePathValidationFailureKind;
   repairCapturePathFailure: NonNullable<
     Parameters<typeof runPipelineJob>[1]["repairCapturePathFailure"]
   >;
@@ -858,6 +1114,9 @@ function capturePathFailureDependencies(input: {
         blockedNetworkAttempts: [],
         browserUrl: "https://preview.example.test/",
         failedSceneId: "scene_validation",
+        ...(input.failureKind === undefined
+          ? {}
+          : { failureKind: input.failureKind }),
         failureReason: "Generated selector did not match.",
         logs: ["selector failed"],
         status: "failed",

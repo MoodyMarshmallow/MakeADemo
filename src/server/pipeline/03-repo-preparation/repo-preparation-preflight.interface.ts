@@ -1,3 +1,5 @@
+import type { PreparationWorkspaceResourceDiagnostics } from "./preparation-workspace.interface";
+
 /**
  * The bounded, repair-oriented verdict Repo Preparation consumes after it
  * asks its runtime-preflight port to validate a Preparation Manifest.
@@ -13,6 +15,7 @@ export type RepoPreparationPreflightResult = {
   failureReason?: string;
   localUrl?: string;
   logs: string[];
+  resourceDiagnostics?: PreparationWorkspaceResourceDiagnostics;
   previewUrl?: string;
   screenshot?: { mimeType: "image/png"; path: string; sizeBytes?: number };
   screenshotArtifactId?: string;

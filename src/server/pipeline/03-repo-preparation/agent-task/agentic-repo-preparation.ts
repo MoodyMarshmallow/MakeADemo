@@ -19,6 +19,7 @@ import {
   type RuntimeNetworkPolicy,
   defaultRuntimeNetworkPolicy,
 } from "../../05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
+import { isPipelineInfrastructureFailureKind } from "../../pipeline-infrastructure-failure";
 import { classifyDependencyInstallFailure } from "../dependency-install-failure-classifier";
 import { runPlannedDependencyInstall } from "../planned-dependency-install";
 import {
@@ -29,6 +30,7 @@ import {
   type PreparationWorkspaceInfrastructureDiagnostic,
   readPreparationWorkspaceInfrastructureDiagnostic,
 } from "../preparation-workspace-infrastructure.interface";
+import { describeDependencyInstallSigkill } from "../preparation-workspace-resource-diagnostics";
 import type {
   PreparationWorkspaceHandle,
   PreparationWorkspaceProvider,
@@ -42,6 +44,7 @@ import type { RepoPreparationPreflightResult } from "../repo-preparation-preflig
 import {
   SubmittedCodeToolchainRepairRequiredError,
   provisionSubmittedCodeToolchain,
+  quiesceSubmittedRuntime,
   syncSubmittedCodeWorkspace,
 } from "../submitted-code-execution";
 import type { SubmittedCodeNodeReleaseCatalog } from "../submitted-code-node-release-catalog.interface";
@@ -79,6 +82,7 @@ const defaultHardTimeoutMs = 1_800_000;
 const validationRepairAttemptLimit = 8;
 const maximumAgentTaskTurns = validationRepairAttemptLimit * 2;
 const dependencyInstallDiagnosticMaxBytes = 1_500;
+const submittedRuntimeQuiescenceTimeoutMs = 10_000;
 export type AgenticRepoPreparationOptions = {
   /** Supplies browser tools only after a failed authoritative browser preflight. */
   browserToolControllerProvider?: BrowserToolControllerProvider;
@@ -158,10 +162,13 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
   ): Promise<RepoPreparationResult> {
     const deadlineAt = input.deadlineAt ?? Date.now() + this.hardTimeoutMs;
     this.throwIfCancelled(input, deadlineAt);
-    const creation = this.provider.create({
-      deadlineAt,
-      ...(input.signal === undefined ? {} : { signal: input.signal }),
-    });
+    const creation =
+      input.preparationWorkspace === undefined
+        ? this.provider.create({
+            deadlineAt,
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+          })
+        : Promise.resolve(input.preparationWorkspace);
     let handle: PreparationWorkspaceHandle;
     try {
       handle = await waitForPreparationOperation(creation, input.signal);
@@ -341,21 +348,33 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     input: RepoPreparationInput,
   ): Promise<PreparationSetupResult> {
     throwIfPipelineCancelled(input.signal);
-    const bootstrap = await bootstrapRepoPreparationWorkspace({
-      ...(input.commitSha === undefined ? {} : { commitSha: input.commitSha }),
-      ...(this.cloneFailureDiagnosticsContext === undefined
-        ? {}
-        : {
-            cloneFailureDiagnosticsContext: this.cloneFailureDiagnosticsContext,
-          }),
-      logger: this.logger,
-      repoUrl: input.repoUrl,
-      workspace: handle.workspace,
-    });
+    const baselineSourceControlledPaths =
+      input.baselineSourceControlledPaths ??
+      (await bootstrapRepoPreparationWorkspace({
+        commitSha: input.commitSha,
+        ...(this.cloneFailureDiagnosticsContext === undefined
+          ? {}
+          : {
+              cloneFailureDiagnosticsContext:
+                this.cloneFailureDiagnosticsContext,
+            }),
+        logger: this.logger,
+        repoUrl: input.repoUrl,
+        workspace: handle.workspace,
+      }));
     throwIfPipelineCancelled(input.signal);
-    if (bootstrap.failure !== undefined) {
-      return { result: bootstrap.failure, status: "result" };
+    if (
+      !Array.isArray(baselineSourceControlledPaths) &&
+      baselineSourceControlledPaths.failure !== undefined
+    ) {
+      return {
+        result: baselineSourceControlledPaths.failure,
+        status: "result",
+      };
     }
+    const baseline = Array.isArray(baselineSourceControlledPaths)
+      ? baselineSourceControlledPaths
+      : baselineSourceControlledPaths.baselineSourceControlledPaths;
     const toolchain = await inspectSubmittedCodeToolchain(
       handle.workspace,
       this.nodeReleaseCatalog,
@@ -406,7 +425,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     throwIfPipelineCancelled(input.signal);
 
     return {
-      baselineSourceControlledPaths: bootstrap.baselineSourceControlledPaths,
+      baselineSourceControlledPaths: baseline,
       prompt: createDaytonaRepoPreparationPrompt(input, {
         runtimeNetworkPolicy: this.runtimeNetworkPolicy,
         ...(toolchainAdvisory === undefined ? {} : { toolchainAdvisory }),
@@ -683,6 +702,14 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
               throw error;
             }
             throwIfDependencyOperationCancelled();
+            if (repairLocalUrl !== undefined) {
+              await quiesceSubmittedRuntime(handle.workspace, {
+                port: readLocalRuntimePort(repairLocalUrl),
+                timeoutMs: submittedRuntimeQuiescenceTimeoutMs,
+              });
+              repairLocalUrl = undefined;
+            }
+            throwIfDependencyOperationCancelled();
             await syncSubmittedCodeWorkspace(handle.workspace);
             throwIfDependencyOperationCancelled();
             return {
@@ -772,12 +799,18 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         }
         if (installResult.exitCode === 137) {
           const failureKind = "dependency-install-sigkill" as const;
+          const resourceDiagnostics = installResult.resourceDiagnostics;
           await this.writeSandboxLog(handle.workspace, {
             event: failureKind,
             exitCode: installResult.exitCode,
             failureKind,
-            interpretation:
-              "SIGKILL observed; OOM pressure, provider termination, and external kill remain possible.",
+            interpretation: describeDependencyInstallSigkill(
+              resourceDiagnostics,
+              "agent",
+            ),
+            ...(resourceDiagnostics === undefined
+              ? {}
+              : { resourceDiagnostics }),
             level: "error",
             stderrTail: boundUtf8Tail(
               installResult.stderr,
@@ -791,9 +824,12 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
           return {
             assumptions: [],
             blockers: [
-              "Dependency installation ended with SIGKILL (exit 137); the cause is unproven and could be OOM pressure, provider termination, or another external kill.",
+              `Dependency installation ended with SIGKILL (exit 137); ${describeDependencyInstallSigkill(resourceDiagnostics, "agent").replace(/^SIGKILL observed; /, "")}`,
             ],
             failureKind,
+            ...(resourceDiagnostics === undefined
+              ? {}
+              : { resourceDiagnostics }),
             status: "failed" as const,
             suggestedChanges: [
               "Inspect provider metrics and sandbox logs to identify the SIGKILL source before choosing a recovery, then retry Repo Preparation.",
@@ -982,17 +1018,23 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
       status: runtimePreflight.status,
     });
     input.controlState.recordValidation({ manifest, runtimePreflight });
-    const nonRetryablePreflightFailure =
-      readNonRetryablePreflightFailure(runtimePreflight);
-    if (nonRetryablePreflightFailure !== undefined) {
+    if (isPipelineInfrastructureFailureKind(runtimePreflight.failureKind)) {
+      const failureReason = `Preparation preflight failed with a non-retryable MakeADemo infrastructure failure: ${runtimePreflight.failureReason ?? runtimePreflight.failureKind}`;
       await this.writeSandboxLog(input.handle.workspace, {
         event: "preparation-preflight.non-retryable-failure",
-        failureReason: nonRetryablePreflightFailure,
+        failureReason,
       });
       return {
         result: {
           assumptions: [],
-          blockers: [nonRetryablePreflightFailure],
+          blockers: [failureReason],
+          failureKind: runtimePreflight.failureKind,
+          ...(runtimePreflight.resourceDiagnostics === undefined
+            ? {}
+            : {
+                resourceDiagnostics: runtimePreflight.resourceDiagnostics,
+              }),
+          runtimePreflight,
           status: "failed" as const,
           suggestedChanges: [
             "Report this MakeADemo infrastructure failure instead of asking the app preparation agent to repair the submitted repo.",
@@ -1087,6 +1129,12 @@ function boundUtf8Tail(value: string, maxBytes: number): string {
     start += 1;
   }
   return bytes.subarray(start).toString("utf8");
+}
+
+function readLocalRuntimePort(localUrl: string): number {
+  const url = new URL(localUrl);
+  if (url.port.length > 0) return Number(url.port);
+  return url.protocol === "https:" ? 443 : 80;
 }
 
 type TimedRunResult<T> =
@@ -1414,21 +1462,6 @@ function runtimePreflightRepairExhaustedFailure(
         : runtimePreflight.warnings,
     runtimePreflight,
   };
-}
-
-function readNonRetryablePreflightFailure(
-  runtimePreflight: RepoPreparationPreflightResult,
-): string | undefined {
-  if (
-    runtimePreflight.failureKind !== "submitted-code-workspace-sync-failed" &&
-    runtimePreflight.failureKind !== "submitted-toolchain-inspection-failed" &&
-    runtimePreflight.failureKind !==
-      "submitted-code-toolchain-provisioning-failed"
-  ) {
-    return undefined;
-  }
-
-  return `Preparation preflight failed with a non-retryable MakeADemo infrastructure failure: ${runtimePreflight.failureReason ?? runtimePreflight.failureKind}`;
 }
 
 function preparationInfrastructureFailure(

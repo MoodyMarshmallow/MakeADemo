@@ -33,6 +33,10 @@ type ApiGithubDependencies = {
       repoUrl: string;
     }>
   >;
+  resolveRepositoryRevision?(input: {
+    githubInstallationId?: string;
+    repoUrl: string;
+  }): Promise<string>;
 };
 
 const MAX_SUPPORTING_DOCUMENT_UPLOAD_BYTES = 10 * 1024 * 1024;
@@ -285,8 +289,14 @@ async function handleRequest(
     request.method === "POST" &&
     url.pathname === "/api/context-gathering/submit"
   ) {
+    if (dependencies.github.resolveRepositoryRevision === undefined) {
+      throw new Error("GitHub revision resolution is unavailable");
+    }
     return json(
       await submitContextGathering(await request.json(), {
+        revisionResolver: {
+          resolve: dependencies.github.resolveRepositoryRevision,
+        },
         store: dependencies.store,
       }),
     );

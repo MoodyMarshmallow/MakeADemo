@@ -29,6 +29,9 @@ export async function prepareRepo(
       ...(result.infrastructure === undefined
         ? {}
         : { infrastructure: result.infrastructure }),
+      ...(result.resourceDiagnostics === undefined
+        ? {}
+        : { resourceDiagnostics: result.resourceDiagnostics }),
       status: "failed",
     };
   }

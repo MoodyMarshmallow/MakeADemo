@@ -12,6 +12,14 @@ export type GitHubRepositoryListDependencies = {
   ): Promise<unknown>;
 };
 
+export type GitHubRepositoryRevisionDependencies = {
+  createInstallationToken?(installationId: string): Promise<string>;
+  fetchJson(
+    url: string,
+    init: { headers: Record<string, string> },
+  ): Promise<unknown>;
+};
+
 export type GitHubAuthorizedInstallation = {
   installationId: string;
   repositories: GitHubRepository[];
@@ -92,6 +100,42 @@ export async function listGitHubInstallationRepositories(
   }));
 }
 
+/** Resolves the repository's current default-branch head to one full commit SHA. */
+export async function resolveGitHubRepositoryRevision(
+  input: { githubInstallationId?: string; repoUrl: string },
+  dependencies: GitHubRepositoryRevisionDependencies,
+): Promise<string> {
+  const repository = readGitHubRepositoryName(input.repoUrl);
+  const token =
+    input.githubInstallationId === undefined
+      ? undefined
+      : await dependencies.createInstallationToken?.(
+          input.githubInstallationId,
+        );
+  if (input.githubInstallationId !== undefined && token === undefined) {
+    throw new Error("GitHub installation authentication is unavailable");
+  }
+  const response = await dependencies.fetchJson(
+    `https://api.github.com/repos/${repository}/commits/HEAD`,
+    {
+      headers: {
+        ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }),
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    },
+  );
+  if (
+    typeof response !== "object" ||
+    response === null ||
+    Array.isArray(response) ||
+    typeof (response as { sha?: unknown }).sha !== "string" ||
+    !/^[0-9a-f]{40}$/i.test((response as { sha: string }).sha)
+  ) {
+    throw new Error("GitHub revision response is missing a full commit SHA");
+  }
+  return (response as { sha: string }).sha.toLowerCase();
+}
+
 export async function connectGitHubAuthorizedInstallation(
   input: { code: string },
   dependencies: GitHubAuthorizedInstallationDependencies,
@@ -157,6 +201,15 @@ export function createGitHubAppIntegrationFromEnv(
         },
       );
     },
+    resolveRepositoryRevision(input: {
+      githubInstallationId?: string;
+      repoUrl: string;
+    }) {
+      return resolveGitHubRepositoryRevision(input, {
+        createInstallationToken: (id) => createInstallationToken(id, app),
+        fetchJson,
+      });
+    },
     connectAuthorizedInstallation(code: string) {
       return connectGitHubAuthorizedInstallation(
         { code },
@@ -168,6 +221,22 @@ export function createGitHubAppIntegrationFromEnv(
       );
     },
   };
+}
+
+function readGitHubRepositoryName(repoUrl: string) {
+  const url = new URL(repoUrl);
+  const parts = url.pathname
+    .replace(/\.git$/, "")
+    .split("/")
+    .filter(Boolean);
+  if (
+    url.protocol !== "https:" ||
+    url.hostname !== "github.com" ||
+    parts.length !== 2
+  ) {
+    throw new Error("repoUrl must identify one GitHub repository");
+  }
+  return `${parts[0]}/${parts[1]}`;
 }
 
 async function listGitHubUserInstallationRepositories(

@@ -12,6 +12,7 @@ import {
   parseDemoScript,
 } from "../04-script-generation/demo-script/demo-script.schema";
 import type {
+  CapturePathValidationFailureKind,
   CapturePathValidationInput,
   CapturePathValidationResult,
 } from "./capture-path-validator.interface";
@@ -51,6 +52,7 @@ export type CapturePathSceneValidationResult =
   | {
       blockedNetworkAttempts?: CapturePathValidationResult["blockedNetworkAttempts"];
       errorMessage?: string;
+      failureKind?: CapturePathValidationFailureKind;
       failedAction?: string;
       failureReason: string;
       logs: string[];
@@ -330,6 +332,9 @@ async function capturePathSceneFailure(input: {
     ...(input.sceneResult.failedAction === undefined
       ? {}
       : { failedAction: input.sceneResult.failedAction }),
+    ...(input.sceneResult.failureKind === undefined
+      ? {}
+      : { failureKind: input.sceneResult.failureKind }),
     ...(input.sceneResult.errorMessage === undefined
       ? {}
       : { errorMessage: input.sceneResult.errorMessage }),

@@ -85,6 +85,11 @@ export type AgentSessionRunInput<T = never> = {
   attempt: number;
   /** Immutable Pipeline deadline; retry extensions must never pass it. */
   deadlineCeilingAt?: number;
+  /**
+   * Harness execution policy. `tool-free-transient` exposes no tools, never
+   * retains or returns a session, and disposes provider state after the turn.
+   */
+  executionMode?: "default" | "tool-free-transient";
   hardDeadlineAt: number;
   hardTimeoutMs: number;
   inactivityLabel?: string;

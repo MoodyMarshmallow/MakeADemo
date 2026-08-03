@@ -195,10 +195,51 @@ describe("processNextProjectDemoGenerationJob", () => {
 
     expect(result).toEqual({ status: "idle" });
   });
+
+  it("reports a claimed legacy Project as failed instead of idle", async () => {
+    const observer = createRecordingPipelineObserver();
+    const result = await processNextProjectDemoGenerationJob(
+      {
+        async claimNextQueuedProject() {
+          return {
+            claimStatus: "failed" as const,
+            demoRequestId: "demo-request-legacy",
+            error:
+              "Queued Project has no valid pinned source revision; legacy Projects must be resubmitted.",
+            projectId: "project-legacy",
+            workspaceId: "project-legacy",
+          };
+        },
+        async markProjectCompleted() {
+          throw new Error("legacy Project should not complete");
+        },
+        async markProjectFailed() {
+          throw new Error("claim failure is already persisted");
+        },
+      },
+      {
+        async runFullPipeline() {
+          throw new Error("legacy Project should not run");
+        },
+      },
+      { observer },
+    );
+
+    expect(result).toEqual({ projectId: "project-legacy", status: "failed" });
+    expect(observer.events).toEqual([
+      expect.objectContaining({
+        demoRequestId: "demo-request-legacy",
+        event: "job.failed",
+        projectId: "project-legacy",
+        status: "failed",
+      }),
+    ]);
+  });
 });
 
 function queuedProjectJob() {
   return {
+    commitSha: "a".repeat(40),
     demoBrief: {
       audience: "Founders",
       keyProductFeatures: ["script generation"],
@@ -207,6 +248,7 @@ function queuedProjectJob() {
     normalizedSupportingDocuments: [],
     projectId: "project-1",
     repoUrl: "https://github.com/example/app",
+    repoVisibility: "public" as const,
     workspaceId: "project-1",
   };
 }

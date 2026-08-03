@@ -8,6 +8,7 @@ import type {
   PreparationWorkspaceExecuteOptions,
   SubmittedProjectExecutionRequest,
   SubmittedProjectRuntimeRequest,
+  SubmittedRuntimeQuiescenceRequest,
 } from "./preparation-workspace.interface";
 import type { SubmittedCodeToolchainPlan } from "./submitted-code-toolchain.schema";
 
@@ -127,6 +128,17 @@ export async function executeSubmittedRuntime(
   }
 
   return await workspace.executeSubmittedRuntime(request, options);
+}
+
+/** Quiesces the retained submitted runtime before workspace mutation. */
+export async function quiesceSubmittedRuntime(
+  workspace: PreparationWorkspace,
+  request: SubmittedRuntimeQuiescenceRequest,
+): Promise<void> {
+  if (workspace.quiesceSubmittedRuntime === undefined) {
+    throw new Error("Preparation workspace cannot quiesce submitted runtimes.");
+  }
+  await workspace.quiesceSubmittedRuntime(request);
 }
 
 /** Hydrates an integrity-attested package-manager artifact before execution. */

@@ -24,7 +24,7 @@ describe("prepareStylizedPlaywrightScript", () => {
     expect(prepared).not.toContain("[makeademo:network-blocked]");
   });
 
-  it("keeps validation dry runs fast and free of recording-only behavior", () => {
+  it("validates capture typing and click behavior without recording artifacts", () => {
     const prepared = prepareStylizedPlaywrightScript(
       "await page.getByLabel(/message/i).fill('Show me the launch plan');\nawait page.getByRole('button', { name: /send/i }).click();",
       {
@@ -35,18 +35,62 @@ describe("prepareStylizedPlaywrightScript", () => {
       },
     );
 
+    expect(prepared).toContain("const humanTypingDelayMs = 0;");
     expect(prepared).toContain(
-      "await page.getByLabel(/message/i).fill('Show me the launch plan');",
+      "await humanType(page, page.getByLabel(/message/i), 'Show me the launch plan');",
     );
     expect(prepared).toContain(
-      "await page.getByRole('button', { name: /send/i }).click();",
+      "await animatedClick(page, page.getByRole('button', { name: /send/i }));",
+    );
+    expect(getFunctionSource(prepared, "humanType")).toContain(
+      "await target.pressSequentially(String(text), { delay: humanTypingDelayMs });",
+    );
+    expect(getFunctionSource(prepared, "animatedClick")).toContain(
+      "await target.click({ position: { x: box.width / 2, y: box.height / 2 } });",
+    );
+    expect(getFunctionSource(prepared, "animatedClick")).toContain(
+      "const box = await target.boundingBox();",
     );
     expect(prepared).not.toContain("recordVideo");
-    expect(prepared).not.toContain("humanType");
-    expect(prepared).not.toContain("animatedClick");
     expect(prepared).not.toContain("waitForTimeout(900)");
     expect(prepared).toContain("[makeademo:validation] script started");
     expect(prepared).toContain("[makeademo:validation] script failed");
+  });
+
+  it("validates hover and scroll behavior with presentation timing disabled", () => {
+    const prepared = prepareStylizedPlaywrightScript(
+      [
+        "const transcript = page.getByRole('log', { name: /conversation transcript/i });",
+        "await page.getByRole('button', { name: /launch plan chat/i }).hover();",
+        "await transcript.evaluate((element) => { element.scrollTop = element.scrollHeight; });",
+      ].join("\n"),
+      {
+        baseUrl: "http://localhost:3000",
+        headed: false,
+        mode: "validation",
+        pauseAfterSceneMs: 0,
+      },
+    );
+
+    expect(prepared).toContain(
+      "await animatedHover(page, page.getByRole('button', { name: /launch plan chat/i }));",
+    );
+    expect(prepared).toContain(
+      'await animatedScrollTo(page, transcript, "bottom");',
+    );
+    expect(prepared).toContain("const pointerAnimationDurationMs = 0;");
+    expect(prepared).toContain("const pointerMoveSteps = 1;");
+    expect(prepared).toContain("const pointerPulseDownMs = 0;");
+    expect(prepared).toContain("const pointerPulseUpMs = 0;");
+    expect(prepared).toContain("const hoverPauseMs = 0;");
+    expect(prepared).toContain("const scrollAnimationDurationMs = 0;");
+    expect(prepared).toContain("const presentationCuesEnabled = false;");
+    expect(getFunctionSource(prepared, "animatedHover")).toContain(
+      "await page.mouse.move(targetPoint.x, targetPoint.y, { steps: pointerMoveSteps });",
+    );
+    expect(getFunctionSource(prepared, "animatedScrollTo")).toContain(
+      "element.scrollTop = end;",
+    );
   });
 
   it("executes Demo Script setup and scene helpers during validation", async () => {
@@ -59,6 +103,9 @@ describe("prepareStylizedPlaywrightScript", () => {
     );
     const scriptPath = join(runDirectory, "demo-script.ts");
     await writeGeneratedCaptureSdkHarness(runDirectory);
+    const baseUrl = `data:text/html,${encodeURIComponent(
+      '<main><input aria-label="Message"><button>Send</button><div role="log" aria-label="Conversation transcript" style="height:20px;overflow:auto"><div style="height:200px">MakeADemo</div></div></main>',
+    )}`;
     const prepared = prepareStylizedPlaywrightScript(
       [
         "await setup(async ({ page, baseUrl, expect }) => {",
@@ -68,11 +115,16 @@ describe("prepareStylizedPlaywrightScript", () => {
         "});",
         "await scene('scene_validation', async ({ page, baseUrl, expect }) => {",
         "  await expect(page.locator('main')).toContainText('MakeADemo');",
+        "  await page.getByLabel(/message/i).fill('Show me the launch plan');",
+        "  await page.getByRole('button', { name: /send/i }).click();",
+        "  await page.getByRole('button', { name: /send/i }).hover();",
+        "  const transcript = page.getByRole('log', { name: /conversation transcript/i });",
+        "  await transcript.evaluate((element) => { element.scrollTop = element.scrollHeight; });",
         "  console.log('scene callback ran', baseUrl);",
         "});",
       ].join("\n"),
       {
-        baseUrl: "data:text/html,<main>MakeADemo</main>",
+        baseUrl,
         headed: false,
         mode: "validation",
         pauseAfterSceneMs: 900,
@@ -141,7 +193,7 @@ describe("prepareStylizedPlaywrightScript", () => {
     );
 
     expect(prepared).toContain(
-      'import { setup, scene } from "./makeademo-capture-sdk.js";',
+      'import { setup, scene } from "./makeademo-capture-sdk.mjs";',
     );
     expect(prepared).not.toContain("async function setup(callback)");
     expect(prepared).not.toContain("async function scene(id, callback)");

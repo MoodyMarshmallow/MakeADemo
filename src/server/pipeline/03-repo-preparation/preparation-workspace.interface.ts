@@ -1,7 +1,11 @@
+import type { PreparationWorkspaceResourceDiagnostics } from "./preparation-workspace-resource-diagnostics";
 import type { SubmittedCodeToolchainPlan } from "./submitted-code-toolchain.schema";
+
+export type { PreparationWorkspaceResourceDiagnostics } from "./preparation-workspace-resource-diagnostics";
 
 export type PreparationWorkspaceCommandResult = {
   exitCode: number;
+  resourceDiagnostics?: PreparationWorkspaceResourceDiagnostics;
   stderr: string;
   stdout: string;
 };
@@ -68,6 +72,31 @@ export type SubmittedProjectRuntimeRequest = {
 };
 
 /**
+ * A provider-owned request to stop the submitted demo runtime.
+ * Implementations must accept only a validated local TCP port and a bounded
+ * timeout; callers cannot supply process identities, commands, environments,
+ * or submitted toolchain authority.
+ */
+export type SubmittedRuntimeQuiescenceRequest = {
+  port: number;
+  timeoutMs: number;
+};
+
+/**
+ * One compiled MakeADemo-owned capture program and its evidence paths.
+ * Implementations must execute only `scriptPath` with MakeADemo's fixed,
+ * absolute capture Node binary. They must not accept a submitted toolchain
+ * plan, caller environment, package-manager executable, or arbitrary command.
+ */
+export type MakeADemoCaptureExecutionRequest = {
+  runDirectory: string;
+  scriptPath: string;
+  stderrPath: string;
+  stdoutPath: string;
+  timeoutMs: number;
+};
+
+/**
  * Executes commands inside a Repo Preparation workspace.
  * Implementations must scope destructive work to the ephemeral workspace copy and
  * must not expose agent-only secrets to submitted app build or runtime commands.
@@ -89,9 +118,8 @@ export interface PreparationWorkspace {
   /**
    * Executes provider-owned repository clone and Git inventory commands as the
    * unprivileged owner of `/workspace`. Implementations must scrub inherited
-   * environment variables. Providers without a distinct repository identity
-   * may omit this method; Pipeline bootstrap then preserves the trusted
-   * `execute` behavior used before this seam existed.
+   * environment variables. Repository-loading callers must fail closed when
+   * this boundary is unavailable and never fall back to `execute`.
    */
   executeRepositoryCommand?(
     command: string,
@@ -106,6 +134,17 @@ export interface PreparationWorkspace {
   executeAgentCommand?(
     command: string,
     options?: Omit<PreparationWorkspaceExecuteOptions, "env">,
+  ): Promise<PreparationWorkspaceCommandResult>;
+  /**
+   * Executes compiled Capture Path Validation or Footage Capture JavaScript in
+   * submitted-code isolation through MakeADemo's fixed capture runtime. The
+   * implementation owns the runtime path, trusted Playwright bindings,
+   * environment, timeout wrapper, and evidence collection; submitted project
+   * toolchains must not influence any of them.
+   */
+  executeMakeADemoCapture?(
+    request: MakeADemoCaptureExecutionRequest,
+    options?: Omit<PreparationWorkspaceExecuteOptions, "env" | "timeoutMs">,
   ): Promise<PreparationWorkspaceCommandResult>;
   /**
    * Executes submitted repo code inside the submitted-code runtime boundary.
@@ -132,6 +171,13 @@ export interface PreparationWorkspace {
     request: SubmittedProjectRuntimeRequest,
     options?: PreparationWorkspaceExecuteOptions,
   ): Promise<PreparationWorkspaceCommandResult>;
+  /**
+   * Stops the retained submitted runtime process group, waits for it to exit,
+   * and verifies the requested local port is free before workspace mutation.
+   */
+  quiesceSubmittedRuntime?(
+    request: SubmittedRuntimeQuiescenceRequest,
+  ): Promise<void>;
   /** Returns a provider-hosted public URL for a local port when supported. */
   getPreviewUrl?(port: number): Promise<string | undefined>;
   /**

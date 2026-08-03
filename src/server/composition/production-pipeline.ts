@@ -2,6 +2,8 @@ import { createBrowserToolControllerProvider } from "../agent-harness/tools/brow
 import type { FullPipelineRunnerOptions } from "../pipeline/00-orchestration/job/full-pipeline-runner";
 import { createMakeADemoPipeline } from "../pipeline/00-orchestration/job/pipeline-controller";
 import type { PipelineOrchestratorDependencies } from "../pipeline/00-orchestration/job/pipeline-orchestrator";
+import { AgenticRepoSecurityReviewer } from "../pipeline/02-repo-security-screen/agent-review/agentic-repo-security-reviewer";
+import type { RepoSecurityAgentReviewer } from "../pipeline/02-repo-security-screen/agent-review/repo-security-agent-reviewer.interface";
 import { screenRepoSecurity } from "../pipeline/02-repo-security-screen/repo-security-screen";
 import { AgenticRepoPreparation } from "../pipeline/03-repo-preparation/agent-task/agentic-repo-preparation";
 import type { RepoPreparationAgent } from "../pipeline/03-repo-preparation/repo-preparation-agent.interface";
@@ -47,6 +49,7 @@ export type ProductionPipelineDependencyOptions = {
   capturePathRepairer?: CapturePathRepairer;
   nodeReleaseCatalog: SubmittedCodeNodeReleaseCatalog;
   repoPreparationAgent: RepoPreparationAgent;
+  repoSecurityReviewer: RepoSecurityAgentReviewer;
   sandboxRunner: SandboxRunner;
   sceneValidator?: CapturePathSceneValidator;
   scriptGenerationAgent?: ScriptGenerationAgent;
@@ -87,6 +90,9 @@ export function createProductionPipelineDependencies(
     prepareRepo(input) {
       return prepareRepo(input, { agent: options.repoPreparationAgent });
     },
+    reviewRepoSecurity: options.repoSecurityReviewer.review.bind(
+      options.repoSecurityReviewer,
+    ),
     ...(options.capturePathRepairer === undefined
       ? {}
       : {
@@ -254,6 +260,11 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
         ),
       ),
   });
+  const repoSecurityReviewer = new AgenticRepoSecurityReviewer({
+    hardTimeoutMs: defaultHardTimeoutMs,
+    runner: agentHarness.agentTaskRunners.repoSecurityReview,
+    timeoutMs: defaultInactivityTimeoutMs,
+  });
   const scriptGenerationAgent = new AgenticScriptGenerator({
     browserToolControllerProvider,
     ...(logger === undefined ? {} : { logger }),
@@ -291,6 +302,7 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
       capturePathRepairer,
       nodeReleaseCatalog,
       repoPreparationAgent,
+      repoSecurityReviewer,
       sandboxRunner: sandboxProvider.createSandboxRunner({
         releaseWorkspaceOnCleanup: false,
       }),
@@ -319,6 +331,16 @@ function createDaytonaProductionSandboxProvider(
     );
   }
 
+  const repoPreparationWorkspaceProvider =
+    new DaytonaSdkPreparationWorkspaceProvider({
+      apiKey: config.apiKey,
+      ...(config.snapshot === undefined ? {} : { snapshot: config.snapshot }),
+      ...(config.submittedCodeSnapshot === undefined
+        ? {}
+        : { submittedCodeSnapshot: config.submittedCodeSnapshot }),
+      sandboxLogSinks: context.sandboxLogSinks,
+    });
+
   return {
     createSandboxRunner: ({
       releaseWorkspaceOnCleanup,
@@ -326,22 +348,12 @@ function createDaytonaProductionSandboxProvider(
       releaseWorkspaceOnCleanup: boolean;
     }) => new PreparedWorkspaceSandboxRunner({ releaseWorkspaceOnCleanup }),
     prepareFreshCaptureState: createDaytonaFreshCaptureStatePreparer(),
-    repoPreparationWorkspaceProvider:
-      new DaytonaSdkPreparationWorkspaceProvider({
-        apiKey: config.apiKey,
-        ...(config.snapshot === undefined ? {} : { snapshot: config.snapshot }),
-        ...(config.submittedCodeSnapshot === undefined
-          ? {}
-          : { submittedCodeSnapshot: config.submittedCodeSnapshot }),
-        sandboxLogSinks: context.sandboxLogSinks,
-      }),
+    repoPreparationWorkspaceProvider,
     repoSecurityInputLoader: new DaytonaRepoSecurityInputLoader({
-      apiKey: config.apiKey,
       ...(context.repoSecurityLogger === undefined
         ? {}
         : { logger: context.repoSecurityLogger }),
-      ...(config.snapshot === undefined ? {} : { snapshot: config.snapshot }),
-      sandboxLogSinks: context.sandboxLogSinks,
+      provider: repoPreparationWorkspaceProvider,
     }),
   };
 }
@@ -383,6 +395,9 @@ function toRepoPreparationPreflightResult(
     ...(result.previewUrl === undefined
       ? {}
       : { previewUrl: result.previewUrl }),
+    ...(result.resourceDiagnostics === undefined
+      ? {}
+      : { resourceDiagnostics: { ...result.resourceDiagnostics } }),
     ...(result.screenshot === undefined
       ? {}
       : { screenshot: { ...result.screenshot } }),

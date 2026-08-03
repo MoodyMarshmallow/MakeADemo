@@ -53,7 +53,7 @@ export type VideoRenderOptions = {
 };
 
 /**
- * Renders a prepared Compositing plan into one final video file.
+ * Renders a prepared Compositing plan into one private Draft Composite file.
  * Implementations must write exactly to outputPath and treat publicDir paths as
  * stable Remotion public assets for the duration of the render.
  */

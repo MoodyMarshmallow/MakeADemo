@@ -1,3 +1,4 @@
+import type { PreparationWorkspaceResourceDiagnostics } from "../../03-repo-preparation/preparation-workspace.interface";
 import type { NetworkAttempt } from "./network-isolation-policy";
 import type { BoundedValidationText } from "./validation-evidence";
 
@@ -8,6 +9,7 @@ import type { BoundedValidationText } from "./validation-evidence";
  */
 export type DemoRuntimePreflightFailureKind =
   | "dependency-install-failed"
+  | "dependency-install-sigkill"
   | "demo-process-exited"
   | "demo-readiness-timeout"
   | "fresh-capture-baseline-failed"
@@ -38,6 +40,7 @@ export type DemoRuntimePreflightResult = {
   failureKind?: DemoRuntimePreflightFailureKind;
   failureReason?: string;
   logs: string[];
+  resourceDiagnostics?: PreparationWorkspaceResourceDiagnostics;
   screenshot?: { mimeType: "image/png"; path: string; sizeBytes?: number };
   screenshotArtifactId?: string;
   status: "succeeded" | "failed";

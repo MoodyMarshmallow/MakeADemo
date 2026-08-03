@@ -17,6 +17,10 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 
 import type { PreparationWorkspaceHandle } from "../../../pipeline/03-repo-preparation/preparation-workspace-runner";
+import {
+  SubmittedCodeToolchainRepairRequiredError,
+  provisionSubmittedCodeToolchain,
+} from "../../../pipeline/03-repo-preparation/submitted-code-execution";
 import { submittedCodeKnownGoodNodeReleaseSnapshot } from "../../../pipeline/03-repo-preparation/submitted-code-node-release-catalog.interface";
 import { resolveSubmittedCodeToolchain as resolveAgainstNodeCatalog } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
 import {
@@ -128,14 +132,23 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
   });
 
-  it("creates the submitted-code sandbox with network access enabled", async () => {
+  it("creates the submitted-code sandbox only when the approved toolchain is provisioned", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeLinkedClient(calls),
       submittedCodeSnapshot: "makeademo-submitted-code",
     });
 
-    await provider.create();
+    const handle = await provider.create();
+
+    expect(calls).not.toContainEqual(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          snapshot: "makeademo-submitted-code",
+        }),
+      }),
+    );
+    await provisionToolchainForSubmittedCodeSync(handle);
 
     expect(calls).toContainEqual({
       create: {
@@ -145,6 +158,28 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         user: "root",
       },
     });
+  });
+
+  it("deletes an unapproved parent without archiving it", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+
+    const handle = await provider.create();
+    await handle.discard?.();
+
+    expect(calls).toContainEqual({ delete: "parent_sandbox" });
+    expect(calls).not.toContainEqual({ stop: "parent_sandbox" });
+    expect(calls).not.toContainEqual({ archive: "parent_sandbox" });
+    expect(calls).not.toContainEqual(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          snapshot: "makeademo-submitted-code",
+        }),
+      }),
+    );
   });
 
   it("deletes an ID-less primary sandbox before rejecting creation", async () => {
@@ -248,26 +283,6 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         options: { timeout: 180 },
       },
     ]);
-  });
-
-  it("attaches configured Daytona secrets to the parent sandbox", async () => {
-    const calls: unknown[] = [];
-    const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeClient(calls),
-      secrets: { OPENAI_API_KEY: "makeademo-openai" },
-    });
-
-    await provider.create();
-
-    expect(calls[0]).toEqual({
-      create: {
-        autoDeleteInterval: -1,
-        autoStopInterval: 15,
-        disk: 3,
-        networkBlockAll: false,
-        secrets: { OPENAI_API_KEY: "makeademo-openai" },
-      },
-    });
   });
 
   it("uploads screened workspace files with abortable Daytona fs.uploadFileStream", async () => {
@@ -686,6 +701,41 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(JSON.stringify(calls)).not.toContain("caller-secret");
   });
 
+  it("attaches safe cgroup deltas to a bounded install SIGKILL", async () => {
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient([], {
+        resourceSnapshots: [
+          "MAKEADEMO_RESOURCE_SNAPSHOT=1\nmemory_oom_kill=2\nmemory_peak_bytes=4000000000\npids_current=40\npids_limit=512\npids_max_events=0\n",
+          "MAKEADEMO_RESOURCE_SNAPSHOT=1\nmemory_oom_kill=3\nmemory_peak_bytes=4294967296\npids_current=38\npids_limit=512\npids_max_events=0\n",
+        ],
+        submittedInstallExitCode: 137,
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain(supportedPnpmMetadata("."));
+    await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+
+    const result = await handle.workspace.executeSubmittedProject?.({
+      argv: plan.install?.argv ?? [],
+      executable: plan.install?.executable ?? "pnpm",
+      installProfile: "bounded",
+      plan,
+    });
+
+    expect(result).toMatchObject({
+      exitCode: 137,
+      resourceDiagnostics: {
+        classification: "cgroup-oom-kill",
+        memoryOomKillDelta: 1,
+        memoryPeakBytes: 4_294_967_296,
+        pidsCurrent: 38,
+        pidsLimit: 512,
+      },
+    });
+  });
+
   it("owns Yarn 4 concurrency configuration after caller input", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
@@ -923,6 +973,152 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(allSubmittedScripts).not.toContain("mise");
     expect(allSubmittedScripts).not.toContain(`node@${plan.node.version}`);
     expect(allSubmittedScripts).toContain(`${trustedNodeBin}/node`);
+  });
+
+  it("runs capture through the fixed MakeADemo Node runtime", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code-browser",
+    });
+    const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    const result = await handle.workspace.executeMakeADemoCapture?.({
+      runDirectory: "/workspace/.makeademo/capture-contract",
+      scriptPath: "/workspace/.makeademo/capture-contract/demo.mjs",
+      stderrPath: "/workspace/.makeademo/capture-contract/demo.stderr.log",
+      stdoutPath: "/workspace/.makeademo/capture-contract/demo.stdout.log",
+      timeoutMs: 16_500,
+    });
+
+    expect(result?.exitCode).toBe(0);
+    const execution = decodedSubmittedScripts(calls)
+      .map(decodeSubmittedExecutionFromFramedScript)
+      .find((candidate) => candidate?.command.includes("demo.mjs"));
+    expect(execution).toEqual({
+      command: [
+        "cd '/workspace/.makeademo/capture-contract'",
+        "/usr/bin/timeout -s TERM 17 '/opt/makeademo/capture-runtime/bin/node' '/workspace/.makeademo/capture-contract/demo.mjs' > '/workspace/.makeademo/capture-contract/demo.stdout.log' 2> '/workspace/.makeademo/capture-contract/demo.stderr.log'",
+        "code=$?",
+        "/bin/cat '/workspace/.makeademo/capture-contract/demo.stdout.log'",
+        "/bin/cat '/workspace/.makeademo/capture-contract/demo.stderr.log' >&2",
+        "exit $code",
+      ].join("; "),
+      env: {
+        HOME: "/workspace/.makeademo/agent-home",
+        MAKEADEMO_PLAYWRIGHT_MODULE_ROOT:
+          "/opt/makeademo/playwright-runtime/node_modules",
+        PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
+        PLAYWRIGHT_BROWSERS_PATH: "/ms-playwright",
+        TMPDIR: "/workspace/.makeademo/tmp",
+      },
+    });
+    expect(JSON.stringify(execution)).not.toContain(
+      "/opt/makeademo/toolchains/",
+    );
+    expect(JSON.stringify(execution)).not.toContain(" bun ");
+  });
+
+  it("owns submitted runtime quiescence and verifies the validated port without process scanning", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
+
+    await handle.workspace.quiesceSubmittedRuntime?.({
+      port: 4173,
+      timeoutMs: 500,
+    });
+
+    const scripts = decodedSubmittedScripts(calls).join("\n");
+    expect(scripts).toContain("/dev/tcp/127.0.0.1/4173");
+    expect(scripts).not.toContain("/proc/[0-9]*/cmdline");
+    expect(JSON.stringify(calls)).not.toContain("OPENAI_API_KEY");
+  });
+
+  it("quiesces a retained runtime by process group, escalates to KILL, and fails closed on an occupied port", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls, { retainedRuntimePid: 4242 }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const { plan } = await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+
+    await handle.workspace.executeSubmittedRuntime?.({
+      command: "echo runtime-start",
+      plan,
+    });
+    await handle.workspace.quiesceSubmittedRuntime?.({
+      port: 4173,
+      timeoutMs: 500,
+    });
+
+    const quiescenceScript = decodedSubmittedScripts(calls).find(
+      (script) =>
+        script.includes("makeademo_pid") && script.includes("kill -TERM"),
+    );
+    expect(quiescenceScript).toBeDefined();
+    expect(quiescenceScript).toContain('kill -TERM -- -"$makeademo_pid"');
+    expect(quiescenceScript).toContain('kill -0 -- -"$makeademo_pid"');
+    expect(quiescenceScript).toContain('kill -KILL -- -"$makeademo_pid"');
+    expect(quiescenceScript).toContain("/dev/tcp/127.0.0.1/4173");
+
+    const occupiedCalls: unknown[] = [];
+    const occupiedProvider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(occupiedCalls, {
+        quiescencePortOccupied: true,
+        retainedRuntimePid: 4242,
+      }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const occupiedHandle = await occupiedProvider.create();
+    const occupiedPlan =
+      await provisionToolchainForSubmittedCodeSync(occupiedHandle);
+    await occupiedHandle.workspace.syncSubmittedCodeWorkspace?.();
+    await occupiedHandle.workspace.executeSubmittedRuntime?.({
+      command: "echo runtime-start",
+      plan: occupiedPlan.plan,
+    });
+
+    await expect(
+      occupiedHandle.workspace.quiesceSubmittedRuntime?.({
+        port: 4173,
+        timeoutMs: 500,
+      }),
+    ).rejects.toThrow("port 4173 remains occupied");
+  });
+
+  it("rejects a second submitted runtime start until successful quiescence clears the retained process group", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient(calls, { retainedRuntimePid: 4242 }),
+      submittedCodeSnapshot: "makeademo-submitted-code",
+    });
+    const handle = await provider.create();
+    const { plan } = await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    const runtime = { command: "echo runtime-start", plan };
+
+    await handle.workspace.executeSubmittedRuntime?.(runtime);
+    const callsAfterFirstStart = calls.length;
+    await expect(
+      handle.workspace.executeSubmittedRuntime?.(runtime),
+    ).rejects.toThrow("submitted runtime is already active");
+    expect(calls).toHaveLength(callsAfterFirstStart);
+
+    await handle.workspace.quiesceSubmittedRuntime?.({
+      port: 4173,
+      timeoutMs: 500,
+    });
+    await expect(
+      handle.workspace.executeSubmittedRuntime?.(runtime),
+    ).resolves.toMatchObject({ exitCode: 0 });
   });
 
   it("keeps a provisioned npm launcher ahead of the hydrated Node bundle's npm", async () => {
@@ -1224,13 +1420,11 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     const handle = await provider.create();
 
     await expect(
-      handle.workspace.provisionSubmittedCodeToolchain?.(
+      provisionSubmittedCodeToolchain(
+        handle.workspace,
         resolveSubmittedCodeToolchain(supportedPnpmMetadata(".")),
       ),
-    ).rejects.toMatchObject({
-      code: "deprecated_release",
-      name: "TrustedPackageManagerProvisioningError",
-    });
+    ).rejects.toBeInstanceOf(SubmittedCodeToolchainRepairRequiredError);
   });
 
   it("provisions the revisioned Yarn 2 default from its exact cli-dist release", async () => {
@@ -1286,10 +1480,10 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
 
     await expect(
-      handle.workspace.provisionSubmittedCodeToolchain?.(plan),
+      provisionSubmittedCodeToolchain(handle.workspace, plan),
     ).rejects.toMatchObject({
       code: "package_manager_release_unavailable",
-      name: "TrustedPackageManagerProvisioningError",
+      name: "SubmittedCodeToolchainRepairRequiredError",
     });
 
     const scripts = decodedSubmittedScripts(calls).join("\n");
@@ -1631,10 +1825,6 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       ],
     });
 
-    await expect(
-      handle.workspace.syncSubmittedCodeWorkspace?.(),
-    ).rejects.toThrow("requires a provisioned toolchain");
-
     await handle.workspace.provisionSubmittedCodeToolchain?.(plan);
     await expect(
       handle.workspace.executeSubmittedProject?.({
@@ -1773,60 +1963,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("rejects an unprovisioned submitted toolchain before it executes repository code", async () => {
-    const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeCommandTimeoutClient([]),
-      submittedCodeSnapshot: "makeademo-submitted-code",
-    });
-    const handle = await provider.create();
-    const plan = resolveSubmittedCodeToolchain({
-      candidates: [
-        {
-          files: {
-            "package.json": JSON.stringify({ packageManager: "yarn@4.12.0" }),
-            "yarn.lock": "",
-          },
-          projectRoot: ".",
-        },
-      ],
-    });
-
-    await expect(
-      handle.workspace.executeSubmittedProject?.({
-        argv: plan.install?.argv ?? [],
-        executable: plan.install?.executable ?? "yarn",
-        plan,
-      }),
-    ).rejects.toThrow("has not been provisioned");
-  });
-
-  it("does not run a submitted runtime until its resolved toolchain has been provisioned", async () => {
-    const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeCommandTimeoutClient([]),
-      submittedCodeSnapshot: "makeademo-submitted-code",
-    });
-    const handle = await provider.create();
-    const plan = resolveSubmittedCodeToolchain({
-      candidates: [
-        {
-          files: {
-            "package.json": JSON.stringify({ packageManager: "yarn@4.12.0" }),
-            "yarn.lock": "__metadata:\n  version: 8\n",
-          },
-          projectRoot: ".",
-        },
-      ],
-    });
-
-    await expect(
-      handle.workspace.executeSubmittedRuntime?.({
-        command: "yarn demo",
-        plan,
-      }),
-    ).rejects.toThrow("has not been provisioned");
-  });
-
-  it("runs submitted runtime commands with the planned Node in workspace cwd and sealed environment", async () => {
+  it("runs submitted runtime commands from the planned project root with a sealed environment", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeCommandTimeoutClient(calls),
@@ -1852,7 +1989,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
 
     expect(calls).toContainEqual({
       createPty: {
-        cwd: "/workspace",
+        cwd: "/workspace/webapp",
         envs: {},
         sandbox: "submitted_sandbox",
       },
@@ -1922,11 +2059,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     };
 
     await expect(
-      handle.workspace.executeSubmittedProject?.({
-        argv: plan.install.argv,
-        executable: plan.install.executable,
-        plan,
-      }),
+      handle.workspace.provisionSubmittedCodeToolchain?.(plan),
     ).rejects.toThrow("Invalid Corepack package-manager integrity suffix");
   });
 
@@ -1962,11 +2095,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     };
 
     await expect(
-      handle.workspace.executeSubmittedProject?.({
-        argv: plan.install.argv,
-        executable: plan.install.executable,
-        plan,
-      }),
+      handle.workspace.provisionSubmittedCodeToolchain?.(plan),
     ).rejects.toThrow("Unsafe submitted project root: apps/../private");
   });
 
@@ -2556,6 +2685,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     });
 
     const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
 
     expect(handle.id).toBe("parent_sandbox");
     expect(calls.slice(0, 2)).toEqual([
@@ -2581,7 +2711,29 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(calls[1]).not.toHaveProperty("create.linkedSandbox");
   });
 
-  it("deletes the parent sandbox when submitted-code sandbox creation fails", async () => {
+  it("rejects all public submitted execution until the workspace is synchronized", async () => {
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeCommandTimeoutClient([]),
+      submittedCodeSnapshot: "makeademo-submitted-code-browser",
+    });
+    const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
+
+    await expect(
+      handle.workspace.executeSubmittedCode?.("npm test"),
+    ).rejects.toThrow("requires synchronization after provisioning");
+    await expect(
+      handle.workspace.executeMakeADemoCapture?.({
+        runDirectory: "/workspace/.makeademo/capture-contract",
+        scriptPath: "/workspace/.makeademo/capture-contract/demo.mjs",
+        stderrPath: "/workspace/.makeademo/capture-contract/demo.stderr.log",
+        stdoutPath: "/workspace/.makeademo/capture-contract/demo.stdout.log",
+        timeoutMs: 16_500,
+      }),
+    ).rejects.toThrow("requires synchronization after provisioning");
+  });
+
+  it("can discard the parent after submitted-code sandbox creation fails", async () => {
     const calls: unknown[] = [];
     const parentSandbox = fakeLinkedSandbox(
       calls,
@@ -2605,41 +2757,19 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       submittedCodeSnapshot: "makeademo-submitted-code-browser",
     });
 
-    await expect(provider.create()).rejects.toThrow("linked create timed out");
+    const handle = await provider.create();
+    const plan = resolveSubmittedCodeToolchain(supportedPnpmMetadata("."));
+
+    await expect(
+      handle.workspace.provisionSubmittedCodeToolchain?.(plan),
+    ).rejects.toThrow("linked create timed out");
+    expect(calls).not.toContainEqual({ delete: "parent_sandbox" });
+
+    await handle.discard?.();
+
     expect(calls).toEqual(
       expect.arrayContaining([{ delete: "parent_sandbox" }]),
     );
-  });
-
-  it("does not attach parent Daytona secrets to the submitted-code sandbox", async () => {
-    const calls: unknown[] = [];
-    const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeLinkedClient(calls),
-      secrets: { OPENAI_API_KEY: "makeademo-openai" },
-      submittedCodeSnapshot: "makeademo-submitted-code-browser",
-    });
-
-    await provider.create();
-
-    expect(calls.slice(0, 2)).toEqual([
-      {
-        create: {
-          autoDeleteInterval: -1,
-          autoStopInterval: 15,
-          disk: 3,
-          networkBlockAll: false,
-          secrets: { OPENAI_API_KEY: "makeademo-openai" },
-        },
-      },
-      {
-        create: {
-          autoDeleteInterval: -1,
-          networkBlockAll: false,
-          snapshot: "makeademo-submitted-code-browser",
-          user: "root",
-        },
-      },
-    ]);
   });
 
   it("routes submitted-code execution and preview through the logical child sandbox", async () => {
@@ -2649,6 +2779,8 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       submittedCodeSnapshot: "makeademo-submitted-code-browser",
     });
     const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
     const getPreviewUrl = handle.workspace.getPreviewUrl?.bind(
       handle.workspace,
     );
@@ -2684,16 +2816,20 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
 
   it("preserves submitted-code stdout, stderr, and exit status through cancellable execution", async () => {
     const calls: unknown[] = [];
+    const behavior: FakeLinkedClientOptions = {};
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeLinkedClient(calls, {
-        commandExitCode: 23,
-        commandStderr: "warning\n",
-        commandStdout: "result\n",
-      }),
+      client: fakeLinkedClient(calls, behavior),
       commandTimeoutMs: 1,
       submittedCodeSnapshot: "makeademo-submitted-code-browser",
     });
     const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    Object.assign(behavior, {
+      commandExitCode: 23,
+      commandStderr: "warning\n",
+      commandStdout: "result\n",
+    });
 
     await expect(
       handle.workspace.executeSubmittedCode?.("npm test"),
@@ -2705,16 +2841,20 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
   });
 
   it("preserves submitted-code bytes when the PTY emits CRLF framing", async () => {
+    const behavior: FakeLinkedClientOptions = {};
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeLinkedClient([], {
-        commandExitCode: 17,
-        commandStderr: "warning\r\n",
-        commandStdout: "first\r\nsecond\n",
-        ptyUsesCrlf: true,
-      }),
+      client: fakeLinkedClient([], behavior),
       submittedCodeSnapshot: "makeademo-submitted-code-browser",
     });
     const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    Object.assign(behavior, {
+      commandExitCode: 17,
+      commandStderr: "warning\r\n",
+      commandStdout: "first\r\nsecond\n",
+      ptyUsesCrlf: true,
+    });
 
     await expect(
       handle.workspace.executeSubmittedCode?.("npm test"),
@@ -2726,16 +2866,20 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
   });
 
   it("keeps interactive prompts outside submitted-code result framing", async () => {
+    const behavior: FakeLinkedClientOptions = {};
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeLinkedClient([], {
-        commandStderr: "warning\n",
-        commandStdout: "abc",
-        ptyPrompt: "sandbox$ ",
-        ptyUsesCrlf: true,
-      }),
+      client: fakeLinkedClient([], behavior),
       submittedCodeSnapshot: "makeademo-submitted-code-browser",
     });
     const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    Object.assign(behavior, {
+      commandStderr: "warning\n",
+      commandStdout: "abc",
+      ptyPrompt: "sandbox$ ",
+      ptyUsesCrlf: true,
+    });
 
     await expect(
       handle.workspace.executeSubmittedCode?.("npm test"),
@@ -2754,6 +2898,9 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       submittedCodeSnapshot: "makeademo-submitted-code-browser",
     });
     const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    calls.length = 0;
 
     const result = await handle.workspace.executeSubmittedCode?.(
       "node --version",
@@ -2796,6 +2943,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         submittedCodeSnapshot: "makeademo-submitted-code-browser",
       });
       const handle = await provider.create();
+      await provisionToolchainForSubmittedCodeSync(handle);
 
       await handle.workspace.uploadSubmittedCodeFiles?.([
         {
@@ -2854,6 +3002,8 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       submittedCodeSnapshot: "makeademo-submitted-code-browser",
     });
     const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
 
     await handle.workspace.executeSubmittedCode?.("npm test", {
       env: { NODE_ENV: "test" },
@@ -2875,6 +3025,9 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       submittedCodeSnapshot: "makeademo-submitted-code-browser",
     });
     const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    calls.length = 0;
 
     await handle.workspace.executeSubmittedCode?.("playwright-cli open", {
       env: {
@@ -2960,12 +3113,16 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
 
   it("fails fast when non-stream submitted-code execution does not finish", async () => {
     const calls: unknown[] = [];
+    const behavior: FakeLinkedClientOptions = {};
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeLinkedClient(calls, { executeCommandNeverResolves: true }),
+      client: fakeLinkedClient(calls, behavior),
       commandTimeoutMs: 1,
       submittedCodeSnapshot: "makeademo-submitted-code-browser",
     });
     const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    behavior.executeCommandNeverResolves = true;
 
     await expect(
       handle.workspace.executeSubmittedCode?.("npm ci"),
@@ -3070,13 +3227,15 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     ).toHaveLength(0);
   });
 
-  it("restores submitted-code workspace through a POSIX shell while preserving caches and recreating runtime directories without MakeADemo artifacts", async () => {
+  it("restores submitted-code workspace through a POSIX shell while preserving dependency stores and replacing repository cache state", async () => {
     const root = await mkdtemp(join(tmpdir(), "makeademo-daytona-shell-"));
     const parentWorkspace = join(root, "parent");
     const submittedWorkspace = join(root, "submitted");
     const calls: unknown[] = [];
     await mkdir(join(parentWorkspace, ".makeademo"), { recursive: true });
     await mkdir(join(parentWorkspace, ".cache", "nested"), { recursive: true });
+    await mkdir(join(parentWorkspace, ".bun"), { recursive: true });
+    await mkdir(join(parentWorkspace, ".npm"), { recursive: true });
     await mkdir(join(parentWorkspace, "packages", "web", ".next", "cache"), {
       recursive: true,
     });
@@ -3091,6 +3250,8 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     await mkdir(join(submittedWorkspace, ".cache", "nested"), {
       recursive: true,
     });
+    await mkdir(join(submittedWorkspace, ".bun"), { recursive: true });
+    await mkdir(join(submittedWorkspace, ".npm"), { recursive: true });
     await writeFile(join(parentWorkspace, "package.json"), "prepared app");
     await writeFile(join(parentWorkspace, ".env.local"), "prepared secret");
     await writeFile(
@@ -3117,7 +3278,15 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     );
     await writeFile(
       join(parentWorkspace, ".cache", "nested", "prepared.txt"),
-      "must stay excluded",
+      "prepared application cache",
+    );
+    await writeFile(
+      join(parentWorkspace, ".bun", "prepared.txt"),
+      "prepared bun state",
+    );
+    await writeFile(
+      join(parentWorkspace, ".npm", "prepared.txt"),
+      "prepared npm state",
     );
     await writeFile(
       join(submittedWorkspace, "node_modules", "preserved-cache.txt"),
@@ -3129,6 +3298,8 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       join(submittedWorkspace, ".cache", "nested", "stale.txt"),
       "remove me",
     );
+    await writeFile(join(submittedWorkspace, ".bun", "stale.txt"), "remove me");
+    await writeFile(join(submittedWorkspace, ".npm", "stale.txt"), "remove me");
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
       client: fakeLocalShellLinkedClient(calls, {
         parentWorkspace,
@@ -3175,10 +3346,21 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       );
       await expect(
         readFile(
-          join(submittedWorkspace, ".cache", "nested", "stale.txt"),
+          join(submittedWorkspace, ".cache", "nested", "prepared.txt"),
           "utf8",
         ),
-      ).resolves.toBe("remove me");
+      ).resolves.toBe("prepared application cache");
+      await expect(
+        readFile(join(submittedWorkspace, ".bun", "prepared.txt"), "utf8"),
+      ).resolves.toBe("prepared bun state");
+      await expect(
+        readFile(join(submittedWorkspace, ".npm", "prepared.txt"), "utf8"),
+      ).resolves.toBe("prepared npm state");
+      await expectPathMissing(
+        join(submittedWorkspace, ".cache", "nested", "stale.txt"),
+      );
+      await expectPathMissing(join(submittedWorkspace, ".bun", "stale.txt"));
+      await expectPathMissing(join(submittedWorkspace, ".npm", "stale.txt"));
       await access(join(submittedWorkspace, ".makeademo", "tmp"));
       await access(join(submittedWorkspace, ".makeademo", "cache"));
       await expectPathMissing(
@@ -3270,6 +3452,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       submittedCodeSnapshot: "makeademo-submitted-code-browser",
     });
     const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
 
     await handle.release();
 
@@ -3297,6 +3480,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       submittedCodeSnapshot: "makeademo-submitted-code-browser",
     });
     const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
 
     await handle.release();
 
@@ -3317,14 +3501,19 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
 
   it("cancels active primary and submitted-code commands before release", async () => {
     const calls: unknown[] = [];
+    const behavior: FakeLinkedClientOptions = {};
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
-      client: fakeLinkedClient(calls, {
-        executeCommandNeverResolves: true,
-        ptyWaitsForKill: true,
-      }),
+      client: fakeLinkedClient(calls, behavior),
       submittedCodeSnapshot: "makeademo-submitted-code-browser",
     });
     const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
+    await handle.workspace.syncSubmittedCodeWorkspace?.();
+    Object.assign(behavior, {
+      executeCommandNeverResolves: true,
+      ptyWaitsForKill: true,
+    });
+    calls.length = 0;
 
     const primaryExecution = handle.workspace.execute("slow primary command", {
       onStdout: () => {},
@@ -3429,6 +3618,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       submittedCodeSnapshot: "makeademo-submitted-code-browser",
     });
     const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
 
     await handle.release();
     expect(calls.slice(-4)).toEqual([
@@ -3458,6 +3648,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       submittedCodeSnapshot: "makeademo-submitted-code-browser",
     });
     const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
 
     await expect(handle.release()).rejects.toThrow(
       "submitted-code stop failed",
@@ -3480,6 +3671,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       submittedCodeSnapshot: "makeademo-submitted-code-browser",
     });
     const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
 
     await expect(handle.release()).rejects.toThrow(
       "submitted-code archive failed",
@@ -3533,6 +3725,7 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       submittedCodeSnapshot: "makeademo-submitted-code-browser",
     });
     const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
 
     await Promise.all([handle.release(), handle.release()]);
     expect(calls.filter((call) => "stop" in Object(call))).toEqual([
@@ -3544,30 +3737,50 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
       { archive: "parent_sandbox" },
     ]);
   });
+
+  it("does not archive a rejected workspace when release races with discard", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeLinkedClient(calls),
+      submittedCodeSnapshot: "makeademo-submitted-code-browser",
+    });
+    const handle = await provider.create();
+    await provisionToolchainForSubmittedCodeSync(handle);
+    calls.length = 0;
+
+    await Promise.all([handle.discard?.(), handle.release()]);
+
+    expect(calls).toEqual([
+      { delete: "submitted_sandbox" },
+      { delete: "parent_sandbox" },
+    ]);
+  });
 });
+
+type FakeLinkedClientOptions = {
+  deprecatedPackageManagerRelease?: boolean;
+  archiveAuthError?: string;
+  archiveAuthFailuresBeforeSuccess?: number;
+  commandExitCode?: number;
+  commandStderr?: string;
+  commandStdout?: string;
+  downloadFilesNeverResolves?: boolean;
+  executeCommandNeverResolves?: boolean;
+  failParentArchive?: boolean;
+  failArchive?: boolean;
+  failSubmittedRestore?: boolean;
+  failSubmittedArchive?: boolean;
+  failSubmittedStop?: boolean;
+  failStop?: boolean;
+  ptyWaitsForKill?: boolean;
+  ptyPrompt?: string;
+  ptyUsesCrlf?: boolean;
+  remoteCleanupNeverResolves?: boolean;
+};
 
 function fakeLinkedClient(
   calls: unknown[],
-  options: {
-    deprecatedPackageManagerRelease?: boolean;
-    archiveAuthError?: string;
-    archiveAuthFailuresBeforeSuccess?: number;
-    commandExitCode?: number;
-    commandStderr?: string;
-    commandStdout?: string;
-    downloadFilesNeverResolves?: boolean;
-    executeCommandNeverResolves?: boolean;
-    failParentArchive?: boolean;
-    failArchive?: boolean;
-    failSubmittedRestore?: boolean;
-    failSubmittedArchive?: boolean;
-    failSubmittedStop?: boolean;
-    failStop?: boolean;
-    ptyWaitsForKill?: boolean;
-    ptyPrompt?: string;
-    ptyUsesCrlf?: boolean;
-    remoteCleanupNeverResolves?: boolean;
-  } = {},
+  options: FakeLinkedClientOptions = {},
 ) {
   const parentSandbox = fakeLinkedSandbox(
     calls,
@@ -3605,6 +3818,10 @@ function fakeCommandTimeoutClient(
     emulatedYarnCliSha512?: string;
     nodeProvisioningFailure?: boolean;
     packageManagerVerificationFailure?: boolean;
+    resourceSnapshots?: string[];
+    quiescencePortOccupied?: boolean;
+    retainedRuntimePid?: number;
+    submittedInstallExitCode?: number;
     submittedIntegrityFailureAttempt?: number;
     unavailablePackageManagerRelease?: boolean;
   } = {},
@@ -3644,6 +3861,10 @@ function fakeCommandTimeoutSandbox(
     emulatedYarnCliSha512?: string;
     nodeProvisioningFailure?: boolean;
     packageManagerVerificationFailure?: boolean;
+    resourceSnapshots?: string[];
+    quiescencePortOccupied?: boolean;
+    retainedRuntimePid?: number;
+    submittedInstallExitCode?: number;
     submittedIntegrityFailureAttempt?: number;
     unavailablePackageManagerRelease?: boolean;
   },
@@ -3734,6 +3955,23 @@ function fakeCommandTimeoutSandbox(
             const unavailablePackageManagerRelease =
               options.unavailablePackageManagerRelease === true &&
               script.includes("MAKEADEMO_REGISTRY_RELEASE_UNAVAILABLE");
+            const resourceSnapshot = script.includes(
+              "MAKEADEMO_RESOURCE_SNAPSHOT=1",
+            );
+            const submittedExecution =
+              decodeSubmittedExecutionFromFramedScript(script);
+            const submittedInstall =
+              id === "submitted_sandbox" &&
+              submittedExecution !== undefined &&
+              /'(?:npm|pnpm|yarn|bun)' '(?:ci|install)'/.test(
+                submittedExecution.command,
+              );
+            const isRetainedRuntimeStart =
+              options.retainedRuntimePid !== undefined &&
+              submittedExecution?.command.includes("echo runtime-start");
+            const quiescencePortOccupied =
+              options.quiescencePortOccupied === true &&
+              script.includes("/dev/tcp/127.0.0.1/4173");
             if (unavailablePackageManagerRelease) {
               calls.push({ registryMetadataUnavailable: true });
             }
@@ -3747,7 +3985,11 @@ function fakeCommandTimeoutSandbox(
                 nodeProvisioningFails ||
                 packageManagerVerificationFails
                   ? 1
-                  : 0,
+                  : quiescencePortOccupied
+                    ? 70
+                    : submittedInstall
+                      ? (options.submittedInstallExitCode ?? 0)
+                      : 0,
               stderr: integrityFails
                 ? "lock mismatch"
                 : unavailablePackageManagerRelease
@@ -3764,6 +4006,12 @@ function fakeCommandTimeoutSandbox(
                             ? "trusted package-manager artifact changed"
                             : "",
               stdout:
+                (resourceSnapshot
+                  ? options.resourceSnapshots?.shift()
+                  : undefined) ??
+                (isRetainedRuntimeStart
+                  ? `${options.retainedRuntimePid}\n`
+                  : undefined) ??
                 trustedNodeProvisionAttestation(script) ??
                 (script.includes("MAKEADEMO_ARTIFACT_SHA512")
                   ? hydrationAttestationStdout()
@@ -4031,25 +4279,7 @@ function fakeLinkedSandbox(
   calls: unknown[],
   id: string,
   stdout: string,
-  options: {
-    archiveAuthError?: string;
-    archiveAuthFailuresBeforeSuccess?: number;
-    commandExitCode?: number;
-    commandStderr?: string;
-    commandStdout?: string;
-    downloadFilesNeverResolves?: boolean;
-    executeCommandNeverResolves?: boolean;
-    failParentArchive?: boolean;
-    failArchive?: boolean;
-    failSubmittedRestore?: boolean;
-    failSubmittedArchive?: boolean;
-    failSubmittedStop?: boolean;
-    failStop?: boolean;
-    ptyWaitsForKill?: boolean;
-    ptyPrompt?: string;
-    ptyUsesCrlf?: boolean;
-    remoteCleanupNeverResolves?: boolean;
-  } = {},
+  options: FakeLinkedClientOptions = {},
 ) {
   let archiveAuthFailures = options.archiveAuthFailuresBeforeSuccess ?? 0;
   return {
@@ -4462,7 +4692,13 @@ function fakeClient(
               emitFramedCommandResponse(script, ptyOptions.onData, {
                 exitCode: 0,
                 stderr: "",
-                stdout: "ok",
+                stdout:
+                  trustedNodeProvisionAttestation(script) ??
+                  (script.includes("MAKEADEMO_ARTIFACT_SHA512")
+                    ? hydrationAttestationStdout()
+                    : script.includes("MAKEADEMO_ARTIFACT_SHA256")
+                      ? bunHydrationAttestationStdout()
+                      : "ok"),
               });
               return;
             }

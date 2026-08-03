@@ -21,7 +21,7 @@ export const defaultRenderPlan = {
   fontAssets: {},
   fps: 30,
   height: 720,
-  outputPath: "final-video.mp4",
+  outputPath: "draft-composite.mp4",
   publicDir: "public",
   scenes: [],
   scriptId: "default",

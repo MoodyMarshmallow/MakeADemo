@@ -1,6 +1,8 @@
-FROM mcr.microsoft.com/playwright:v1.49.1-noble
+FROM mcr.microsoft.com/playwright:v1.49.1-noble@sha256:70e367e0cbf60340a5b5fd562f6247a34eb3196efab9f88a3dd56482d9fe09d2
 
 ARG TARGETARCH
+ARG MAKEADEMO_CAPTURE_NODE_VERSION=v22.12.0
+ARG MAKEADEMO_CAPTURE_NODE_SHA256=177208bfc4a9403121a40c72d038c670f4fd937fa16ca7df0a720e90be0fe2d9
 RUN if [ "$TARGETARCH" != "amd64" ]; then \
       echo "unsupported submitted-code architecture: $TARGETARCH (expected amd64)" >&2; \
       exit 1; \
@@ -27,6 +29,28 @@ RUN mkdir -p /opt/makeademo/playwright-runtime \
     playwright@1.49.1 \
   && chown -R root:root /opt/makeademo/playwright-runtime \
   && chmod -R a-w /opt/makeademo/playwright-runtime
+
+# Capture Path Validation and Footage Capture never inherit the submitted
+# project's Node or package-manager PATH. Snapshot publication freezes this
+# image-owned Node binary and bridge at an explicit, root-owned location.
+RUN set -eu; \
+  test "$(node --version)" = "${MAKEADEMO_CAPTURE_NODE_VERSION}"; \
+  printf '%s  %s\n' "${MAKEADEMO_CAPTURE_NODE_SHA256}" "$(command -v node)" | sha256sum -c -; \
+  mkdir -p /opt/makeademo/capture-runtime/bin; \
+  install -m 0555 "$(command -v node)" /opt/makeademo/capture-runtime/bin/node; \
+  test "$(/opt/makeademo/capture-runtime/bin/node --version)" = "${MAKEADEMO_CAPTURE_NODE_VERSION}"; \
+  printf '%s  %s\n' "${MAKEADEMO_CAPTURE_NODE_SHA256}" /opt/makeademo/capture-runtime/bin/node | sha256sum -c -; \
+  printf '%s\n' "${MAKEADEMO_CAPTURE_NODE_VERSION}" > /opt/makeademo/capture-runtime/node.version; \
+  printf '%s\n' "${MAKEADEMO_CAPTURE_NODE_SHA256}" > /opt/makeademo/capture-runtime/node.sha256; \
+  printf '%s\n' \
+    'import { createRequire } from "node:module";' \
+    'const requireTrustedPlaywright = createRequire("/opt/makeademo/playwright-runtime/node_modules/playwright/package.json");' \
+    'export const chromium = requireTrustedPlaywright("playwright").chromium;' \
+    'export const expect = requireTrustedPlaywright("@playwright/test").expect;' \
+    > /opt/makeademo/capture-runtime/playwright.mjs; \
+  /opt/makeademo/capture-runtime/bin/node --input-type=module -e 'import("/opt/makeademo/capture-runtime/playwright.mjs").then(({ chromium, expect }) => { if (!chromium || !expect) process.exit(1); })'; \
+  chown -R root:root /opt/makeademo/capture-runtime; \
+  chmod -R a-w /opt/makeademo/capture-runtime
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     NO_UPDATE_NOTIFIER=1

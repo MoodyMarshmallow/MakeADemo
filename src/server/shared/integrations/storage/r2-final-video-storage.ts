@@ -32,9 +32,7 @@ export class R2FinalVideoStorage implements FinalVideoStorage {
 }
 
 function createFinalVideoKey(input: FinalVideoUploadInput) {
-  return `demo-videos/${safePathSegment(input.demoRequestId)}/${safePathSegment(
-    input.runId,
-  )}/${input.fileName}`;
+  return `demo-videos/${safePathSegment(input.demoRequestId)}/${input.fileName}`;
 }
 
 function safePathSegment(value: string) {

@@ -6,7 +6,11 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 
 import type { PreparationWorkspaceHandle } from "../../../pipeline/03-repo-preparation/preparation-workspace-runner";
-import type { SubmittedProjectRuntimeRequest } from "../../../pipeline/03-repo-preparation/preparation-workspace.interface";
+import type {
+  PreparationWorkspaceResourceDiagnostics,
+  SubmittedProjectRuntimeRequest,
+  SubmittedRuntimeQuiescenceRequest,
+} from "../../../pipeline/03-repo-preparation/preparation-workspace.interface";
 import { submittedCodeKnownGoodNodeReleaseSnapshot } from "../../../pipeline/03-repo-preparation/submitted-code-node-release-catalog.interface";
 import { resolveSubmittedCodeToolchain } from "../../../pipeline/03-repo-preparation/submitted-code-toolchain.schema";
 import type { PipelineEventLogger } from "../../logging/pipeline-event-logger";
@@ -91,20 +95,20 @@ describe("DaytonaSandboxRunner", () => {
         nodeVersion: "22.23.1",
       },
     ]);
-    expect(workspace.submittedCommands[1]).toContain("/tmp/makeademo-demo.pid");
-    expect(workspace.submittedCommands[1]).toContain("/proc/[0-9]*/cmdline");
-    expect(workspace.submittedCommands[1]).toContain("npm run demo");
+    expect(workspace.quiescenceRequests).toEqual([
+      { port: 3000, timeoutMs: 10_000 },
+    ]);
     expect(workspace.plannedRuntimes).toEqual([
       expect.objectContaining({
         command: expect.stringContaining("exec npm run demo"),
         nodeVersion: "22.23.1",
       }),
     ]);
-    expect(workspace.submittedCommands[2]).toContain("fetch");
-    expect(workspace.submittedCommands[3]).toContain(
+    expect(workspace.submittedCommands[1]).toContain(
       "fresh-capture-baseline.tgz",
     );
-    expect(workspace.submittedCommands[4]).toBe(
+    expect(workspace.submittedCommands[2]).toContain("fetch");
+    expect(workspace.submittedCommands[3]).toBe(
       "if test -f /tmp/makeademo-demo.log; then tail -c 16384 /tmp/makeademo-demo.log; fi",
     );
     expect(result).toMatchObject({
@@ -218,7 +222,6 @@ describe("DaytonaSandboxRunner", () => {
     expect(workspace.submittedCommands).toEqual(
       expect.arrayContaining([
         expect.stringContaining("find /workspace"),
-        expect.stringContaining("/tmp/makeademo-demo.pid"),
         expect.stringContaining("fetch"),
         expect.stringContaining("fresh-capture-baseline.tgz"),
       ]),
@@ -250,7 +253,7 @@ describe("DaytonaSandboxRunner", () => {
     ]);
   });
 
-  it("syncs prepared parent workspace changes before submitted-code validation", async () => {
+  it("quiesces before sync and creates the Fresh Capture baseline after install but before runtime start", async () => {
     const workspace = new FakePreparationWorkspaceHandle();
     const runner = new DaytonaSandboxRunner();
 
@@ -262,10 +265,36 @@ describe("DaytonaSandboxRunner", () => {
       url: "http://localhost:3000",
     });
 
-    expect(workspace.events.slice(0, 3)).toEqual([
+    expect(workspace.events).toEqual([
       "provisionSubmittedCodeToolchain",
+      "quiesceSubmittedRuntime:3000",
       "syncSubmittedCodeWorkspace",
       expect.stringContaining("find /workspace"),
+      "executeSubmittedProject",
+      expect.stringContaining("fresh-capture-baseline.tgz"),
+      "executeSubmittedRuntime",
+      expect.stringContaining("fetch"),
+      expect.stringContaining("makeademo-demo.log"),
+    ]);
+  });
+
+  it("does not synchronize after submitted runtime quiescence fails", async () => {
+    const workspace = new FakePreparationWorkspaceHandle(new Map(), undefined, {
+      failRuntimeQuiescence: true,
+    });
+
+    await expect(
+      new DaytonaSandboxRunner().runValidation({
+        demoCommand: "npm run demo",
+        preparationManifest: manifest("workspace_123"),
+        preparationWorkspace: workspace,
+        repoUrl: "https://github.com/example/app",
+        url: "http://localhost:3000",
+      }),
+    ).rejects.toThrow("runtime quiescence failed");
+    expect(workspace.events).toEqual([
+      "provisionSubmittedCodeToolchain",
+      "quiesceSubmittedRuntime:3000",
     ]);
   });
 
@@ -466,6 +495,48 @@ describe("DaytonaSandboxRunner", () => {
     expect(workspace.released).toBe(false);
   });
 
+  it("retains exit 137 as an inconclusive dependency-install SIGKILL with safe resource evidence", async () => {
+    const workspace = new FakePreparationWorkspaceHandle(
+      new Map([["npm ci", 137]]),
+      undefined,
+      {
+        installResourceDiagnostics: {
+          classification: "cgroup-oom-kill",
+          memoryOomKillDelta: 1,
+          memoryPeakBytes: 4_294_967_296,
+        },
+      },
+    );
+
+    const result = await new DaytonaSandboxRunner().runValidation({
+      demoCommand: "npm run demo",
+      preparationManifest: manifest("workspace_123"),
+      preparationWorkspace: workspace,
+      repoUrl: "https://github.com/example/app",
+      url: "http://localhost:3000",
+    });
+
+    expect(result).toMatchObject({
+      failureKind: "dependency-install-sigkill",
+      resourceDiagnostics: {
+        classification: "cgroup-oom-kill",
+        memoryOomKillDelta: 1,
+      },
+      runtimeExitCode: 137,
+    });
+    expect(workspace.sandboxLogs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "demo-runtime-preflight.dependency-install.failed",
+          resourceDiagnostics: expect.objectContaining({
+            classification: "cgroup-oom-kill",
+            memoryOomKillDelta: 1,
+          }),
+        }),
+      ]),
+    );
+  });
+
   it("keeps the workspace available when install execution throws", async () => {
     const workspace = new FakePreparationWorkspaceHandle(new Map(), "npm ci");
     const runner = new DaytonaSandboxRunner();
@@ -506,7 +577,7 @@ describe("DaytonaSandboxRunner", () => {
     expect(result.runtimeExitCode).toBe(0);
   });
 
-  it("stops the previous MakeADemo demo process before launching validation", async () => {
+  it("uses the narrow runtime-quiescence boundary before launching validation", async () => {
     const workspace = new FakePreparationWorkspaceHandle();
     const runner = new DaytonaSandboxRunner();
 
@@ -518,13 +589,12 @@ describe("DaytonaSandboxRunner", () => {
       url: "http://localhost:3000",
     });
 
-    const stopCommand = workspace.submittedCommands.find((command) =>
-      command.includes("/tmp/makeademo-demo.pid"),
+    expect(workspace.quiescenceRequests).toEqual([
+      { port: 3000, timeoutMs: 10_000 },
+    ]);
+    expect(workspace.submittedCommands.join("\n")).not.toContain(
+      "/proc/[0-9]*/cmdline",
     );
-    expect(stopCommand).toBeDefined();
-    expect(stopCommand).toContain("/proc/[0-9]*/cmdline");
-    expect(stopCommand).toContain("npm run demo");
-    expect(stopCommand).toContain("apps/makeademo-demo/server.ts");
     expect(workspace.plannedRuntimes).toEqual([
       expect.objectContaining({
         command: expect.stringContaining("exec npm run demo"),
@@ -671,7 +741,7 @@ describe("DaytonaSandboxRunner", () => {
     );
   });
 
-  it("excludes nested dependency caches from the fresh baseline and preserves them during restore", async () => {
+  it("baselines repository application caches while preserving dependency stores", async () => {
     const validationWorkspace = new FakePreparationWorkspaceHandle();
     const runner = new DaytonaSandboxRunner();
 
@@ -688,7 +758,12 @@ describe("DaytonaSandboxRunner", () => {
     );
     expect(baselineCommand).toContain("./*/node_modules");
     expect(baselineCommand).toContain("./*/node_modules/*");
-    expect(baselineCommand).toContain("./*/.vite");
+    expect(baselineCommand).toContain("./*/.pnpm-store");
+    expect(baselineCommand).toContain("./*/.yarn/cache");
+    expect(baselineCommand).not.toContain("./*/.cache");
+    expect(baselineCommand).not.toContain("./*/.bun");
+    expect(baselineCommand).not.toContain("./*/.npm");
+    expect(baselineCommand).not.toContain(".next/dev/cache");
 
     const restoreWorkspace = new FakePreparationWorkspaceHandle();
     await restartPreparedDemoForFreshCapture({
@@ -702,7 +777,12 @@ describe("DaytonaSandboxRunner", () => {
     );
     expect(restoreCommand).toContain("/workspace/*/node_modules");
     expect(restoreCommand).toContain("/workspace/*/node_modules/*");
-    expect(restoreCommand).toContain("/workspace/*/.vite");
+    expect(restoreCommand).toContain("/workspace/*/.pnpm-store");
+    expect(restoreCommand).toContain("/workspace/*/.yarn/cache");
+    expect(restoreCommand).not.toContain("/workspace/*/.cache");
+    expect(restoreCommand).not.toContain("/workspace/*/.bun");
+    expect(restoreCommand).not.toContain("/workspace/*/.npm");
+    expect(restoreCommand).not.toContain(".next/dev/cache");
     expect(restoreCommand).not.toContain("-exec rm -rf");
   });
 
@@ -715,10 +795,10 @@ describe("DaytonaSandboxRunner", () => {
       readinessPollIntervalMs: 0,
     });
 
-    expect(workspace.submittedCommands[0]).toContain("/tmp/makeademo-demo.pid");
-    expect(workspace.submittedCommands[0]).toContain("/proc/[0-9]*/cmdline");
-    expect(workspace.submittedCommands[0]).toContain("npm run demo:makeademo");
-    expect(workspace.submittedCommands[1]).toContain(
+    expect(workspace.quiescenceRequests).toEqual([
+      { port: 3000, timeoutMs: 10_000 },
+    ]);
+    expect(workspace.submittedCommands[0]).toContain(
       "fresh-capture-baseline.tgz && find",
     );
     expect(workspace.plannedRuntimes).toEqual([
@@ -726,10 +806,10 @@ describe("DaytonaSandboxRunner", () => {
         command: expect.stringContaining("exec npm run demo:makeademo"),
       }),
     ]);
-    expect(workspace.submittedCommands[2]).toContain(
+    expect(workspace.submittedCommands[1]).toContain(
       "signal: AbortSignal.timeout",
     );
-    expect(workspace.submittedCommands[2]).toContain("'http://localhost:3000'");
+    expect(workspace.submittedCommands[1]).toContain("'http://localhost:3000'");
     expect(workspace.readinessTimeouts).toHaveLength(1);
     expect(workspace.readinessTimeouts[0]).toBeGreaterThan(0);
     expect(workspace.readinessTimeouts[0]).toBeLessThanOrEqual(30_000);
@@ -829,7 +909,9 @@ describe("DaytonaSandboxRunner", () => {
     });
 
     expect(result.browserUrl).toBe("https://preview.example.test:3000/");
-    expect(workspace.submittedCommands[0]).toContain("/tmp/makeademo-demo.pid");
+    expect(workspace.quiescenceRequests).toEqual([
+      { port: 3000, timeoutMs: 10_000 },
+    ]);
     expect(workspace.submittedCommands).toEqual(
       expect.arrayContaining([
         expect.stringContaining("fresh-capture-baseline.tgz"),
@@ -871,10 +953,10 @@ describe("DaytonaSandboxRunner", () => {
         readinessPollIntervalMs: 0,
       }),
     ).rejects.toThrow("Fresh Footage Capture baseline could not be restored");
-    expect(workspace.submittedCommands[0]).toContain("/tmp/makeademo-demo.pid");
-    expect(workspace.submittedCommands[0]).toContain("/proc/[0-9]*/cmdline");
-    expect(workspace.submittedCommands[0]).toContain("npm run demo:makeademo");
-    expect(workspace.submittedCommands[1]).toContain(
+    expect(workspace.quiescenceRequests).toEqual([
+      { port: 3000, timeoutMs: 10_000 },
+    ]);
+    expect(workspace.submittedCommands[0]).toContain(
       "fresh-capture-baseline.tgz && find",
     );
     expect(workspace.sandboxLogs).toEqual(
@@ -886,6 +968,22 @@ describe("DaytonaSandboxRunner", () => {
       ]),
     );
   });
+
+  it("does not restore or restart Footage Capture after quiescence fails", async () => {
+    const workspace = new FakePreparationWorkspaceHandle(new Map(), undefined, {
+      failRuntimeQuiescence: true,
+    });
+
+    await expect(
+      restartPreparedDemoForFreshCapture({
+        preparationManifest: manifest("workspace_123"),
+        preparationWorkspace: workspace,
+        readinessPollIntervalMs: 0,
+      }),
+    ).rejects.toThrow("runtime quiescence failed");
+    expect(workspace.submittedCommands).toEqual([]);
+    expect(workspace.plannedRuntimes).toEqual([]);
+  });
 });
 
 class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
@@ -893,6 +991,7 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
   released = false;
   id = "daytona_workspace";
   previewPorts: number[] = [];
+  quiescenceRequests: SubmittedRuntimeQuiescenceRequest[] = [];
   plannedInstalls: Array<{
     argv: string[];
     executable: string;
@@ -908,9 +1007,11 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
   toolchainMetadata: unknown = supportedToolchainMetadata();
   events: string[] = [];
   private readonly options: {
+    failRuntimeQuiescence?: boolean;
     failFreshCaptureRestore?: boolean;
     failSandboxLogWrites?: boolean;
     hangUnboundedReadiness?: boolean;
+    installResourceDiagnostics?: PreparationWorkspaceResourceDiagnostics;
     neverSettleSandboxLogWrites?: boolean;
     repoFilesOutput?: string;
   };
@@ -919,9 +1020,11 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
     private readonly exitCodesByCommand = new Map<string, number>(),
     private readonly commandToThrow?: string,
     options: {
+      failRuntimeQuiescence?: boolean;
       failFreshCaptureRestore?: boolean;
       failSandboxLogWrites?: boolean;
       hangUnboundedReadiness?: boolean;
+      installResourceDiagnostics?: PreparationWorkspaceResourceDiagnostics;
       neverSettleSandboxLogWrites?: boolean;
       repoFilesOutput?: string;
     } = {},
@@ -963,6 +1066,7 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
       executable: string;
       plan: ReturnType<typeof supportedPlan>;
     }) => {
+      this.events.push("executeSubmittedProject");
       this.plannedInstalls.push({
         argv: [...request.argv],
         executable: request.executable,
@@ -973,7 +1077,16 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
       }
       const exitCode = this.exitCodesByCommand.get("npm ci") ?? 0;
       if (exitCode !== 0) {
-        return { exitCode, stderr: "", stdout: "planned install" };
+        return {
+          exitCode,
+          ...(this.options.installResourceDiagnostics === undefined
+            ? {}
+            : {
+                resourceDiagnostics: this.options.installResourceDiagnostics,
+              }),
+          stderr: "",
+          stdout: "planned install",
+        };
       }
       return { exitCode: 0, stderr: "", stdout: "planned install" };
     },
@@ -988,6 +1101,7 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
     executeSubmittedRuntime: async (
       request: SubmittedProjectRuntimeRequest,
     ) => {
+      this.events.push("executeSubmittedRuntime");
       this.plannedRuntimes.push({
         command: request.command,
         nodeVersion: request.plan.node.version,
@@ -997,6 +1111,15 @@ class FakePreparationWorkspaceHandle implements PreparationWorkspaceHandle {
     getPreviewUrl: async (port: number) => {
       this.previewPorts.push(port);
       return `https://preview.example.test:${port}`;
+    },
+    quiesceSubmittedRuntime: async (
+      request: SubmittedRuntimeQuiescenceRequest,
+    ) => {
+      this.quiescenceRequests.push(request);
+      this.events.push(`quiesceSubmittedRuntime:${request.port}`);
+      if (this.options.failRuntimeQuiescence === true) {
+        throw new Error("runtime quiescence failed");
+      }
     },
     syncSubmittedCodeWorkspace: async () => {
       this.events.push("syncSubmittedCodeWorkspace");

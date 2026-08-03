@@ -75,6 +75,7 @@ export type PiSessionFactoryInput = {
   agentDir: string;
   cwd: string;
   customTools: readonly ToolDefinition[];
+  executionMode: "default" | "tool-free-transient";
   model: unknown;
   modelID: string;
   providerID: string;
@@ -142,6 +143,8 @@ export class PiAgentSession implements AgentSessionRunner {
   ): Promise<AgentSessionRunResult<T>> {
     const interruption = createPiRunInterruption(input);
     const setupActivity = createPiActivityTracker();
+    const toolFreeTransient = input.executionMode === "tool-free-transient";
+    let activeSession: RetainedSession | undefined;
     try {
       await interruption.throwIfExternallyCancelled();
       const retainedPromise = this.getOrCreateSession(input);
@@ -175,14 +178,20 @@ export class PiAgentSession implements AgentSessionRunner {
           run: () => retainedPromise,
         }),
       );
+      activeSession = retained;
       interruption.attachProvider(retained.providerSession);
-      const workspaceRebind = this.rebindWorkspaceTools(
-        retained,
-        input.workspace,
-      );
-      interruption.attachCleanup(workspaceRebind);
-      await interruption.race(workspaceRebind);
-      const stageTools = createPiStageToolDefinitions(input.tools ?? []);
+      if (!toolFreeTransient) {
+        const workspaceRebind = this.rebindWorkspaceTools(
+          retained,
+          input.workspace,
+        );
+        interruption.attachCleanup(workspaceRebind);
+        await interruption.race(workspaceRebind);
+      }
+      const stageTools =
+        toolFreeTransient || (input.tools ?? []).length === 0
+          ? []
+          : createPiStageToolDefinitions(input.tools ?? []);
       const unregisteredTools = stageTools.filter(
         (tool) => !retained.registeredTools.has(tool.name),
       );
@@ -458,12 +467,17 @@ export class PiAgentSession implements AgentSessionRunner {
           ? {}
           : { lastMeaningfulActivity }),
         ...(providerError === undefined ? {} : { providerError }),
-        session: input.session ?? this.createOpaqueSession(retained),
+        ...(toolFreeTransient
+          ? {}
+          : { session: input.session ?? this.createOpaqueSession(retained) }),
         stderr: stderrChunks.join(""),
         stdout: stdoutChunks.join(""),
         ...(structuredOutput === undefined ? {} : { structuredOutput }),
       };
     } finally {
+      if (toolFreeTransient && activeSession !== undefined) {
+        this.disposeRetainedSession(activeSession);
+      }
       interruption.dispose();
     }
   }
@@ -500,6 +514,13 @@ export class PiAgentSession implements AgentSessionRunner {
     if (this.globallyDisposed) {
       throw new Error("Pi agent session runner has been disposed.");
     }
+    const executionMode = input.executionMode ?? "default";
+    const toolFreeTransient = executionMode === "tool-free-transient";
+    if (toolFreeTransient && input.session !== undefined) {
+      throw new Error(
+        "A tool-free transient agent turn cannot reuse an existing AgentSession.",
+      );
+    }
     if (input.session !== undefined) {
       const retained = this.sessions.get(input.session);
       if (retained === undefined) {
@@ -530,22 +551,28 @@ export class PiAgentSession implements AgentSessionRunner {
     const model = await this.resolveModel(input.profile);
     const context7ToolTimeoutMs =
       this.options.context7ToolTimeoutMs ?? this.options.toolTimeoutMs;
-    const customTools = [
-      ...(this.options.globalTools ?? []),
-      ...createRemoteCodingToolDefinitions({
-        cwd: this.options.cwd ?? defaultCwd,
-        ...(this.options.toolTimeoutMs === undefined
-          ? {}
-          : { timeoutMs: this.options.toolTimeoutMs }),
-        workspace: input.workspace,
-      }),
-      ...createContext7ToolDefinitions(
-        context7ToolTimeoutMs === undefined
-          ? {}
-          : { timeoutMs: context7ToolTimeoutMs },
-      ),
-      ...createPiStageToolDefinitions(input.tools ?? []),
-    ];
+    const stageTools =
+      toolFreeTransient || (input.tools ?? []).length === 0
+        ? []
+        : createPiStageToolDefinitions(input.tools ?? []);
+    const customTools = toolFreeTransient
+      ? []
+      : [
+          ...(this.options.globalTools ?? []),
+          ...createRemoteCodingToolDefinitions({
+            cwd: this.options.cwd ?? defaultCwd,
+            ...(this.options.toolTimeoutMs === undefined
+              ? {}
+              : { timeoutMs: this.options.toolTimeoutMs }),
+            workspace: input.workspace,
+          }),
+          ...createContext7ToolDefinitions(
+            context7ToolTimeoutMs === undefined
+              ? {}
+              : { timeoutMs: context7ToolTimeoutMs },
+          ),
+          ...stageTools,
+        ];
     const factory = this.options.createSession ?? this.createDefaultSession;
     const created = await this.ownProviderCreation(
       Promise.resolve().then(() =>
@@ -553,6 +580,7 @@ export class PiAgentSession implements AgentSessionRunner {
           agentDir: this.options.agentDir ?? defaultAgentDirectory,
           cwd: this.options.cwd ?? defaultCwd,
           customTools,
+          executionMode,
           model,
           modelID: input.profile.modelID,
           providerID: input.profile.providerID,
@@ -562,11 +590,13 @@ export class PiAgentSession implements AgentSessionRunner {
       ),
     );
     const retained: RetainedSession = {
-      baseToolNames: [
-        ...builtinToolNames,
-        ...(this.options.globalTools ?? []).map((tool) => tool.name),
-        ...context7ToolNames,
-      ],
+      baseToolNames: toolFreeTransient
+        ? []
+        : [
+            ...builtinToolNames,
+            ...(this.options.globalTools ?? []).map((tool) => tool.name),
+            ...context7ToolNames,
+          ],
       disposed: false,
       thinkingLevel: input.profile.thinkingLevel,
       modelID: input.profile.modelID,
@@ -577,7 +607,9 @@ export class PiAgentSession implements AgentSessionRunner {
         customTools.map((tool) => [tool.name, tool] as const),
       ),
     };
-    this.retainedSessions.add(retained);
+    if (!toolFreeTransient) {
+      this.retainedSessions.add(retained);
+    }
     return retained;
   }
 
@@ -715,11 +747,14 @@ export class PiAgentSession implements AgentSessionRunner {
       sessionManager,
       settingsManager,
       thinkingLevel: currentThinkingLevel,
-      tools: [
-        ...builtinToolNames,
-        ...context7ToolNames,
-        ...input.customTools.map((tool) => tool.name),
-      ],
+      tools:
+        input.executionMode === "tool-free-transient"
+          ? []
+          : [
+              ...builtinToolNames,
+              ...context7ToolNames,
+              ...input.customTools.map((tool) => tool.name),
+            ],
     });
     let aborted = false;
     let abortPromise: Promise<void> | undefined;
@@ -751,11 +786,14 @@ export class PiAgentSession implements AgentSessionRunner {
         sessionManager,
         settingsManager,
         thinkingLevel: currentThinkingLevel,
-        tools: [
-          ...builtinToolNames,
-          ...context7ToolNames,
-          ...tools.map((tool) => tool.name),
-        ],
+        tools:
+          input.executionMode === "tool-free-transient"
+            ? []
+            : [
+                ...builtinToolNames,
+                ...context7ToolNames,
+                ...tools.map((tool) => tool.name),
+              ],
       });
       if (aborted) {
         await settleInterruption(

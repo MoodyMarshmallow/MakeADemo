@@ -40,6 +40,7 @@ export class NeonContextGatheringStore implements ContextGatheringStore {
       const [project] = await tx
         .insert(projects)
         .values({
+          commitSha: input.project.commitSha,
           context: input.project.context,
           githubInstallationId: input.project.githubInstallationId ?? null,
           repoUrl: input.project.repoUrl,

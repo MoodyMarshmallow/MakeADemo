@@ -1,5 +1,6 @@
 import type { PreparationManifest } from "../../03-repo-preparation/preparation-manifest";
 import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
+import type { PreparationWorkspaceResourceDiagnostics } from "../../03-repo-preparation/preparation-workspace.interface";
 import type { NetworkAttempt } from "./network-isolation-policy";
 import type { DemoRuntimePreflightFailureKind } from "./validation-result";
 
@@ -23,6 +24,7 @@ export type SandboxValidationOutput = {
   logs: string[];
   repoFiles: string[];
   runtimeExitCode: number;
+  resourceDiagnostics?: PreparationWorkspaceResourceDiagnostics;
 };
 
 /**

@@ -3,7 +3,6 @@ export type FinalVideoUploadInput = {
   contentType: "video/mp4";
   demoRequestId: string;
   fileName: "final-video.mp4";
-  runId: string;
   scriptId: string;
 };
 
@@ -14,8 +13,8 @@ export type StoredFinalVideo = {
 
 /**
  * Stores the final Compositing video in durable video storage.
- * Implementations must store the bytes under a Demo Request-scoped key and
- * return the canonical private URL that downstream persistence should record.
+ * Implementations must idempotently replace bytes under one stable Demo
+ * Request-scoped key and return its canonical private URL.
  */
 export interface FinalVideoStorage {
   storeFinalVideo(input: FinalVideoUploadInput): Promise<StoredFinalVideo>;

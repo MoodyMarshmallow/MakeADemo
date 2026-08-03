@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, symlink } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -9,6 +10,7 @@ import {
   writeGeneratedCaptureSdkHarness,
 } from "./capture-sdk-harness";
 import type { DemoScript } from "./demo-script.schema";
+import { prepareStylizedPlaywrightScript } from "./stylized-playwright-script";
 
 describe("Capture SDK Contract", () => {
   it("preserves Locator identity through action instrumentation", async () => {
@@ -38,7 +40,7 @@ describe("Capture SDK Contract", () => {
 
     try {
       const sdk = (await import(
-        `${pathToFileURL(join(workspace, "makeademo-capture-sdk.js")).href}?test=${Date.now()}`
+        `${pathToFileURL(join(workspace, "makeademo-capture-sdk.mjs")).href}?test=${Date.now()}`
       )) as {
         setup(
           callback: (context: {
@@ -62,7 +64,7 @@ describe("Capture SDK Contract", () => {
     await writeGeneratedCaptureSdkHarness(workspace);
 
     const runtime = await readFile(
-      join(workspace, "makeademo-capture-sdk.js"),
+      join(workspace, "makeademo-capture-sdk.mjs"),
       "utf8",
     );
     expect(runtime).toContain("export async function setup");
@@ -80,6 +82,55 @@ describe("Capture SDK Contract", () => {
     expect(instructions).toContain("fetch");
     expect(instructions).toContain("page.evaluate");
   });
+
+  it.each([
+    ["explicit CommonJS", { name: "commonjs-app", type: "commonjs" }],
+    ["no module type", { name: "default-commonjs-app" }],
+  ])(
+    "runs prepared ESM capture artifacts inside a submitted %s package scope",
+    async (_label, packageJson) => {
+      const workspace = await mkdtemp(join(tmpdir(), "makeademo-sdk-scope-"));
+      const scriptPath = join(workspace, "demo-script.mjs");
+
+      try {
+        await Promise.all([
+          writeFile(
+            join(workspace, "package.json"),
+            JSON.stringify(packageJson),
+          ),
+          symlink(
+            join(process.cwd(), "node_modules"),
+            join(workspace, "node_modules"),
+          ),
+          writeGeneratedCaptureSdkHarness(workspace),
+        ]);
+        await writeFile(
+          scriptPath,
+          prepareStylizedPlaywrightScript(
+            [
+              "await setup(async ({ page, baseUrl }) => { await page.goto(baseUrl); });",
+              "await scene('scope-independent', async ({ page, expect }) => { await expect(page.locator('body')).toContainText('scope independent'); });",
+            ].join("\n"),
+            {
+              baseUrl: "data:text/html,<body>scope independent</body>",
+              headed: false,
+              mode: "validation",
+              pauseAfterSceneMs: 0,
+            },
+          ),
+        );
+
+        const result = await runPreparedModuleWithNode(scriptPath);
+
+        expect(result.exitCode).toBe(0);
+        expect(result.stderr).toBe("");
+        expect(result.stdout).toContain('"sceneId":"scope-independent"');
+      } finally {
+        await rm(workspace, { force: true, recursive: true });
+      }
+    },
+    20_000,
+  );
 
   it("documents public network availability in an unrestricted capture harness", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "makeademo-sdk-public-"));
@@ -251,6 +302,31 @@ describe("Capture SDK Contract", () => {
     ).rejects.toThrow("failed Capture SDK TypeScript validation");
   }, 20_000);
 });
+
+async function runPreparedModuleWithNode(scriptPath: string) {
+  return await new Promise<{
+    exitCode: number | null;
+    stderr: string;
+    stdout: string;
+  }>((resolve, reject) => {
+    execFile(
+      process.execPath,
+      [scriptPath],
+      { encoding: "utf8" },
+      (error, stdout, stderr) => {
+        if (error !== null && typeof error.code !== "number") {
+          reject(error);
+          return;
+        }
+        resolve({
+          exitCode: typeof error?.code === "number" ? error.code : 0,
+          stderr,
+          stdout,
+        });
+      },
+    );
+  });
+}
 
 async function sdkWorkspace() {
   const workspace = await mkdtemp(join(tmpdir(), "makeademo-sdk-"));

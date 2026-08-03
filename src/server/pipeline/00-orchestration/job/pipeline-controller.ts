@@ -1,4 +1,5 @@
 import type { RepoSecurityInput } from "../../02-repo-security-screen/repo-security-screen";
+import { repoSecurityEvidenceLimits } from "../../02-repo-security-screen/repository-loading/repo-security-evidence";
 import { readRepoSecurityInput } from "../../02-repo-security-screen/repository-loading/repo-security-input";
 import type { RepoSecurityInputLoader } from "../../02-repo-security-screen/repository-loading/repo-security-input-loader.interface";
 import {
@@ -33,6 +34,8 @@ type MakeADemoPipelineRunOptions = Omit<
  * trusted loading policy and supplies that deterministic stage input itself.
  */
 type MakeADemoPipelineRunInput = Omit<PipelineJobInput, "repoSecurity"> & {
+  githubInstallationId?: string;
+  repoVisibility?: "private" | "public";
   runOptions?: MakeADemoPipelineRunOptions;
 };
 
@@ -68,18 +71,28 @@ export function createMakeADemoPipeline(
   return {
     dispose: options.dispose ?? (async () => undefined),
     async run(input) {
-      const { runOptions = {}, ...jobInput } = input;
-      let repoSecurity = emptyRepoSecurityInput();
+      const {
+        githubInstallationId,
+        repoVisibility = "public",
+        runOptions = {},
+        ...jobInput
+      } = input;
+      let repoSecurity = unavailableRepoSecurityInput();
+      let preparationWorkspace: PipelineJobInput["preparationWorkspace"];
+      let baselineSourceControlledPaths: string[] | undefined;
       let repoSecurityInputFailure = false;
       if (runOptions.signal?.aborted !== true) {
         try {
-          repoSecurity = await readRepoSecurityInput(
+          const loaded = await readRepoSecurityInput(
             options.repoSecurityInputLoader,
             jobInput.repoUrl,
             {
-              ...(jobInput.commitSha === undefined
+              commitSha: jobInput.commitSha,
+              ...(repoVisibility !== "private" ||
+              githubInstallationId === undefined
                 ? {}
-                : { commitSha: jobInput.commitSha }),
+                : { githubInstallationId }),
+              repoVisibility,
               ...(runOptions.deadlineAt === undefined
                 ? {}
                 : { deadlineAt: runOptions.deadlineAt }),
@@ -88,6 +101,9 @@ export function createMakeADemoPipeline(
                 : { signal: runOptions.signal }),
             },
           );
+          repoSecurity = loaded.repoSecurity;
+          preparationWorkspace = loaded.preparationWorkspace;
+          baselineSourceControlledPaths = loaded.baselineSourceControlledPaths;
         } catch (error) {
           if (isPipelineCancellationError(error)) {
             // The full runner owns the durable terminal cancellation artifact.
@@ -98,7 +114,16 @@ export function createMakeADemoPipeline(
       }
 
       return await runFullPipelineJob(
-        { ...jobInput, repoSecurity },
+        {
+          ...jobInput,
+          repoSecurity,
+          ...(preparationWorkspace === undefined
+            ? {}
+            : { preparationWorkspace }),
+          ...(baselineSourceControlledPaths === undefined
+            ? {}
+            : { baselineSourceControlledPaths }),
+        },
         options.pipelineDependencies,
         {
           ...runOptions,
@@ -120,6 +145,30 @@ export function createMakeADemoPipeline(
   };
 }
 
-function emptyRepoSecurityInput(): RepoSecurityInput {
-  return { files: [], repoStats: { fileCount: 0, sizeBytes: 0 } };
+function unavailableRepoSecurityInput(): RepoSecurityInput {
+  return {
+    evidence: {
+      coverage: {
+        excerptBytes: 0,
+        omittedEligibleFileCount: 0,
+        omittedEligibleSizeBytes: 0,
+        selectedFileCount: 0,
+        truncatedFileCount: 0,
+      },
+      files: [],
+      inventory: {
+        eligibleFileCount: 0,
+        eligibleSizeBytes: 0,
+        omittedEligibleFileCount: 0,
+        omittedEligibleSizeBytes: 0,
+        sampledPathOmissionCount: 0,
+        sampledPaths: [],
+        totalFileCount: 0,
+        totalSizeBytes: 0,
+      },
+      limits: repoSecurityEvidenceLimits,
+    },
+    files: [],
+    repoStats: { fileCount: 0, sizeBytes: 0 },
+  };
 }

@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,12 +8,7 @@ import {
   parseDemoScript,
 } from "../04-script-generation/demo-script/demo-script.schema";
 import type { CaptureManifest } from "../06-footage-capture/capture-scenes";
-import type { FinalVideoEmailNotifier } from "../final-output/final-video-email-notifier.interface";
-import type {
-  DemoRequestFinalVideoStore,
-  FinalVideoStorage,
-  StoredFinalVideo,
-} from "./final-video-storage.interface";
+import type { StoredFinalVideo } from "./final-video-storage.interface";
 import type {
   CompositingFontAsset,
   CompositingMusicAsset,
@@ -66,14 +61,8 @@ export type CompositedVideoManifest = {
 export type CompositeVideoFromScriptInput = {
   captureManifestPath: string;
   deadlineAt?: number;
-  demoRequestId?: string;
-  demoRequestStore?: DemoRequestFinalVideoStore;
-  finalVideoEmailNotifier?: FinalVideoEmailNotifier;
-  finalVideoStorage?: FinalVideoStorage;
   outputRoot?: string;
   projectRoot?: string;
-  publicAppBaseUrl?: string;
-  retainLocalOutput?: boolean;
   renderer?: VideoRenderer;
   runId?: string;
   scriptDirectory?: string;
@@ -85,7 +74,6 @@ export type CompositeVideoFromScriptInput = {
 export async function compositeVideoFromScript(
   input: CompositeVideoFromScriptInput,
 ): Promise<CompositedVideoManifest> {
-  assertFinalVideoDependencies(input);
   throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
 
   const projectRoot = input.projectRoot ?? process.cwd();
@@ -93,7 +81,7 @@ export async function compositeVideoFromScript(
   const runId = input.runId ?? createRunId();
   const runDirectory = join(outputRoot, runId);
   const publicDir = join(runDirectory, "public");
-  const outputVideoPath = join(runDirectory, "final-video.mp4");
+  const outputVideoPath = join(runDirectory, "draft-composite.mp4");
   const manifestPath = join(runDirectory, "composite-manifest.json");
   const renderPlanPath = join(runDirectory, "render-plan.json");
 
@@ -160,32 +148,18 @@ export async function compositeVideoFromScript(
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
   throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
-  const finalVideo = await storeAndLinkFinalVideo({
-    demoRequestId: input.demoRequestId,
-    demoRequestStore: input.demoRequestStore,
-    finalVideoStorage: input.finalVideoStorage,
-    outputVideoPath,
-    publicAppBaseUrl: input.publicAppBaseUrl,
-    retainLocalOutput: input.retainLocalOutput ?? false,
-    runId,
-    scriptId: demoScript.scriptId,
-    title: demoScript.title,
-    emailNotifier: input.finalVideoEmailNotifier,
-  });
-
   const manifest: CompositedVideoManifest = {
     createdAt: new Date().toISOString(),
     durationInFrames,
     fps: FPS,
-    ...(finalVideo ? { finalVideo } : {}),
     manifestPath,
-    ...(finalVideo && !input.retainLocalOutput ? {} : { outputVideoPath }),
+    outputVideoPath,
     renderPlanPath,
     runDirectory,
     runId,
     scriptId: demoScript.scriptId,
     title: demoScript.title,
-    viewUrl: finalVideo?.r2Url ?? pathToFileURL(resolve(outputVideoPath)).href,
+    viewUrl: pathToFileURL(resolve(outputVideoPath)).href,
   };
 
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -202,96 +176,6 @@ async function readDemoScript(input: CompositeVideoFromScriptInput) {
   }
 
   return parseDemoScript(JSON.parse(await readFile(input.scriptPath, "utf8")));
-}
-
-function assertFinalVideoDependencies(input: CompositeVideoFromScriptInput) {
-  const dependencies = [
-    input.demoRequestId,
-    input.demoRequestStore,
-    input.finalVideoStorage,
-  ].filter(Boolean);
-
-  if (dependencies.length > 0 && dependencies.length !== 3) {
-    throw new Error(
-      "demoRequestId, demoRequestStore, and finalVideoStorage are all required to store final Compositing output",
-    );
-  }
-
-  if (input.finalVideoEmailNotifier && !input.publicAppBaseUrl) {
-    throw new Error(
-      "publicAppBaseUrl is required to email final Compositing output",
-    );
-  }
-}
-
-async function storeAndLinkFinalVideo(input: {
-  demoRequestId: string | undefined;
-  demoRequestStore: DemoRequestFinalVideoStore | undefined;
-  emailNotifier: FinalVideoEmailNotifier | undefined;
-  finalVideoStorage: FinalVideoStorage | undefined;
-  outputVideoPath: string;
-  publicAppBaseUrl: string | undefined;
-  retainLocalOutput: boolean;
-  runId: string;
-  scriptId: string;
-  title: string;
-}) {
-  if (
-    !input.demoRequestId ||
-    !input.demoRequestStore ||
-    !input.finalVideoStorage
-  ) {
-    return undefined;
-  }
-
-  const finalVideo = await input.finalVideoStorage.storeFinalVideo({
-    body: await readFile(input.outputVideoPath),
-    contentType: "video/mp4",
-    demoRequestId: input.demoRequestId,
-    fileName: "final-video.mp4",
-    runId: input.runId,
-    scriptId: input.scriptId,
-  });
-
-  const linkedDemoRequest = await input.demoRequestStore.linkFinalVideo({
-    demoRequestId: input.demoRequestId,
-    generatedDemoUrl: finalVideo.r2Url,
-  });
-
-  if (
-    input.emailNotifier &&
-    input.publicAppBaseUrl &&
-    !linkedDemoRequest.finalVideoEmailSentAt
-  ) {
-    await input.emailNotifier.sendFinalVideoReadyEmail({
-      demoRequestId: input.demoRequestId,
-      title: input.title,
-      to: linkedDemoRequest.makerEmail,
-      videoUrl: createFinalVideoAppUrl({
-        demoRequestId: input.demoRequestId,
-        publicAppBaseUrl: input.publicAppBaseUrl,
-      }),
-    });
-    await input.demoRequestStore.markFinalVideoEmailSent({
-      demoRequestId: input.demoRequestId,
-      sentAt: new Date().toISOString(),
-    });
-  }
-  if (!input.retainLocalOutput) {
-    await unlink(input.outputVideoPath);
-  }
-
-  return finalVideo;
-}
-
-function createFinalVideoAppUrl(input: {
-  demoRequestId: string;
-  publicAppBaseUrl: string;
-}) {
-  const baseUrl = input.publicAppBaseUrl.replace(/\/+$/g, "");
-  return `${baseUrl}/api/demo-requests/${encodeURIComponent(
-    input.demoRequestId,
-  )}/video`;
 }
 
 async function stageScenes(input: {

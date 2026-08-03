@@ -627,6 +627,50 @@ describe("runDemoRuntimePreflight", () => {
     expect(JSON.stringify(result)).not.toContain("abc.def.ghi");
   });
 
+  it("preserves bounded resource diagnostics from a SIGKILL preflight result", async () => {
+    const resourceDiagnostics = {
+      classification: "cgroup-oom-kill" as const,
+      memoryOomKillDelta: 1,
+      memoryPeakBytes: 4_294_967_296,
+    };
+    const result = await runDemoRuntimePreflight(
+      {
+        preparationManifest: manifest({
+          demoCommand: "npm run demo",
+          url: "http://localhost:5173",
+        }),
+        preparationWorkspace: workspaceHandle([]),
+      },
+      {
+        browserValidator: {
+          async validate() {
+            throw new Error("must not validate after install SIGKILL");
+          },
+        },
+        sandboxRunner: {
+          async runValidation() {
+            return {
+              blockedNetworkAttempts: [],
+              failureKind: "dependency-install-sigkill" as const,
+              failureReason:
+                "Dependency installation ended with SIGKILL; cgroup evidence recorded an OOM kill.",
+              logs: ["install killed"],
+              repoFiles: ["package.json"],
+              resourceDiagnostics,
+              runtimeExitCode: 137,
+            };
+          },
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      failureKind: "dependency-install-sigkill",
+      resourceDiagnostics,
+      status: "failed",
+    });
+  });
+
   it("preserves browser validation errors when cleanup also fails", async () => {
     const sandboxRunner: SandboxRunner = {
       async runValidation() {

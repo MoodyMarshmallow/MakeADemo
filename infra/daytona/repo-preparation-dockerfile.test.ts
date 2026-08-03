@@ -130,6 +130,35 @@ describe("Daytona Repo Preparation image", () => {
     expect(dockerfile).toContain("NO_UPDATE_NOTIFIER=1");
   });
 
+  it("provisions a root-owned fixed Node and Playwright bridge for capture", async () => {
+    const dockerfile = await readFile(
+      join(import.meta.dirname, "submitted-code-node-browser.Dockerfile"),
+      "utf8",
+    );
+
+    expect(dockerfile).toContain("/opt/makeademo/capture-runtime/bin/node");
+    expect(dockerfile).toContain(
+      "FROM mcr.microsoft.com/playwright:v1.49.1-noble@sha256:70e367e0cbf60340a5b5fd562f6247a34eb3196efab9f88a3dd56482d9fe09d2",
+    );
+    expect(dockerfile).toContain("ARG MAKEADEMO_CAPTURE_NODE_VERSION=v22.12.0");
+    expect(dockerfile).toContain(
+      "ARG MAKEADEMO_CAPTURE_NODE_SHA256=177208bfc4a9403121a40c72d038c670f4fd937fa16ca7df0a720e90be0fe2d9",
+    );
+    expect(dockerfile).toContain(
+      "/opt/makeademo/capture-runtime/playwright.mjs",
+    );
+    expect(dockerfile).toContain(
+      'createRequire("/opt/makeademo/playwright-runtime/node_modules/playwright/package.json")',
+    );
+    expect(dockerfile).toContain(
+      "printf '%s  %s\\n' \"${MAKEADEMO_CAPTURE_NODE_SHA256}\" /opt/makeademo/capture-runtime/bin/node | sha256sum -c -",
+    );
+    expect(dockerfile).toContain(
+      "chown -R root:root /opt/makeademo/capture-runtime",
+    );
+    expect(dockerfile).toContain("chmod -R a-w /opt/makeademo/capture-runtime");
+  });
+
   it("pins Node release signing trust and installs a root-only hydration helper", async () => {
     const dockerfile = await readFile(
       join(import.meta.dirname, "submitted-code-node-browser.Dockerfile"),

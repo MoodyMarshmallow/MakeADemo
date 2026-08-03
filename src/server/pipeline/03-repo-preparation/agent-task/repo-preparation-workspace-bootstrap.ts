@@ -19,10 +19,10 @@ export type RepoPreparationCloneDiagnosticsContext = {
   daytonaSubmittedCodeSnapshot?: string;
 };
 
-/** Clones and verifies both workspace views. */
+/** Clones one pinned revision into the non-executing parent workspace. */
 export async function bootstrapRepoPreparationWorkspace(input: {
   cloneFailureDiagnosticsContext?: RepoPreparationCloneDiagnosticsContext;
-  commitSha?: string;
+  commitSha: string;
   logger: PipelineEventLogger;
   repoUrl: string;
   workspace: PreparationWorkspace;
@@ -54,31 +54,6 @@ export async function bootstrapRepoPreparationWorkspace(input: {
     };
   }
 
-  const submittedClone = await cloneSubmittedCode(
-    input.workspace,
-    input.repoUrl,
-    input.commitSha,
-  );
-  if (submittedClone !== undefined) {
-    await writeLog(
-      input,
-      cloneEvent("submitted-code-clone-finished", submittedClone),
-    );
-    if (submittedClone.exitCode !== 0) {
-      await writeDiagnostics(
-        input,
-        "submitted-code workspace",
-        input.workspace.executeSubmittedCode?.bind(input.workspace),
-      );
-      return {
-        failure: createRepoCloneFailure(
-          submittedClone,
-          "submitted-code workspace",
-        ),
-      };
-    }
-  }
-
   const baselineSourceControlledPaths = await readSourceControlledPaths(
     input.workspace,
   );
@@ -102,7 +77,7 @@ async function readSourceControlledPaths(
 async function cloneParent(
   workspace: PreparationWorkspace,
   repoUrl: string,
-  commitSha?: string,
+  commitSha: string,
 ) {
   return await runGitCloneWithTransientRetry({
     clone: () =>
@@ -121,30 +96,16 @@ function executeRepositoryCommand(
   command: string,
   options?: Parameters<PreparationWorkspace["execute"]>[1],
 ): Promise<PreparationWorkspaceCommandResult> {
-  const execute = workspace.executeRepositoryCommand ?? workspace.execute;
-  return execute.call(workspace, command, options);
+  if (workspace.executeRepositoryCommand === undefined) {
+    throw new Error("Unprivileged repository command execution is required.");
+  }
+  return workspace.executeRepositoryCommand(command, options);
 }
 
-async function cloneSubmittedCode(
-  workspace: PreparationWorkspace,
-  repoUrl: string,
-  commitSha?: string,
-) {
-  const executeSubmittedCode = workspace.executeSubmittedCode;
-  if (executeSubmittedCode === undefined) return undefined;
-  return await runGitCloneWithTransientRetry({
-    clone: () =>
-      executeSubmittedCode.call(
-        workspace,
-        createCloneCommand(repoUrl, commitSha),
-      ),
-  });
-}
-
-function createCloneCommand(repoUrl: string, commitSha?: string): string {
+function createCloneCommand(repoUrl: string, commitSha: string): string {
   return createGitCloneCommand({
     caBundleCandidates: [...daytonaGitCaBundleCandidates],
-    ...(commitSha === undefined ? {} : { commitSha }),
+    commitSha,
     destinationPath: daytonaWorkspaceDirectory,
     repoUrl,
     resetCommand: createDaytonaWorkspaceResetCommand(),

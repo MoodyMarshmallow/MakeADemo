@@ -14,21 +14,22 @@ describe("Demo Script sandbox execution", () => {
       command: string;
       timeoutMs: number | undefined;
     }> = [];
+    const captureRequests: unknown[] = [];
     const uploadedFiles = new Map<string, string>();
     const workspace = sandboxWorkspace({
       async executeSubmittedCode(command, options) {
         executedCommands.push({ command, timeoutMs: options?.timeoutMs });
-        if (command.includes(" bun ")) {
-          return {
-            exitCode: 0,
-            stderr:
-              '[makeademo:network-blocked] {"direction":"outbound","host":"analytics.example.com","phase":"runtime","resourceType":"fetch","url":"https://analytics.example.com/event"}',
-            stdout:
-              '[makeademo:scene] {"elapsedMs":25,"event":"succeeded","sceneId":"scene_one"}',
-          };
-        }
-
         return { exitCode: 0, stderr: "", stdout: "" };
+      },
+      async executeMakeADemoCapture(request) {
+        captureRequests.push(request);
+        return {
+          exitCode: 0,
+          stderr:
+            '[makeademo:network-blocked] {"direction":"outbound","host":"analytics.example.com","phase":"runtime","resourceType":"fetch","url":"https://analytics.example.com/event"}',
+          stdout:
+            '[makeademo:scene] {"elapsedMs":25,"event":"succeeded","sceneId":"scene_one"}',
+        };
       },
       async uploadSubmittedCodeFiles(files) {
         await Promise.all(
@@ -55,25 +56,55 @@ describe("Demo Script sandbox execution", () => {
     expect(uploadedFiles.size).toBe(5);
     expect(
       uploadedFiles.get(
-        "/workspace/.makeademo/demo-script-runs/run_one/demo-script.ts",
+        "/workspace/.makeademo/demo-script-runs/run_one/makeademo-capture-sdk.mjs",
+      ),
+    ).toContain("export async function setup");
+    expect(
+      uploadedFiles.has(
+        "/workspace/.makeademo/demo-script-runs/run_one/makeademo-capture-sdk.js",
+      ),
+    ).toBe(false);
+    expect(
+      uploadedFiles.get(
+        "/workspace/.makeademo/demo-script-runs/run_one/demo-script.mjs",
       ),
     ).toContain("https://preview.example.test/");
+    expect(
+      uploadedFiles.get(
+        "/workspace/.makeademo/demo-script-runs/run_one/demo-script.mjs",
+      ),
+    ).not.toContain(": string");
+    expect(
+      uploadedFiles.get(
+        "/workspace/.makeademo/demo-script-runs/run_one/demo-script.mjs",
+      ),
+    ).toContain('from "/opt/makeademo/capture-runtime/playwright.mjs"');
+    expect(
+      uploadedFiles.get(
+        "/workspace/.makeademo/demo-script-runs/run_one/demo-script.mjs",
+      ),
+    ).not.toContain('from "@playwright/test"');
+    expect(
+      uploadedFiles.get(
+        "/workspace/.makeademo/demo-script-runs/run_one/demo-script.mjs",
+      ),
+    ).toContain('from "./makeademo-capture-sdk.mjs"');
     expect(executedCommands[0]?.command).toBe(
       "mkdir -p '/workspace/.makeademo/demo-script-runs/run_one'",
     );
-    expect(executedCommands[1]).toMatchObject({ timeoutMs: 21_500 });
-    expect(executedCommands[1]?.command).toContain(
-      "MAKEADEMO_PLAYWRIGHT_MODULE_ROOT",
-    );
-    expect(executedCommands[1]?.command).toContain(
-      "/opt/makeademo/playwright-runtime/node_modules",
-    );
-    expect(executedCommands[1]?.command).not.toContain("npm root -g");
-    expect(executedCommands[1]?.command).toContain(
-      "rm -rf node_modules/@playwright node_modules/playwright node_modules/playwright-core",
-    );
-    expect(executedCommands[1]?.command).toContain("|| exit $?");
-    expect(executedCommands[1]?.command).toContain("timeout -s TERM 17 bun");
+    expect(executedCommands).toHaveLength(1);
+    expect(captureRequests).toEqual([
+      {
+        runDirectory: "/workspace/.makeademo/demo-script-runs/run_one",
+        scriptPath:
+          "/workspace/.makeademo/demo-script-runs/run_one/demo-script.mjs",
+        stderrPath:
+          "/workspace/.makeademo/demo-script-runs/run_one/demo-script.stderr.log",
+        stdoutPath:
+          "/workspace/.makeademo/demo-script-runs/run_one/demo-script.stdout.log",
+        timeoutMs: 16_500,
+      },
+    ]);
     expect(result).toEqual({
       blockedNetworkAttempts: [
         {
@@ -86,7 +117,7 @@ describe("Demo Script sandbox execution", () => {
       exitCode: 0,
       runDirectory: "/workspace/.makeademo/demo-script-runs/run_one",
       scriptPath:
-        "/workspace/.makeademo/demo-script-runs/run_one/demo-script.ts",
+        "/workspace/.makeademo/demo-script-runs/run_one/demo-script.mjs",
       stderr:
         '[makeademo:network-blocked] {"direction":"outbound","host":"analytics.example.com","phase":"runtime","resourceType":"fetch","url":"https://analytics.example.com/event"}',
       stderrPath:
@@ -132,13 +163,59 @@ describe("Demo Script sandbox execution", () => {
     await expect(execution).rejects.toThrow("missingThing");
     expect(sandboxCalls).toEqual([]);
   }, 20_000);
+
+  it("rejects self-launching Playwright scripts before sandbox work begins", async () => {
+    const sandboxCalls: string[] = [];
+    const workspace = sandboxWorkspace({
+      async executeMakeADemoCapture() {
+        sandboxCalls.push("capture");
+        return { exitCode: 0, stderr: "", stdout: "" };
+      },
+      async executeSubmittedCode(command) {
+        sandboxCalls.push(command);
+        return { exitCode: 0, stderr: "", stdout: "" };
+      },
+      async uploadSubmittedCodeFiles() {
+        sandboxCalls.push("upload");
+      },
+    });
+
+    const execution = executeDemoScriptInSandbox({
+      baseUrl: "https://preview.example.test/",
+      demoPlaywrightScript: [
+        "export {};",
+        "declare const chromium: { launch(): Promise<any> };",
+        "const browser = await chromium.launch();",
+        'const context = await browser.newContext({ recordVideo: { dir: "artifacts/videos" } });',
+        "const page = await context.newPage();",
+        "await page.goto('http://localhost:3000');",
+        "await context.close();",
+        "await browser.close();",
+      ].join("\n"),
+      mode: "validation",
+      remoteRunDirectory:
+        "/workspace/.makeademo/demo-script-runs/self_launching",
+      scriptFilename: "demo-script.ts",
+      timeoutMs: 16_500,
+      workspace,
+    });
+
+    await expect(execution).rejects.toBeInstanceOf(
+      DemoScriptTypeValidationError,
+    );
+    await expect(execution).rejects.toThrow(
+      "Demo Scripts must not launch their own Playwright browser",
+    );
+    expect(sandboxCalls).toEqual([]);
+  }, 20_000);
 });
 
 function sandboxWorkspace(
   overrides: Pick<
     PreparationWorkspace,
     "executeSubmittedCode" | "uploadSubmittedCodeFiles"
-  >,
+  > &
+    Partial<Pick<PreparationWorkspace, "executeMakeADemoCapture">>,
 ): PreparationWorkspace {
   return {
     async execute() {
@@ -162,7 +239,8 @@ function validTypedScript() {
     "  await expect(page.locator('body')).toBeVisible();",
     "});",
     "await scene('scene_one', async ({ page, expect }) => {",
-    "  await expect(page.locator('body')).toBeVisible();",
+    "  const label: string = 'body';",
+    "  await expect(page.locator(label)).toBeVisible();",
     "});",
   ].join("\n");
 }
