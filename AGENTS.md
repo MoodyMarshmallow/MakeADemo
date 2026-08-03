@@ -78,7 +78,9 @@ For runtime-code changes, always use the `tdd` skill if you have to it. If you d
 - Name tests as specifications of observable behavior, not implementation steps.
 - Cover failure cases at seams: invalid lifecycle transitions, missing records, provider failures, malformed persisted data, sandbox failures, browser automation failures, and rendering failures.
 - Use integration-style tests for core product flows where practical, especially pipeline orchestration, repo validation, script generation, capture, and compositing.
-- Do not unit test prompt text or prompt wording in code. Prompts do not need direct unit tests; test the observable behavior or contract that the prompt-powered seam must satisfy instead.
+- Never unit test LLM or agent prompts. Do not add dedicated prompt test files, snapshots, string/substring/regex assertions, or length/token-budget assertions for `taskPrompt`, `systemPrompt`, fallback prompts, prompt builders, or prompt wording.
+- Review prompt source directly. Tests must cover only observable behavior at the prompt-powered seam, such as tool exposure, execution mode, structured output parsing, retries, failure mapping, and Pipeline outcomes.
+- If prompt construction contains non-presentational logic that needs coverage, extract that logic behind a non-prompt public seam and test the seam rather than the rendered prompt.
 - Add regression tests before fixing bugs, and keep them focused on the bug's externally visible behavior.
 - Avoid over-mocking. Use small fakes at external seams when real adapters would make the test slow, flaky, or dependent on network/auth state.
 - Refactor tests after they pass: remove duplicated setup, split broad tests, and keep assertions specific enough to catch real regressions.

@@ -91,7 +91,7 @@ describe("prepareRepo", () => {
     }
   });
 
-  it("returns a fallback prompt when the preparation agent cannot prepare the workspace", async () => {
+  it("preserves the failure kind when the preparation agent cannot prepare the workspace", async () => {
     const agent: RepoPreparationAgent = {
       async prepare() {
         return {
@@ -117,15 +117,11 @@ describe("prepareRepo", () => {
 
     expect(result.status).toBe("failed");
     if (result.status === "failed") {
-      expect(result.fallbackPrompt).toContain(
-        "dashboard data requires a private API",
-      );
-      expect(result.fallbackPrompt).toContain("add local dashboard fixtures");
       expect(result.failureKind).toBe("dependency-install-sigkill");
     }
   });
 
-  it("returns a fallback prompt when the preparation agent returns an invalid manifest", async () => {
+  it("fails when the preparation agent returns an invalid manifest", async () => {
     const agent: RepoPreparationAgent = {
       async prepare() {
         return {
@@ -153,11 +149,6 @@ describe("prepareRepo", () => {
     );
 
     expect(result.status).toBe("failed");
-    if (result.status === "failed") {
-      expect(result.fallbackPrompt).toContain(
-        "Preparation Manifest was invalid: status must be a non-empty string",
-      );
-    }
   });
 
   it("reports an infrastructure handoff failure when a success omits provenance", async () => {
@@ -197,14 +188,6 @@ describe("prepareRepo", () => {
     );
 
     expect(result.status).toBe("failed");
-    if (result.status === "failed") {
-      expect(result.fallbackPrompt).toContain(
-        "MakeADemo infrastructure contract failure",
-      );
-      expect(result.fallbackPrompt).toContain(
-        "the preparation agent cannot repair it",
-      );
-    }
   });
 
   it("rejects a success manifest whose visible interface was created during preparation", async () => {
@@ -245,10 +228,5 @@ describe("prepareRepo", () => {
     );
 
     expect(result).toMatchObject({ status: "failed" });
-    if (result.status === "failed") {
-      expect(result.fallbackPrompt).toContain(
-        "sourceControlledUiPaths includes demo/index.html, which was not source-controlled before Repo Preparation",
-      );
-    }
   });
 });

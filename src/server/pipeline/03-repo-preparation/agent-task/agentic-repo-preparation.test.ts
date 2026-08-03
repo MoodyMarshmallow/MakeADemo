@@ -2119,7 +2119,6 @@ describe("AgenticRepoPreparation", () => {
 
     expect(result).toMatchObject({ status: "succeeded" });
     expect(runner.calls).toHaveLength(3);
-    expect(runner.calls[1]?.taskPrompt).toContain("deprecated_release");
     expect(
       events.flatMap((event) =>
         typeof event === "object" &&

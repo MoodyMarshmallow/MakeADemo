@@ -164,7 +164,6 @@ describe("AgenticCapturePathRepairer", () => {
       stage: "capture-path-repair",
     });
     expect(agent.runner.calls[0]?.hardDeadlineAt).toBe(deadlineAt);
-    expect(agent.runner.calls[0]?.taskPrompt.length).toBeLessThan(35_000);
     expect(events).toEqual(
       expect.arrayContaining([
         {

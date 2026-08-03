@@ -134,7 +134,6 @@ describe("AgenticScriptGenerator", () => {
     });
     expect(agent.runner.calls[0]?.hardDeadlineAt).toBe(deadlineAt);
     expect(agent.runner.calls[0]?.deadlineCeilingAt).toBe(deadlineAt);
-    expect(agent.runner.calls[0]?.taskPrompt.length).toBeLessThan(35_000);
   });
 
   it("retries a Demo Script candidate that uses Capture SDK context outside callbacks", async () => {
@@ -356,27 +355,6 @@ describe("AgenticScriptGenerator", () => {
         },
       ]),
     );
-  });
-
-  it("bounds oversized Script Generation context before sending the task", async () => {
-    const agent = new ScriptGenerationAgentFixture({});
-
-    await agent.generateDemoScript({
-      ...scriptGenerationInput(),
-      normalizedSupportingDocuments: [
-        {
-          normalizedText: `docs:${"x".repeat(50_000)}`,
-          sourceArtifactId: "artifact_long_doc",
-          sourceFileName: "long-context.md",
-        },
-      ],
-      agentSession: createAgentSession(),
-      preparationWorkspace: createAgentWorkspaceFixture({
-        artifacts: [canonicalDemoScript()],
-      }).preparationWorkspace,
-    });
-
-    expect(agent.runner.calls[0]?.taskPrompt.length).toBeLessThan(35_000);
   });
 
   it("keeps Script Generation retry reasons concise after agent task failures", async () => {

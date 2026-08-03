@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 
-import { universalAgentSystemPrompt } from "../prompts/universal-agent-system-prompt";
 import { createPiResourceLoader } from "./pi-resource-loader";
 
 describe("createPiResourceLoader", () => {
@@ -10,7 +9,6 @@ describe("createPiResourceLoader", () => {
       cwd: "/workspace",
     });
 
-    expect(loader.getSystemPrompt()).toBe(universalAgentSystemPrompt);
     expect(loader.getAgentsFiles().agentsFiles).toEqual([]);
     expect(loader.getExtensions().errors).toEqual([]);
     expect(loader.getExtensions().extensions).toHaveLength(1);
@@ -18,7 +16,6 @@ describe("createPiResourceLoader", () => {
       "@upstash/context7-pi",
     );
     expect(loader.getSkills().skills).toEqual([]);
-    expect(loader.getPrompts().prompts).toEqual([]);
   });
 
   it("fails closed instead of allowing ambient authenticated Context7", async () => {

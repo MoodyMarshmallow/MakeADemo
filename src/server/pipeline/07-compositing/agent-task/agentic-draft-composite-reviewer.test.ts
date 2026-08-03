@@ -178,7 +178,6 @@ describe("AgenticDraftCompositeReviewer", () => {
       stage: "draft-composite-review",
     });
     expect(agent.runner.calls[0]?.hardDeadlineAt).toBe(deadlineAt);
-    expect(agent.runner.calls[0]?.taskPrompt.length).toBeLessThan(35_000);
   });
 
   it("uses a retry-extended hard deadline for the review artifact read", async () => {
