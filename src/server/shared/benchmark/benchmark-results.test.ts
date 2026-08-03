@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  type BenchmarkResultBuildInput,
   buildBenchmarkResult,
   findFullPipelineResultPath,
   inferBenchmarkStatusLevel,
@@ -162,6 +163,54 @@ describe("readBenchmarkTerminalPipelineResult", () => {
     });
   });
 
+  it("preserves a Capture Path validator infrastructure kind when reading a terminal result", () => {
+    expect(
+      readBenchmarkTerminalPipelineResult({
+        pipelineOutputRoot,
+        resultPath,
+        value: {
+          artifacts: { logPath: "/runs/pipeline-log.jsonl" },
+          failure: {
+            blockers: ["Trusted Playwright is unavailable."],
+            failureKind: "validator-dependency-failed",
+            suggestedChanges: [],
+          },
+          runDirectory:
+            "/runs/ghost/pipeline/full-pipeline-2026-07-20T00-00-00-000Z",
+          runId: "full-pipeline-2026-07-20T00-00-00-000Z",
+          status: "infrastructure-failed",
+        },
+      }),
+    ).toMatchObject({
+      failure: { failureKind: "validator-dependency-failed" },
+      status: "infrastructure-failed",
+    });
+  });
+
+  it("preserves an exact Repo Security reviewer failure kind for inconclusive benchmarking", () => {
+    expect(
+      readBenchmarkTerminalPipelineResult({
+        pipelineOutputRoot,
+        resultPath,
+        value: {
+          artifacts: { logPath: "/runs/pipeline-log.jsonl" },
+          failure: {
+            blockers: ["Repo Security reviewer timed out."],
+            failureKind: "timeout",
+            suggestedChanges: [],
+          },
+          runDirectory:
+            "/runs/ghost/pipeline/full-pipeline-2026-07-20T00-00-00-000Z",
+          runId: "full-pipeline-2026-07-20T00-00-00-000Z",
+          status: "infrastructure-failed",
+        },
+      }),
+    ).toMatchObject({
+      failure: { failureKind: "timeout" },
+      status: "infrastructure-failed",
+    });
+  });
+
   it("preserves a Repo Preparation registry acquisition diagnostic for inconclusive benchmarking", () => {
     expect(
       readBenchmarkTerminalPipelineResult({
@@ -194,6 +243,72 @@ describe("readBenchmarkTerminalPipelineResult", () => {
         },
       },
       status: "infrastructure-failed",
+    });
+  });
+
+  it("carries safe SIGKILL resource diagnostics from the terminal artifact into the benchmark result", () => {
+    const terminal = readBenchmarkTerminalPipelineResult({
+      pipelineOutputRoot,
+      resultPath,
+      value: {
+        ...failedTerminalSummary(),
+        failure: {
+          blockers: ["Dependency installation ended with SIGKILL."],
+          failureKind: "dependency-install-sigkill",
+          resourceDiagnostics: {
+            classification: "cgroup-oom-kill",
+            memoryOomKillDelta: 1,
+            memoryPeakBytes: 4_123_456_789,
+            providerState: "running",
+            rawProviderReason: "secret provider response",
+          },
+          suggestedChanges: [],
+        },
+      },
+    });
+
+    expect(terminal).toMatchObject({
+      failure: {
+        failureKind: "dependency-install-sigkill",
+        resourceDiagnostics: {
+          classification: "cgroup-oom-kill",
+          memoryOomKillDelta: 1,
+          memoryPeakBytes: 4_123_456_789,
+          providerState: "running",
+        },
+      },
+    });
+    expect(terminal?.failure?.resourceDiagnostics).not.toHaveProperty(
+      "rawProviderReason",
+    );
+    if (terminal === undefined) throw new Error("expected terminal result");
+
+    const result = buildBenchmarkResult({
+      benchmarkRunId: "run-1",
+      benchmarkTimeoutMs: 960_000,
+      command: ["bun", "src/server/composition/full-pipeline-cli.mts"],
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
+      durationMs: 1_000,
+      endedAt: "2026-07-20T00:00:01.000Z",
+      expectedLevel: "L5",
+      fullPipelineLog: {
+        stageOutcomes: [{ stage: "repo-preparation", status: "failed" }],
+      },
+      fullPipelineResult: terminal,
+      lifecycle: { exitCode: 1, killed: false },
+      repoId: "cal",
+      repoUrl: "https://github.com/calcom/cal.com",
+      runDirectory: ".makeademo-benchmark-runs/run-1/cal-r1",
+      startedAt: "2026-07-20T00:00:00.000Z",
+      stderrPath: "stderr.log",
+      stdoutPath: "stdout.log",
+    });
+
+    expect(result.resourceDiagnostics).toEqual({
+      classification: "cgroup-oom-kill",
+      memoryOomKillDelta: 1,
+      memoryPeakBytes: 4_123_456_789,
+      providerState: "running",
     });
   });
 });
@@ -527,80 +642,36 @@ describe("buildBenchmarkResult", () => {
     });
   });
 
-  it("marks a dependency install SIGKILL as an inconclusive infrastructure run", () => {
+  it("keeps a Capture Path validator dependency failure inconclusive", () => {
     expect(
-      buildBenchmarkResult({
-        benchmarkRunId: "run-1",
-        benchmarkTimeoutMs: 960_000,
-        command: ["bun", "src/server/composition/full-pipeline-cli.mts"],
-        commitSha: "0123456789abcdef0123456789abcdef01234567",
-        durationMs: 1_000,
-        endedAt: "2026-07-20T00:00:01.000Z",
-        expectedLevel: "L5",
-        fullPipelineLog: {
-          failureStage: "repo-preparation",
-          stageOutcomes: [{ stage: "repo-preparation", status: "failed" }],
-          succeededEvents: [],
-        },
-        fullPipelineResult: {
-          failure: {
-            blockers: ["Dependency install received SIGKILL."],
-            failureKind: "dependency-install-sigkill",
-          },
-          resultPath: "/runs/full-pipeline-result.json",
-          status: "preparation-failed",
-        },
-        lifecycle: { exitCode: 1, killed: false },
-        repoId: "cal",
-        repoUrl: "https://github.com/calcom/cal.com",
-        runDirectory: ".makeademo-benchmark-runs/run-1/cal-r1",
-        startedAt: "2026-07-20T00:00:00.000Z",
-        stderrPath: "stderr.log",
-        stdoutPath: "stdout.log",
-      }),
+      buildBenchmarkResult(
+        infrastructureBenchmarkInput({
+          blocker: "Trusted Playwright is unavailable.",
+          failureKind: "validator-dependency-failed",
+          failureStage: "capture-path-validation",
+          pipelineStatus: "infrastructure-failed",
+        }),
+      ),
     ).toMatchObject({
       disposition: "inconclusive",
-      failureStage: "repo-preparation",
-      infrastructureFailureKind: "dependency-install-sigkill",
+      failureStage: "capture-path-validation",
+      infrastructureFailureKind: "validator-dependency-failed",
       status: "failed",
     });
   });
 
   it("keeps a durable sandbox infrastructure failure inconclusive", () => {
     expect(
-      buildBenchmarkResult({
-        benchmarkRunId: "run-1",
-        benchmarkTimeoutMs: 960_000,
-        command: ["bun", "src/server/composition/full-pipeline-cli.mts"],
-        commitSha: "0123456789abcdef0123456789abcdef01234567",
-        durationMs: 1_000,
-        endedAt: "2026-07-20T00:00:01.000Z",
-        expectedLevel: "L5",
-        fullPipelineLog: {
-          stageOutcomes: [{ stage: "repo-security-screen", status: "failed" }],
-          succeededEvents: [],
-        },
-        fullPipelineResult: {
-          failure: {
-            blockers: ["Sandbox infrastructure was unavailable."],
-            failureKind: "sandbox-infrastructure-failed",
-            infrastructure: {
-              phase: "command-or-clone",
-              provider: "daytona",
-            },
-          },
-          resultPath: "/runs/full-pipeline-result.json",
-          status: "infrastructure-failed",
-        },
-        lifecycle: { exitCode: 1, killed: false },
-        repoId: "cal",
-        repoUrl: "https://github.com/calcom/cal.com",
-        runDirectory: ".makeademo-benchmark-runs/run-1/cal-r1",
-        sandboxProvider: "daytona",
-        startedAt: "2026-07-20T00:00:00.000Z",
-        stderrPath: "stderr.log",
-        stdoutPath: "stdout.log",
-      }),
+      buildBenchmarkResult(
+        infrastructureBenchmarkInput({
+          blocker: "Sandbox infrastructure was unavailable.",
+          failureKind: "sandbox-infrastructure-failed",
+          failureStage: "repo-security-screen",
+          infrastructure: { phase: "command-or-clone", provider: "daytona" },
+          pipelineStatus: "infrastructure-failed",
+          sandboxProvider: "daytona",
+        }),
+      ),
     ).toMatchObject({
       disposition: "inconclusive",
       infrastructureFailureKind: "sandbox-infrastructure-failed",
@@ -768,6 +839,54 @@ describe("summarizeBenchmarkResults", () => {
     );
   });
 });
+
+function infrastructureBenchmarkInput(input: {
+  blocker: string;
+  failureKind:
+    | "dependency-install-sigkill"
+    | "sandbox-infrastructure-failed"
+    | "validator-dependency-failed";
+  failureStage: string;
+  infrastructure?: { phase: "command-or-clone"; provider: "daytona" };
+  pipelineStatus: "infrastructure-failed" | "preparation-failed";
+  sandboxProvider?: "daytona";
+}): BenchmarkResultBuildInput {
+  return {
+    benchmarkRunId: "run-1",
+    benchmarkTimeoutMs: 960_000,
+    command: ["bun", "src/server/composition/full-pipeline-cli.mts"],
+    commitSha: "0123456789abcdef0123456789abcdef01234567",
+    durationMs: 1_000,
+    endedAt: "2026-07-20T00:00:01.000Z",
+    expectedLevel: "L5",
+    fullPipelineLog: {
+      failureStage: input.failureStage,
+      stageOutcomes: [{ stage: input.failureStage, status: "failed" }],
+      succeededEvents: [],
+    },
+    fullPipelineResult: {
+      failure: {
+        blockers: [input.blocker],
+        failureKind: input.failureKind,
+        ...(input.infrastructure === undefined
+          ? {}
+          : { infrastructure: input.infrastructure }),
+      },
+      resultPath: "/runs/full-pipeline-result.json",
+      status: input.pipelineStatus,
+    },
+    lifecycle: { exitCode: 1, killed: false },
+    repoId: "cal",
+    repoUrl: "https://github.com/calcom/cal.com",
+    runDirectory: ".makeademo-benchmark-runs/run-1/cal-r1",
+    ...(input.sandboxProvider === undefined
+      ? {}
+      : { sandboxProvider: input.sandboxProvider }),
+    startedAt: "2026-07-20T00:00:00.000Z",
+    stderrPath: "stderr.log",
+    stdoutPath: "stdout.log",
+  };
+}
 
 function successfulTerminalSummary() {
   return {

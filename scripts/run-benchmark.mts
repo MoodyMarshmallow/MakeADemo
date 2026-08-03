@@ -1,9 +1,13 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import { createBenchmarkAdmissionGate } from "../src/server/shared/benchmark/benchmark-admission-gate";
 import { parseBenchmarkCommandArgs } from "../src/server/shared/benchmark/benchmark-command";
+import { createBenchmarkControlDecisionRecorder } from "../src/server/shared/benchmark/benchmark-control-decisions";
+import type { BenchmarkControlEvent } from "../src/server/shared/benchmark/benchmark-control-events.schema";
 import type { BenchmarkRepo } from "../src/server/shared/benchmark/benchmark-manifest";
 import { redactBenchmarkOutput } from "../src/server/shared/benchmark/benchmark-output-redaction";
+import { prepareBenchmarkProcessStart } from "../src/server/shared/benchmark/benchmark-pre-spawn";
 import {
   createBenchmarkProcessController,
   parseBenchmarkTimeout,
@@ -41,6 +45,7 @@ const selectedBenchmarkSuite = {
 const benchmarkRunId = createRunId();
 const outputRoot = join(".makeademo-benchmark-runs", benchmarkRunId);
 const resultsPath = join(outputRoot, "benchmark-results.jsonl");
+const controlEventsPath = join(outputRoot, "benchmark-control-events.jsonl");
 const benchmarkTimeoutMs = parseBenchmarkTimeout(
   process.env.MAKEADEMO_BENCHMARK_TIMEOUT_MS,
 );
@@ -49,18 +54,33 @@ const benchmarkJobCount = selectedBenchmarkRepos.reduce(
   0,
 );
 const benchmarkWorkerCount = concurrency ?? benchmarkJobCount;
-// A bounded run gives every admitted Pipeline Job its own full budget. The
-// suite watchdog spans the maximum number of worker waves; unbounded runs
-// retain the former one-wave timeout.
+const admissionPauseAllowanceMs = 300_000;
+// Every admitted Pipeline Job receives its own full budget. The suite watchdog
+// spans the maximum number of worker waves and one bounded cooldown allowance.
 const suiteDeadlineAt =
   Date.now() +
-  benchmarkTimeoutMs * Math.ceil(benchmarkJobCount / benchmarkWorkerCount);
+  benchmarkTimeoutMs * Math.ceil(benchmarkJobCount / benchmarkWorkerCount) +
+  admissionPauseAllowanceMs;
 const processController = createBenchmarkProcessController();
+const admissionGate = createBenchmarkAdmissionGate({
+  maxAdmissionPauseMs: admissionPauseAllowanceMs,
+});
+const controlDecisionRecorder = createBenchmarkControlDecisionRecorder({
+  admissionGate,
+  warn: (error) => {
+    process.stderr.write(
+      `[benchmark] control-event artifact degraded: ${readErrorMessage(error)}\n`,
+    );
+  },
+  write: (decision) => appendJsonLine(controlEventsPath, decision),
+});
+const benchmarkCancellation = new AbortController();
 const pipelineDeadlineReserveMs = 60_000;
 let interrupted = false;
 const handleSignal = (signal: NodeJS.Signals) => {
   interrupted = true;
   process.exitCode = signal === "SIGINT" ? 130 : 143;
+  benchmarkCancellation.abort(new Error(`Benchmark received ${signal}.`));
   void processController.cancelAll("signal");
 };
 process.once("SIGINT", handleSignal);
@@ -78,16 +98,43 @@ process.stdout.write(
 );
 process.stdout.write(`Output root: ${outputRoot}\n`);
 process.stdout.write(`Results: ${resultsPath}\n`);
+process.stdout.write(`Control decisions: ${controlEventsPath}\n`);
 
 let pendingResultWrite = Promise.resolve();
 let results: BenchmarkResult[];
 try {
   results = await runBenchmarkJobs({
     ...(concurrency === undefined ? {} : { concurrency }),
-    ...(concurrency === undefined ? {} : { benchmarkTimeoutMs }),
+    admissionGate,
+    benchmarkTimeoutMs,
     repos: selectedBenchmarkRepos,
     deadlineAt: suiteDeadlineAt,
-    run: async ({ repo, repetitionIndex, deadlineAt }) => {
+    signal: benchmarkCancellation.signal,
+    onAdmissionPauseExhausted: ({ error, repetitionIndex, repo }) => {
+      controlDecisionRecorder.recordAdmissionPauseExhausted(error, {
+        repetitionIndex,
+        repoId: repo.id,
+      });
+    },
+    onTerminalResult: ({ admission, decision, repetitionIndex, repo }) => {
+      if (decision === undefined) return;
+      controlDecisionRecorder.recordCircuitDecision(
+        decision,
+        {
+          repetitionIndex,
+          repoId: repo.id,
+        },
+        admission,
+      );
+    },
+    run: async ({ admission, repo, repetitionIndex, deadlineAt }) => {
+      if (admission?.kind === "probe") {
+        controlDecisionRecorder.recordCircuitDecision(
+          admissionGate.recordProbeAdmission(admission),
+          { repetitionIndex, repoId: repo.id },
+          admission,
+        );
+      }
       const result = await runRepoBenchmark({
         benchmarkRunId,
         benchmarkTimeoutMs,
@@ -96,6 +143,25 @@ try {
         repetitionIndex,
         sandboxProvider: "daytona",
         ...(deadlineAt === undefined ? {} : { deadlineAt }),
+        onControlEvent: (event) => {
+          if (event.type === "benchmark.daytona-provisioning-succeeded") {
+            controlDecisionRecorder.recordProvisioningSucceeded(admission, {
+              repetitionIndex,
+              repoId: repo.id,
+            });
+            return;
+          }
+          const decision = controlDecisionRecorder.record(event, {
+            repetitionIndex,
+            repoId: repo.id,
+          });
+          if (decision.extended) {
+            process.stderr.write(
+              `[benchmark] provider cooldown extended to ${new Date(decision.cooldownUntil).toISOString()} (${decision.requestedDelayMs}ms requested).\n`,
+            );
+          }
+        },
+        signal: benchmarkCancellation.signal,
       });
       pendingResultWrite = pendingResultWrite.then(() =>
         appendJsonLine(resultsPath, result),
@@ -104,10 +170,14 @@ try {
       return result;
     },
   });
+} catch (error) {
+  if (!interrupted) throw error;
+  results = [];
 } finally {
   process.removeListener("SIGINT", handleSignal);
   process.removeListener("SIGTERM", handleSignal);
   await processController.cancelAll();
+  await controlDecisionRecorder.finalize();
 }
 
 if (!interrupted) {
@@ -123,14 +193,14 @@ async function runRepoBenchmark(input: {
   repetitionIndex: number;
   sandboxProvider: "daytona";
   deadlineAt?: number;
+  onControlEvent: (event: BenchmarkControlEvent) => void;
+  signal: AbortSignal;
 }): Promise<BenchmarkResult> {
   const runName = `${input.repo.id}-r${input.repetitionIndex + 1}`;
   const runDirectory = join(input.outputRoot, runName);
   const stdoutPath = join(runDirectory, "stdout.log");
   const stderrPath = join(runDirectory, "stderr.log");
   const pipelineOutputRoot = join(runDirectory, "pipeline");
-  await mkdir(runDirectory, { recursive: true });
-
   const args = buildBenchmarkPipelineArgs({
     deadlineAt: Math.max(
       Date.now(),
@@ -142,19 +212,36 @@ async function runRepoBenchmark(input: {
     sandboxProvider: input.sandboxProvider,
   });
   const command = ["bun", ...args];
-  const startedAt = new Date();
-  process.stdout.write(
-    `\n[${input.repo.id}] run ${input.repetitionIndex + 1}/${input.repo.effectiveRepetitions}\n`,
-  );
-  process.stdout.write(`$ ${command.join(" ")}\n`);
-
-  const lifecycle = await runBenchmarkProcess({
-    args,
-    stderrPath,
-    stdoutPath,
-    deadlineAt: input.deadlineAt ?? Date.now() + input.benchmarkTimeoutMs,
-    controller: processController,
+  let startedAt: Date | undefined;
+  const lifecycle = await prepareBenchmarkProcessStart({
+    setup: async () => {
+      await mkdir(runDirectory, { recursive: true });
+    },
+    signal: input.signal,
+    start: () => {
+      startedAt = new Date();
+      process.stdout.write(
+        `\n[${input.repo.id}] run ${input.repetitionIndex + 1}/${input.repo.effectiveRepetitions}\n`,
+      );
+      process.stdout.write(`$ ${command.join(" ")}\n`);
+      return runBenchmarkProcess({
+        args,
+        stderrPath,
+        stdoutPath,
+        deadlineAt: input.deadlineAt ?? Date.now() + input.benchmarkTimeoutMs,
+        controller: processController,
+        env: {
+          ...process.env,
+          MAKEADEMO_BENCHMARK_CONTROL_FD: "3",
+        },
+        onControlEvent: input.onControlEvent,
+        signal: input.signal,
+      });
+    },
   });
+  if (startedAt === undefined) {
+    throw new Error("Benchmark child started without a timestamp.");
+  }
   await Promise.all([
     redactBenchmarkLog(stdoutPath),
     redactBenchmarkLog(stderrPath),
@@ -193,6 +280,10 @@ async function runRepoBenchmark(input: {
     `[${input.repo.id}] ${result.status} ${result.statusLevel} in ${formatDuration(result.durationMs)}\n`,
   );
   return result;
+}
+
+function readErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function redactBenchmarkLog(path: string) {

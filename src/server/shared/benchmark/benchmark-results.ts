@@ -1,5 +1,10 @@
 import { basename, dirname, relative, resolve, sep } from "node:path";
 
+import type { PreparationWorkspaceResourceDiagnostics } from "../../pipeline/03-repo-preparation/preparation-workspace-resource-diagnostics";
+import {
+  type PipelineInfrastructureFailureKind,
+  isPipelineInfrastructureFailureKind,
+} from "../../pipeline/pipeline-infrastructure-failure";
 import type {
   BenchmarkSandboxProvider,
   BenchmarkStatusLevel,
@@ -12,10 +17,8 @@ type BenchmarkTokenUsage = {
 };
 
 type BenchmarkTerminalFailureKind =
-  | "dependency-install-sigkill"
-  | "repository_node_dependency_incompatible"
-  | "sandbox-infrastructure-failed"
-  | "unexpected-pipeline-error";
+  | PipelineInfrastructureFailureKind
+  | "repository_node_dependency_incompatible";
 
 type SandboxInfrastructureDiagnostic = {
   phase:
@@ -45,15 +48,14 @@ export type BenchmarkResult = {
   infrastructureFailureKind?:
     | "pipeline-cancelled"
     | "pipeline-deadline-exceeded"
-    | "dependency-install-sigkill"
-    | "sandbox-infrastructure-failed"
-    | "unexpected-pipeline-error"
+    | PipelineInfrastructureFailureKind
     | "process-terminated"
     | "terminal-cleanup-failed"
     | "terminal-result-unavailable";
   logPath?: string;
   repoId: string;
   repoUrl: string;
+  resourceDiagnostics?: PreparationWorkspaceResourceDiagnostics;
   sandboxProvider?: BenchmarkSandboxProvider;
   resultPath?: string;
   runDirectory?: string;
@@ -74,6 +76,7 @@ export type BenchmarkTerminalPipelineResult = {
     blockers?: string[];
     failureKind?: BenchmarkTerminalFailureKind;
     infrastructure?: SandboxInfrastructureDiagnostic;
+    resourceDiagnostics?: PreparationWorkspaceResourceDiagnostics;
   };
   cancellationReason?: "deadline-exceeded" | "signal";
   resultPath: string;
@@ -148,7 +151,7 @@ export function buildBenchmarkResult(
   input: BenchmarkResultBuildInput,
 ): BenchmarkResult {
   const terminalResult = input.fullPipelineResult;
-  const terminalInfrastructureFailureKind = isInfrastructureFailureKind(
+  const terminalInfrastructureFailureKind = isPipelineInfrastructureFailureKind(
     terminalResult?.failure?.failureKind,
   )
     ? terminalResult?.failure?.failureKind
@@ -211,6 +214,9 @@ export function buildBenchmarkResult(
     ...(infrastructureFailureKind === undefined
       ? {}
       : { infrastructureFailureKind }),
+    ...(terminalResult?.failure?.resourceDiagnostics === undefined
+      ? {}
+      : { resourceDiagnostics: terminalResult.failure.resourceDiagnostics }),
     ...(terminalResult?.artifacts?.logPath === undefined
       ? {}
       : { logPath: terminalResult.artifacts.logPath }),
@@ -534,20 +540,77 @@ function readTerminalFailure(value: {
   blockers: string[];
   failureKind?: unknown;
   infrastructure?: unknown;
+  resourceDiagnostics?: unknown;
 }): {
   blockers: string[];
   failureKind?: BenchmarkTerminalFailureKind;
   infrastructure?: SandboxInfrastructureDiagnostic;
+  resourceDiagnostics?: PreparationWorkspaceResourceDiagnostics;
 } {
   const infrastructure = readSandboxInfrastructureDiagnostic(
     value.infrastructure,
   );
+  const failureKind = isTerminalFailureKind(value.failureKind)
+    ? value.failureKind
+    : undefined;
+  const resourceDiagnostics = readBenchmarkResourceDiagnostics(
+    value.resourceDiagnostics,
+  );
   return {
     blockers: value.blockers,
-    ...(isTerminalFailureKind(value.failureKind)
-      ? { failureKind: value.failureKind }
-      : {}),
+    ...(failureKind === undefined ? {} : { failureKind }),
     ...(infrastructure === undefined ? {} : { infrastructure }),
+    ...(resourceDiagnostics === undefined ? {} : { resourceDiagnostics }),
+  };
+}
+
+function readBenchmarkResourceDiagnostics(
+  value: unknown,
+): PreparationWorkspaceResourceDiagnostics | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    value.classification !== "cgroup-oom-kill" &&
+    value.classification !== "pid-limit" &&
+    value.classification !== "provider-state" &&
+    value.classification !== "unproven"
+  ) {
+    return undefined;
+  }
+  if (
+    value.providerState !== undefined &&
+    value.providerState !== "running" &&
+    value.providerState !== "stopped" &&
+    value.providerState !== "unavailable"
+  ) {
+    return undefined;
+  }
+  const numericFields = [
+    "memoryOomKillDelta",
+    "memoryPeakBytes",
+    "pidsCurrent",
+    "pidsLimit",
+    "pidsMaxEventDelta",
+  ] as const;
+  for (const field of numericFields) {
+    const fieldValue = value[field];
+    if (
+      fieldValue !== undefined &&
+      (!Number.isSafeInteger(fieldValue) || (fieldValue as number) < 0)
+    ) {
+      return undefined;
+    }
+  }
+
+  return {
+    classification: value.classification,
+    ...Object.fromEntries(
+      numericFields.flatMap((field) =>
+        value[field] === undefined ? [] : [[field, value[field]]],
+      ),
+    ),
+    ...(value.providerState === undefined
+      ? {}
+      : { providerState: value.providerState }),
   };
 }
 
@@ -575,23 +638,8 @@ function isTerminalFailureKind(
   value: unknown,
 ): value is BenchmarkTerminalFailureKind {
   return (
-    value === "dependency-install-sigkill" ||
     value === "repository_node_dependency_incompatible" ||
-    value === "sandbox-infrastructure-failed" ||
-    value === "unexpected-pipeline-error"
-  );
-}
-
-function isInfrastructureFailureKind(
-  value: unknown,
-): value is Extract<
-  BenchmarkTerminalFailureKind,
-  BenchmarkResult["infrastructureFailureKind"]
-> {
-  return (
-    value === "dependency-install-sigkill" ||
-    value === "sandbox-infrastructure-failed" ||
-    value === "unexpected-pipeline-error"
+    isPipelineInfrastructureFailureKind(value)
   );
 }
 
