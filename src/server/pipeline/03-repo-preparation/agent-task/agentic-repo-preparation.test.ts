@@ -252,7 +252,7 @@ describe("AgenticRepoPreparation", () => {
         );
         let settleClone: (() => void) | undefined;
         handle.workspace.execute = async (command, options) => {
-          if (command.includes("git clone")) {
+          if (isPinnedRepositoryAcquisition(command)) {
             await new Promise<void>((resolve) => {
               settleClone = resolve;
             });
@@ -301,7 +301,7 @@ describe("AgenticRepoPreparation", () => {
         const execute = handle.workspace.execute.bind(handle.workspace);
         let settleClone: (() => void) | undefined;
         handle.workspace.execute = async (command, options) => {
-          if (command.includes("git clone")) {
+          if (isPinnedRepositoryAcquisition(command)) {
             await new Promise<void>((resolve) => {
               settleClone = resolve;
             });
@@ -390,7 +390,7 @@ describe("AgenticRepoPreparation", () => {
         const handle = await baseProvider.create();
         const execute = handle.workspace.execute.bind(handle.workspace);
         handle.workspace.execute = async (command, options) => {
-          if (!command.includes("git clone")) {
+          if (!isPinnedRepositoryAcquisition(command)) {
             return execute(command, options);
           }
           cloneAttempts += 1;
@@ -513,7 +513,7 @@ describe("AgenticRepoPreparation", () => {
       expect.arrayContaining([
         {
           execute: expect.stringContaining(
-            "checkout --detach '0123456789abcdef0123456789abcdef01234567'",
+            "fetch --depth=1 --no-tags --recurse-submodules=no origin '0123456789abcdef0123456789abcdef01234567'",
           ),
         },
         { prepareForAgent: true },
@@ -527,7 +527,7 @@ describe("AgenticRepoPreparation", () => {
           event !== null &&
           "execute" in event &&
           typeof event.execute === "string" &&
-          event.execute.includes("git clone"),
+          isPinnedRepositoryAcquisition(event.execute),
       )
       .map((event) => event.execute);
     expect(cloneCommands).toHaveLength(1);
@@ -537,7 +537,7 @@ describe("AgenticRepoPreparation", () => {
     expect(cloneCommands[0]).toContain("/etc/ssl/certs/ca-certificates.crt");
     expect(cloneCommands[0]).toContain("/etc/pki/tls/certs/ca-bundle.crt");
     expect(cloneCommands[0]).toContain("/etc/openshell-tls/ca-bundle.pem");
-    expect(cloneCommands[0]).toMatch(/export GIT_SSL_CAINFO=.*git clone/s);
+    expect(cloneCommands[0]).toMatch(/export GIT_SSL_CAINFO=.*git init/s);
     expect(cloneCommands[0]).not.toContain("GIT_SSL_NO_VERIFY");
     expect(cloneCommands[0]).not.toContain("sslVerify=false");
     expect(runner.calls[0]).toMatchObject({
@@ -734,7 +734,7 @@ describe("AgenticRepoPreparation", () => {
           event !== null &&
           "execute" in event &&
           typeof event.execute === "string" &&
-          event.execute.includes("git clone"),
+          isPinnedRepositoryAcquisition(event.execute),
       ),
     ).toHaveLength(2);
   });
@@ -779,7 +779,7 @@ describe("AgenticRepoPreparation", () => {
           event !== null &&
           "execute" in event &&
           typeof event.execute === "string" &&
-          event.execute.includes("git clone"),
+          isPinnedRepositoryAcquisition(event.execute),
       ),
     ).toHaveLength(2);
   });
@@ -2636,6 +2636,19 @@ describe("AgenticRepoPreparation", () => {
   });
 });
 
+function isPinnedRepositoryAcquisition(command: string): boolean {
+  return (
+    command.includes("git init --quiet") &&
+    command.includes("config remote.origin.url") &&
+    /fetch --depth=1 --no-tags --recurse-submodules=no origin '[0-9a-f]{40}'/i.test(
+      command,
+    ) &&
+    command.includes("checkout --quiet --detach") &&
+    command.includes("FETCH_HEAD") &&
+    command.includes("rev-parse HEAD")
+  );
+}
+
 function fakeProvider(
   events: unknown[],
   input:
@@ -2795,7 +2808,7 @@ function fakeWorkspace(
       if (command !== "git -C /workspace ls-files -z")
         events.push({ execute: command });
       if (
-        command.includes("git clone") &&
+        isPinnedRepositoryAcquisition(command) &&
         input.captureCloneTimeouts === true
       ) {
         events.push({ cloneTimeoutMs: options?.timeoutMs });
@@ -2928,7 +2941,7 @@ function fakeWorkspace(
           stdout: input.cloneDiagnosticsStdout ?? "",
         };
       }
-      if (command.includes("git clone") && cloneResults.length > 0) {
+      if (isPinnedRepositoryAcquisition(command) && cloneResults.length > 0) {
         const cloneResult = cloneResults.shift();
         if (cloneResult instanceof Error) {
           throw cloneResult;
@@ -2938,7 +2951,7 @@ function fakeWorkspace(
       return {
         exitCode: 0,
         stderr: "",
-        stdout: command.includes("git clone")
+        stdout: isPinnedRepositoryAcquisition(command)
           ? "cloned"
           : (commandStdout.shift() ?? ""),
       };

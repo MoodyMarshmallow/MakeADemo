@@ -11,10 +11,10 @@ const defaultCaBundleCandidates = [
 ];
 
 /**
- * Builds a native git clone command for an isolated repository workspace.
+ * Builds a native Git acquisition command for an isolated repository workspace.
  * Implementations must keep repo URL and path arguments shell-quoted, discover a
- * readable CA bundle before cloning, must never disable TLS verification, and
- * must verify HEAD when an immutable commit is requested.
+ * readable CA bundle before fetching, never disable TLS verification or execute
+ * repository hooks, and verify HEAD when an immutable commit is requested.
  */
 export function createGitCloneCommand(input: {
   caBundleCandidates?: string[];
@@ -33,20 +33,45 @@ export function createGitCloneCommand(input: {
   const destinationPath = shellQuote(input.destinationPath);
   const commitSha =
     input.commitSha === undefined ? undefined : shellQuote(input.commitSha);
+  const fetchTarget = commitSha ?? shellQuote("HEAD");
   return [
     input.resetCommand,
     createCaBundleDiscoveryCommand(
       input.caBundleCandidates ?? defaultCaBundleCandidates,
     ),
-    `git clone --depth 1${commitSha === undefined ? "" : " --no-checkout"} ${shellQuote(input.repoUrl)} ${destinationPath}`,
+    createTrustedGitEnvironmentCommand(),
+    `git init --quiet ${destinationPath}`,
+    `git -C ${destinationPath} config remote.origin.url ${shellQuote(input.repoUrl)}`,
+    `git -C ${destinationPath} config remote.origin.tagOpt --no-tags`,
+    `git -C ${destinationPath} fetch --depth=1 --no-tags --recurse-submodules=no origin ${fetchTarget}`,
+    `git -C ${destinationPath} checkout --quiet --detach --no-recurse-submodules FETCH_HEAD`,
     ...(commitSha === undefined
       ? []
-      : [
-          `git -C ${destinationPath} fetch --depth 1 origin ${commitSha}`,
-          `git -C ${destinationPath} checkout --detach ${commitSha}`,
-          `test "$(git -C ${destinationPath} rev-parse HEAD)" = ${commitSha}`,
-        ]),
+      : [`test "$(git -C ${destinationPath} rev-parse HEAD)" = ${commitSha}`]),
   ].join(" && ");
+}
+
+function createTrustedGitEnvironmentCommand(): string {
+  const config = [
+    ["core.hooksPath", "/dev/null"],
+    ["gc.auto", "0"],
+    ["maintenance.auto", "false"],
+    ["submodule.recurse", "false"],
+    ["fetch.recurseSubmodules", "false"],
+  ] as const;
+  return [
+    "export GIT_TERMINAL_PROMPT=0",
+    "GIT_ASKPASS=/bin/false",
+    "SSH_ASKPASS=/bin/false",
+    "GIT_CONFIG_NOSYSTEM=1",
+    "GIT_CONFIG_GLOBAL=/dev/null",
+    "GIT_LFS_SKIP_SMUDGE=1",
+    `GIT_CONFIG_COUNT=${config.length}`,
+    ...config.flatMap(([key, value], index) => [
+      `GIT_CONFIG_KEY_${index}=${shellQuote(key)}`,
+      `GIT_CONFIG_VALUE_${index}=${shellQuote(value)}`,
+    ]),
+  ].join(" ");
 }
 
 function createCaBundleDiscoveryCommand(caBundleCandidates: string[]): string {

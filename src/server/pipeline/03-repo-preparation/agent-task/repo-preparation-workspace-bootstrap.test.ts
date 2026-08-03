@@ -74,7 +74,10 @@ describe("bootstrapRepoPreparationWorkspace", () => {
       baselineSourceControlledPaths: ["README.md", "package.json"],
     });
     expect(repositoryCommands).toHaveLength(2);
-    expect(repositoryCommands[0]).toContain("git clone");
+    expect(repositoryCommands[0]).toContain("git init --quiet '/workspace'");
+    expect(repositoryCommands[0]).toContain(
+      "fetch --depth=1 --no-tags --recurse-submodules=no origin '0123456789abcdef0123456789abcdef01234567'",
+    );
     expect(repositoryCommands[1]).toBe("git -C /workspace ls-files -z");
     expect(trustedCommands).toEqual([]);
   });
@@ -169,7 +172,7 @@ function createExecutor(
 ): (command: string) => Promise<PreparationWorkspaceCommandResult> {
   return async (command) => {
     commands.push(command);
-    if (command.includes("git clone")) {
+    if (isGitAcquisitionCommand(command)) {
       events.push(`${kind}-clone`);
       return { exitCode: 0, stderr: "", stdout: "cloned" };
     }
@@ -182,6 +185,10 @@ function createExecutor(
     }
     throw new Error(`Unexpected ${kind} command.`);
   };
+}
+
+function isGitAcquisitionCommand(command: string): boolean {
+  return command.includes("git init --quiet") && command.includes(" fetch ");
 }
 
 async function git(directory: string, args: string[]): Promise<string> {

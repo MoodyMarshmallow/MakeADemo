@@ -31,11 +31,9 @@ describe("DaytonaRepoSecurityInputLoader", () => {
     ).toEqual(["osv-scanner", "guarddog", "semgrep"]);
     expect(provider.releasedWorkspaceIds).toEqual([]);
     expect(commands[0]).toContain(
-      "checkout --detach '0123456789abcdef0123456789abcdef01234567'",
+      "fetch --depth=1 --no-tags --recurse-submodules=no origin '0123456789abcdef0123456789abcdef01234567'",
     );
-    expect(
-      commands.findIndex((command) => command.includes("git clone")),
-    ).toBeLessThan(
+    expect(commands.findIndex(isGitAcquisitionCommand)).toBeLessThan(
       commands.findIndex((command) => command.includes("osv-scanner")),
     );
     const backendCommands = commands.filter(
@@ -108,7 +106,7 @@ describe("DaytonaRepoSecurityInputLoader", () => {
         );
       },
       async executeRepositoryCommand(command) {
-        if (!command.includes("git clone")) {
+        if (!isGitAcquisitionCommand(command)) {
           throw new Error(`Unexpected command: ${command}`);
         }
         events.push("clone-started");
@@ -184,7 +182,7 @@ class FakeRepositoryLoadingWorkspace implements PreparationWorkspace {
 
   async executeRepositoryCommand(command: string) {
     this.input.commands?.push(command);
-    if (command.includes("git clone") || command.includes("tar -xzf")) {
+    if (isGitAcquisitionCommand(command) || command.includes("tar -xzf")) {
       this.cloneAttempts += 1;
       if (this.input.cloneError !== undefined) throw this.input.cloneError;
       return { exitCode: 0, stderr: "", stdout: "" };
@@ -224,4 +222,8 @@ class FakeRepositoryLoadingWorkspace implements PreparationWorkspace {
   }
 
   async uploadFiles() {}
+}
+
+function isGitAcquisitionCommand(command: string): boolean {
+  return command.includes("git init --quiet") && command.includes(" fetch ");
 }
