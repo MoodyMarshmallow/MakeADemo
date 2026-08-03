@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { createAgentSession } from "../../../test-support/create-agent-session";
-import { repoSecurityEvidenceFixture } from "../../../test-support/repo-security-evidence-fixture";
 import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
 import type { CaptureManifest } from "../../06-footage-capture/capture-scenes";
 import type { CompositedVideoManifest } from "../../07-compositing/composite-video";
@@ -463,11 +462,8 @@ function loopInput(
       commitSha: "0123456789abcdef0123456789abcdef01234567",
       demoBrief: { keyProductFeatures: ["article feed"] },
       normalizedSupportingDocuments: [],
-      repoSecurity: {
-        evidence: repoSecurityEvidenceFixture(),
-        files: [{ path: "package.json", text: "{}" }],
-        repoStats: { fileCount: 1, sizeBytes: 1 },
-      },
+      preparationWorkspace: preparationWorkspaceHandle(),
+      repoSecurity: { scannerReports: [] },
       repoUrl: "https://github.com/example/app",
       workspaceId: "workspace_123",
     },

@@ -1,10 +1,12 @@
-import type { RepoSecurityResult } from "../repo-security-screen";
-import type { RepoSecurityEvidence } from "../repository-loading/repo-security-evidence";
+import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
+import type { RepoSecurityScannerReport } from "../repository-loading/repo-security-scanners";
 
 export type RepoSecurityAgentReviewInput = {
   deadlineAt?: number;
-  evidence: RepoSecurityEvidence;
-  scan: RepoSecurityResult;
+  /** Exact unapproved parent retained from pinned repository loading. */
+  preparationWorkspace: PreparationWorkspaceHandle;
+  /** Advisory scanner output supplied as untrusted leads for inspection. */
+  scannerReports: readonly RepoSecurityScannerReport[];
   signal?: AbortSignal;
 };
 
@@ -21,9 +23,9 @@ export type RepoSecurityAgentReviewResult =
     };
 
 /**
- * Performs one read-only Stage 02 safety review over backend-bound static
- * evidence. Implementations must not expose tools, execute submitted code,
- * retain an Agent Session, or treat model output as repository evidence.
+ * Performs one read-only Stage 02 safety review in the retained parent.
+ * Implementations may expose only the restricted Stage 02 inspection tool,
+ * must not execute submitted code, and must not retain an Agent Session.
  */
 export interface RepoSecurityAgentReviewer {
   review(

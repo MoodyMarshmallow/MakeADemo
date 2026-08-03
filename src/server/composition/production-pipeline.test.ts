@@ -13,7 +13,6 @@ import type { ScriptGenerationAgent } from "../pipeline/04-script-generation/scr
 import type { CapturePathRepairer } from "../pipeline/05-capture-path-validation/capture-path-repairer.interface";
 import type { BrowserValidator } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/browser-validator.interface";
 import type { SandboxRunner } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/sandbox-runner.interface";
-import { repoSecurityEvidenceFixture } from "../test-support/repo-security-evidence-fixture";
 import { resolveProductionAgentModelConfig } from "./production-agent-model-config";
 import {
   createDaytonaFreshCaptureStatePreparer,
@@ -102,11 +101,8 @@ describe("production Pipeline assembly", () => {
         commitSha: "0123456789abcdef0123456789abcdef01234567",
         demoBrief: { keyProductFeatures: ["validation"] },
         normalizedSupportingDocuments: [],
-        repoSecurity: {
-          evidence: repoSecurityEvidenceFixture(),
-          files: [{ path: "package.json", text: "{}" }, { path: "bun.lock" }],
-          repoStats: { fileCount: 2, sizeBytes: 1_000 },
-        },
+        preparationWorkspace: preparationWorkspaceHandle(),
+        repoSecurity: { scannerReports: [] },
         repoUrl: "https://github.com/example/app",
         workspaceId: "workspace_123",
       },

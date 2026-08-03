@@ -1,7 +1,4 @@
-import type {
-  AgentSessionWorkspace,
-  AgentTaskRunner,
-} from "../../../agent-harness/agent-session-runner.interface";
+import type { AgentTaskRunner } from "../../../agent-harness/agent-session-runner.interface";
 import {
   isPipelineCancellationError,
   throwIfPipelineDeadlineReached,
@@ -13,6 +10,7 @@ import type {
   RepoSecurityAgentReviewResult,
   RepoSecurityAgentReviewer,
 } from "./repo-security-agent-reviewer.interface";
+import { createRepoSecurityStageTools } from "./repo-security-stage-tools";
 
 export type AgenticRepoSecurityReviewerOptions = {
   hardTimeoutMs: number;
@@ -20,13 +18,7 @@ export type AgenticRepoSecurityReviewerOptions = {
   timeoutMs: number;
 };
 
-const toolFreeWorkspace: AgentSessionWorkspace = {
-  async execute() {
-    throw new Error("Repo Security Screen agent review is tool-free.");
-  },
-};
-
-/** Runs the bounded Stage 02 safety decision as one tool-free agent turn. */
+/** Runs the Stage 02 safety decision as one restricted transient agent turn. */
 export class AgenticRepoSecurityReviewer implements RepoSecurityAgentReviewer {
   constructor(private readonly options: AgenticRepoSecurityReviewerOptions) {}
 
@@ -49,15 +41,16 @@ export class AgenticRepoSecurityReviewer implements RepoSecurityAgentReviewer {
         hardDeadlineAt,
         hardTimeoutMs: this.options.hardTimeoutMs,
         inactivityTimeoutMs: this.options.timeoutMs,
-        executionMode: "tool-free-transient",
+        executionMode: "stage-tools-transient",
         ...(input.signal === undefined ? {} : { signal: input.signal }),
         stage: "repo-security-screen",
         taskPrompt: createRepoSecurityAgentReviewPrompt({
-          evidence: input.evidence,
-          scan: input.scan,
+          scannerReports: input.scannerReports,
         }),
-        tools: [],
-        workspace: toolFreeWorkspace,
+        tools: createRepoSecurityStageTools(
+          input.preparationWorkspace.workspace,
+        ),
+        workspace: input.preparationWorkspace.workspace,
       });
     } catch (error) {
       throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);

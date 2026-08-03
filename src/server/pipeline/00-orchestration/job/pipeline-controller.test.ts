@@ -4,7 +4,6 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { repoSecurityEvidenceFixture } from "../../../test-support/repo-security-evidence-fixture";
 import { screenRepoSecurity } from "../../02-repo-security-screen/repo-security-screen";
 import { formatFullPipelineFailure } from "../cli/full-pipeline-failure-output";
 import { FullPipelineStageFailure } from "./full-pipeline-runner";
@@ -24,11 +23,7 @@ describe("MakeADemo Pipeline controller", () => {
     const load = vi.fn(async (_input: unknown) => ({
       baselineSourceControlledPaths: ["package.json"],
       preparationWorkspace,
-      repoSecurity: {
-        evidence: repoSecurityEvidenceFixture(),
-        files: [],
-        repoStats: { fileCount: 0, sizeBytes: 0 },
-      },
+      repoSecurity: { scannerReports: [] },
     }));
     const dispose = vi.fn(async () => undefined);
     const pipeline = createMakeADemoPipeline({
@@ -55,7 +50,6 @@ describe("MakeADemo Pipeline controller", () => {
         expect.objectContaining({
           commitSha: "a".repeat(40),
           repoUrl: "https://github.com/example/controller-seam",
-          shouldReadText: expect.any(Function),
         }),
       );
       expect(load.mock.calls[0]?.[0]).not.toHaveProperty(
@@ -240,11 +234,7 @@ describe("MakeADemo Pipeline controller", () => {
             return {
               baselineSourceControlledPaths: ["package.json"],
               preparationWorkspace,
-              repoSecurity: {
-                evidence: repoSecurityEvidenceFixture(),
-                files: [],
-                repoStats: { fileCount: 0, sizeBytes: 0 },
-              },
+              repoSecurity: { scannerReports: [] },
             };
           },
         },

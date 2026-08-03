@@ -1303,7 +1303,6 @@ function readPipelineFailure(
 
   return {
     blockers: [
-      ...preparedDemo.security.rejections.map((finding) => finding.message),
       ...(preparedDemo.review === undefined
         ? []
         : [

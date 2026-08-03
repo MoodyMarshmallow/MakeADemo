@@ -1,0 +1,33 @@
+rules:
+  - id: makeademo.destructive-root-filesystem
+    languages: [generic]
+    message: Destructive filesystem command targets a system root.
+    severity: WARNING
+    patterns:
+      - pattern-regex: '(?i)\b(?:rm\s+(?:-[A-Za-z]*r[A-Za-z]*f[A-Za-z]*|-[A-Za-z]*f[A-Za-z]*r[A-Za-z]*)\s+/(?:\s|$)|mkfs(?:\.[A-Za-z0-9_-]+)?\s+/dev/)'
+    paths:
+      exclude:
+        - .git/**
+        - node_modules/**
+
+  - id: makeademo.remote-download-execution
+    languages: [generic]
+    message: Remote content is passed directly into a command interpreter.
+    severity: WARNING
+    patterns:
+      - pattern-regex: '(?i)\b(?:curl|wget)\b[^\n|]{0,1000}\|\s*(?:ba|z|k)?sh\b'
+    paths:
+      exclude:
+        - .git/**
+        - node_modules/**
+
+  - id: makeademo.encoded-shell-execution
+    languages: [generic]
+    message: Encoded content is decoded and passed into a command interpreter.
+    severity: WARNING
+    patterns:
+      - pattern-regex: '(?i)\b(?:base64\s+(?:--decode|-d)|openssl\s+base64\s+-d)\b[^\n|]{0,1000}\|\s*(?:ba|z|k)?sh\b'
+    paths:
+      exclude:
+        - .git/**
+        - node_modules/**

@@ -4,6 +4,48 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("Daytona Repo Preparation image", () => {
+  it("pins trusted read-only repository scanners and their local Semgrep policy", async () => {
+    const dockerfile = await readFile(
+      join(import.meta.dirname, "repo-preparation.Dockerfile"),
+      "utf8",
+    );
+    const semgrepRules = await readFile(
+      join(import.meta.dirname, "repo-security-semgrep-rules.yml"),
+      "utf8",
+    );
+
+    expect(dockerfile).toContain("ripgrep");
+    expect(dockerfile).toContain("python3-venv");
+    expect(dockerfile).toContain("ARG OSV_SCANNER_VERSION=2.3.8");
+    expect(dockerfile).toContain(
+      "ARG OSV_SCANNER_LINUX_AMD64_SHA256=bc98e15319ed0d515e3f9235287ba53cdc5535d576d24fd573978ecfe9ab92dc",
+    );
+    expect(dockerfile).toContain("guarddog==3.1.0");
+    expect(dockerfile).toContain("semgrep==1.172.0");
+    expect(dockerfile).toContain(
+      "COPY repo-security-semgrep-rules.yml /opt/makeademo/security/semgrep-rules.yml",
+    );
+    expect(dockerfile).toContain(
+      "/opt/makeademo/security-tools/osv-scanner --version",
+    );
+    expect(dockerfile).toContain(
+      "/opt/makeademo/security-tools/guarddog/bin/guarddog --version",
+    );
+    expect(dockerfile).toContain(
+      "/opt/makeademo/security-tools/semgrep/bin/semgrep --version",
+    );
+    expect(dockerfile).toMatch(
+      /chown -R root:root \/opt\/makeademo\/security(?:-tools)?/,
+    );
+    expect(dockerfile).toMatch(
+      /chmod -R a-w \/opt\/makeademo\/security(?:-tools)?/,
+    );
+    expect(semgrepRules).toContain("id: makeademo.destructive-root-filesystem");
+    expect(semgrepRules).toContain("id: makeademo.remote-download-execution");
+    expect(semgrepRules).toContain("id: makeademo.encoded-shell-execution");
+    expect(semgrepRules).toContain("languages: [generic]");
+  });
+
   it("includes Docker-in-Docker support and the submitted-code image definition", async () => {
     const dockerfile = await readFile(
       join(import.meta.dirname, "repo-preparation.Dockerfile"),

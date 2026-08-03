@@ -552,6 +552,119 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     );
   });
 
+  it("executes read-only argv with trusted binaries and a scrubbed fixed workspace", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeClient(calls),
+    });
+    const handle = await provider.create();
+
+    await handle.workspace.executeReadOnlyCommand?.(
+      { argv: ["rg", "-F", "$(touch /tmp/pwned);", "src"] },
+      { timeoutMs: 15_000 },
+    );
+
+    const script = calls
+      .flatMap((call) => {
+        const decoded = (call as { decodedPtyScript?: unknown })
+          .decodedPtyScript;
+        return typeof decoded === "string" ? [decoded] : [];
+      })
+      .find((value) => value.includes("/usr/sbin/runuser"));
+    expect(script).toContain("/usr/sbin/runuser -u");
+    expect(script).toContain("/usr/bin/env -i HOME=");
+    expect(script).toContain("TMPDIR=");
+    expect(script).toContain("PATH=");
+    expect(script).toContain("/bin/bash --noprofile --norc -c");
+    expect(script).toContain("/usr/bin/timeout --signal=KILL 15s");
+    expect(script).toContain("/usr/bin/rg");
+    expect(script).toContain("/usr/bin/realpath -e --");
+    expect(script).toContain("/workspace/src");
+  });
+
+  it("revalidates read-only argv at the Daytona provider boundary", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeClient(calls),
+    });
+    const handle = await provider.create();
+
+    await expect(
+      handle.workspace.executeReadOnlyCommand?.(
+        { argv: ["git", "config", "core.pager", "sh -c id"] },
+        { timeoutMs: 15_000 },
+      ),
+    ).rejects.toThrow("git query is not allowed");
+    expect(calls).not.toEqual(
+      expect.arrayContaining([
+        { decodedPtyScript: expect.stringContaining("sh -c id") },
+      ]),
+    );
+  });
+
+  it.each([
+    ["sed", ["sed", "-n", "1p", "--", "repository-alias"]],
+    ["rg", ["rg", "needle", "repository-alias"]],
+    ["git diff", ["git", "diff", "HEAD", "--", "repository-alias"]],
+  ])(
+    "rejects %s paths whose resolved target is a protected repository directory",
+    async (_name, argv) => {
+      const calls: unknown[] = [];
+      const provider = new DaytonaSdkPreparationWorkspaceProvider({
+        client: fakeClient(calls),
+      });
+      const handle = await provider.create();
+
+      await handle.workspace.executeReadOnlyCommand?.(
+        { argv },
+        { timeoutMs: 15_000 },
+      );
+
+      const script = calls
+        .flatMap((call) => {
+          const decoded = (call as { decodedPtyScript?: unknown })
+            .decodedPtyScript;
+          return typeof decoded === "string" ? [decoded] : [];
+        })
+        .find((value) => value.includes("/usr/bin/realpath"));
+      expect(script).toContain(
+        'case "$makeademo_inspection_path" in /workspace/.git|/workspace/.git/*|/workspace/.makeademo|/workspace/.makeademo/*)',
+      );
+    },
+  );
+
+  it("disables Git helpers, pagers, hooks, locks, and repository fsmonitor during inspection", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeClient(calls),
+    });
+    const handle = await provider.create();
+
+    await handle.workspace.executeReadOnlyCommand?.(
+      { argv: ["git", "status"] },
+      { timeoutMs: 15_000 },
+    );
+
+    const script = calls
+      .flatMap((call) => {
+        const decoded = (call as { decodedPtyScript?: unknown })
+          .decodedPtyScript;
+        return typeof decoded === "string" ? [decoded] : [];
+      })
+      .find((value) => value.includes("/usr/bin/git"));
+    expect(script).toContain("GIT_CONFIG_GLOBAL=");
+    expect(script).toContain("GIT_CONFIG_SYSTEM=");
+    expect(script).toContain("GIT_EXTERNAL_DIFF=");
+    expect(script).toContain("GIT_OPTIONAL_LOCKS=");
+    expect(script).toContain("GIT_PAGER=");
+    expect(script).toContain("GIT_TERMINAL_PROMPT=");
+    expect(script).toContain("core.fsmonitor=false");
+    expect(script).toContain("core.hooksPath=/dev/null");
+    expect(script).toContain("interactive.diffFilter=");
+    expect(script).toContain("status");
+    expect(script).toContain("--untracked-files=no");
+  });
+
   it("hands the cloned workspace to the agent user without following symlinks", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({

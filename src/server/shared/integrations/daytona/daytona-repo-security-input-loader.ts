@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import {
   runSettledPipelineOperation,
   throwIfPipelineDeadlineReached,
@@ -7,17 +5,12 @@ import {
 import type { RepoSecurityInput } from "../../../pipeline/02-repo-security-screen/repo-security-screen";
 import { createGitCloneCommand } from "../../../pipeline/02-repo-security-screen/repository-loading/git-clone-command";
 import { runGitCloneWithTransientRetry } from "../../../pipeline/02-repo-security-screen/repository-loading/git-clone-retry";
-import {
-  type RepoSecurityEvidence,
-  type RepoSecurityEvidenceFile,
-  selectRepoSecurityDeterministicManifestFiles,
-  selectRepoSecurityEvidenceFiles,
-} from "../../../pipeline/02-repo-security-screen/repository-loading/repo-security-evidence";
 import type {
   RepoSecurityInputLoadInput,
   RepoSecurityInputLoadResult,
   RepoSecurityInputLoader,
 } from "../../../pipeline/02-repo-security-screen/repository-loading/repo-security-input-loader.interface";
+import { runRepoSecurityScanners } from "../../../pipeline/02-repo-security-screen/repository-loading/repo-security-scanners";
 import type { PreparationWorkspaceHandle } from "../../../pipeline/03-repo-preparation/preparation-workspace-runner";
 import type { PreparationWorkspace } from "../../../pipeline/03-repo-preparation/preparation-workspace.interface";
 import type { PipelineEventLogger } from "../../logging/pipeline-event-logger";
@@ -31,18 +24,12 @@ import {
   daytonaWorkspaceDirectory,
 } from "./workspace-command";
 
-export type RepositoryLoadingWorkspaceCommandResult = {
-  exitCode: number;
-  stderr: string;
-  stdout: string;
-};
-
 /**
  * Executes backend-authored repository-loading commands. Implementations must
  * return the command's exit status and captured output and honor requested
  * timeouts.
  */
-export type RepositoryLoadingWorkspace = PreparationWorkspace;
+type RepositoryLoadingWorkspace = PreparationWorkspace;
 
 /**
  * Owns one repository-loading workspace with a stable provider identifier.
@@ -73,8 +60,6 @@ const defaultWorkspaceReleaseTimeoutMs = 30_000;
 const defaultCloneAttemptTimeoutMs = 120_000;
 const defaultCloneWorkspaceRetryDelaysMs = [250, 500];
 const maxCloneWorkspaceRetries = 2;
-const maxConcurrentStaticReads = 4;
-const repoSecurityInventoryTransportMaxBytes = 4 * 1_024 * 1_024;
 
 /** Daytona adapter for the Repo Security Screen's static input-loading seam. */
 export class DaytonaRepoSecurityInputLoader implements RepoSecurityInputLoader {
@@ -197,97 +182,18 @@ async function loadDaytonaRepoSecurityInputOperation(
       try {
         throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
         await logStatsEvent(options.logger, "started");
-        const statsResult = await executeRepositoryCommand(
-          handle.workspace,
-          `find ${shellQuote(daytonaWorkspaceDirectory)} -path ${shellQuote(`${daytonaWorkspaceDirectory}/.git`)} -prune -o -path ${shellQuote(`${daytonaWorkspaceDirectory}/node_modules`)} -prune -o -type f -printf '%P\\0%s\\0' | head -c ${repoSecurityInventoryTransportMaxBytes + 1}`,
-        );
-        if (statsResult.exitCode !== 0) {
-          throw new Error(`Daytona repo stats failed: ${statsResult.stderr}`);
-        }
-
-        const fileStats = parseRepoSecurityInventory(statsResult.stdout);
-        const deterministicManifestSelection =
-          selectRepoSecurityDeterministicManifestFiles(fileStats);
-        const deterministicManifestFiles = await mapWithConcurrency(
-          deterministicManifestSelection.files,
-          maxConcurrentStaticReads,
-          (file) =>
-            readStaticRepoSecurityFile({
-              file,
-              signal: input.signal,
-              workspace: handle.workspace,
-            }),
-        );
-        const deterministicManifestByPath = new Map(
-          deterministicManifestFiles.map((file) => [file.path, file] as const),
-        );
-        const selection = selectRepoSecurityEvidenceFiles(fileStats);
-        const newlyReadEvidenceFiles = await mapWithConcurrency(
-          selection.files.filter(
-            (file) => !deterministicManifestByPath.has(file.path),
-          ),
-          maxConcurrentStaticReads,
-          (file) =>
-            readStaticRepoSecurityFile({
-              file,
-              signal: input.signal,
-              workspace: handle.workspace,
-            }),
-        );
-        const readFilesByPath = new Map([
-          ...deterministicManifestFiles.map(
-            (file) => [file.path, file] as const,
-          ),
-          ...newlyReadEvidenceFiles.map((file) => [file.path, file] as const),
-        ]);
-        const evidenceFiles = selection.files.map((file) => {
-          const readFile = readFilesByPath.get(file.path);
-          if (readFile === undefined) {
-            throw new Error(
-              `Repo security evidence selection was not read: ${file.path}`,
-            );
-          }
-          return readFile;
-        });
-        const evidenceByPath = new Map(
-          evidenceFiles.map((file) => [file.path, file] as const),
-        );
-        const files = fileStats.map((file) => {
-          const staticFile =
-            deterministicManifestByPath.get(file.path) ??
-            evidenceByPath.get(file.path);
-          return input.shouldReadText(file.path) && staticFile !== undefined
-            ? { path: file.path, text: staticFile.excerpt }
-            : { path: file.path };
-        });
-        const sizeBytes = fileStats.reduce(
-          (sum, file) => sum + file.sizeBytes,
-          0,
-        );
-        await logStatsEvent(options.logger, "succeeded", {
-          durationMs: Date.now() - statsStartedAt,
-          fileCount: fileStats.length,
-          sizeBytes,
-        });
-
-        const evidence: RepoSecurityEvidence = {
-          coverage: {
-            excerptBytes: evidenceFiles.reduce(
-              (total, file) => total + file.excerptBytes,
-              0,
-            ),
-            omittedEligibleFileCount:
-              selection.inventory.omittedEligibleFileCount,
-            omittedEligibleSizeBytes:
-              selection.inventory.omittedEligibleSizeBytes,
-            selectedFileCount: evidenceFiles.length,
-            truncatedFileCount: evidenceFiles.filter((file) => file.truncated)
-              .length,
+        const scannerReports = await runRepoSecurityScanners(
+          {
+            executeRepositoryCommand: (command, commandOptions) =>
+              executeRepositoryCommand(
+                handle.workspace,
+                command,
+                commandOptions,
+              ),
           },
-          files: evidenceFiles,
-          inventory: selection.inventory,
-          limits: selection.limits,
-        };
+          input.signal === undefined ? {} : { signal: input.signal },
+        );
+        throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
 
         const baseline = await executeRepositoryCommand(
           handle.workspace,
@@ -298,20 +204,18 @@ async function loadDaytonaRepoSecurityInputOperation(
             "Failed to inventory source-controlled submitted paths.",
           );
         }
+        const baselineSourceControlledPaths = baseline.stdout
+          .split("\0")
+          .filter((path) => path.length > 0);
+        await logStatsEvent(options.logger, "succeeded", {
+          durationMs: Date.now() - statsStartedAt,
+          fileCount: baselineSourceControlledPaths.length,
+        });
         retained = true;
         return {
-          baselineSourceControlledPaths: baseline.stdout
-            .split("\0")
-            .filter((path) => path.length > 0),
+          baselineSourceControlledPaths,
           preparationWorkspace: handle,
-          repoSecurity: {
-            evidence,
-            files,
-            repoStats: {
-              fileCount: fileStats.length,
-              sizeBytes,
-            },
-          },
+          repoSecurity: { scannerReports },
         };
       } catch (error) {
         await logStatsEvent(options.logger, "failed", {
@@ -330,98 +234,6 @@ async function loadDaytonaRepoSecurityInputOperation(
       }
     }
   }
-}
-
-function parseRepoSecurityInventory(
-  output: string,
-): Array<{ path: string; sizeBytes: number }> {
-  const outputBytes = Buffer.byteLength(output, "utf8");
-  if (outputBytes > repoSecurityInventoryTransportMaxBytes) {
-    throw new Error(
-      `Repo security inventory exceeds the ${repoSecurityInventoryTransportMaxBytes}-byte transport limit.`,
-    );
-  }
-  const fields = output.split("\0");
-  if (fields.at(-1) === "") fields.pop();
-  if (fields.length % 2 !== 0) {
-    throw new Error("Repo security inventory returned a malformed NUL record.");
-  }
-
-  const files: Array<{ path: string; sizeBytes: number }> = [];
-  for (let index = 0; index < fields.length; index += 2) {
-    const path = fields[index] ?? "";
-    const rawSize = fields[index + 1] ?? "";
-    if (path.includes("\0") || !/^\d+$/.test(rawSize)) {
-      throw new Error(
-        "Repo security inventory returned an invalid file record.",
-      );
-    }
-    const sizeBytes = Number(rawSize);
-    if (!Number.isSafeInteger(sizeBytes)) {
-      throw new Error("Repo security inventory returned an unsafe file size.");
-    }
-    files.push({ path, sizeBytes });
-  }
-  return files;
-}
-
-async function readStaticRepoSecurityFile(input: {
-  file: { excerptLimitBytes: number; path: string; sizeBytes: number };
-  signal: AbortSignal | undefined;
-  workspace: RepositoryLoadingWorkspace;
-}): Promise<RepoSecurityEvidenceFile> {
-  throwIfPipelineDeadlineReached(input.signal, undefined);
-  const textResult = await executeRepositoryCommand(
-    input.workspace,
-    `head -c ${input.file.excerptLimitBytes + 1} -- ${shellQuote(`${daytonaWorkspaceDirectory}/${input.file.path}`)}`,
-  );
-  throwIfPipelineDeadlineReached(input.signal, undefined);
-  if (textResult.exitCode !== 0) {
-    throw new Error(
-      `Daytona repo evidence read failed for ${input.file.path}: ${textResult.stderr}`,
-    );
-  }
-  const received = Buffer.from(textResult.stdout, "utf8");
-  const excerptBuffer = received.subarray(0, input.file.excerptLimitBytes);
-  return {
-    excerpt: excerptBuffer.toString("utf8"),
-    excerptBytes: excerptBuffer.byteLength,
-    excerptSha256: createHash("sha256").update(excerptBuffer).digest("hex"),
-    path: input.file.path,
-    sizeBytes: input.file.sizeBytes,
-    truncated:
-      input.file.sizeBytes > input.file.excerptLimitBytes ||
-      received.byteLength > input.file.excerptLimitBytes,
-  };
-}
-
-async function mapWithConcurrency<T, U>(
-  items: readonly T[],
-  concurrency: number,
-  map: (item: T) => Promise<U>,
-): Promise<U[]> {
-  const results = new Array<U>(items.length);
-  let nextIndex = 0;
-  const workers = Array.from(
-    { length: Math.min(concurrency, items.length) },
-    async () => {
-      for (;;) {
-        const index = nextIndex;
-        nextIndex += 1;
-        if (index >= items.length) return;
-        const item = items[index];
-        if (item === undefined) return;
-        results[index] = await map(item);
-      }
-    },
-  );
-  const settlements = await Promise.allSettled(workers);
-  const failure = settlements.find(
-    (settlement): settlement is PromiseRejectedResult =>
-      settlement.status === "rejected",
-  );
-  if (failure !== undefined) throw failure.reason;
-  return results;
 }
 
 async function releaseWorkspace(
@@ -648,8 +460,4 @@ function delay(ms: number): Promise<void> {
 
 function readErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }

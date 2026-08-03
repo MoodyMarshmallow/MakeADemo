@@ -47,7 +47,44 @@ export function readRepoSecurityAgentDecision(
       repoSecurityAgentReviewLimits.maxConcernCharacters,
     ),
   );
+  if (
+    record.verdict === "rejected" &&
+    !concerns.some(isConcreteEvidenceConcern)
+  ) {
+    throw new Error(
+      "A rejected repo security review must cite concrete repository evidence.",
+    );
+  }
   return { concerns, rationale, verdict: record.verdict };
+}
+
+function isConcreteEvidenceConcern(concern: string): boolean {
+  const match =
+    /^(?<path>[^:\\]+):(?<start>\d+)(?:-(?<end>\d+))?:\s+(?<behavior>.+)$/.exec(
+      concern,
+    );
+  if (match?.groups === undefined) return false;
+  const path = match.groups.path ?? "";
+  const segments = path.split("/");
+  if (
+    path.startsWith("/") ||
+    segments.some(
+      (segment) => segment.length === 0 || segment === "." || segment === "..",
+    )
+  ) {
+    return false;
+  }
+  const start = Number(match.groups.start);
+  const end = Number(match.groups.end ?? match.groups.start);
+  const behavior = (match.groups.behavior ?? "").trim();
+  return (
+    Number.isSafeInteger(start) &&
+    Number.isSafeInteger(end) &&
+    start > 0 &&
+    end >= start &&
+    behavior.length >= 12 &&
+    /[a-z]/i.test(behavior)
+  );
 }
 
 function readBoundedString(

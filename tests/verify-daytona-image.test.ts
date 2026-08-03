@@ -6,6 +6,8 @@ import { promisify } from "node:util";
 
 import { describe, expect, it } from "vitest";
 
+import { assertRepoSecurityScannerJsonContract } from "../scripts/verify-daytona-security-scanners";
+
 const execFileAsync = promisify(execFile);
 
 describe("Daytona image verifier", () => {
@@ -118,6 +120,63 @@ describe("Daytona image verifier", () => {
     expect(script).not.toContain("npm root -g");
     expect(script).toContain('assertCommandSucceeded("parent Git/CA trust"');
     expect(script).toContain('assertCommandSucceeded("submitted-code runtime"');
+  });
+
+  it("verifies the pinned parent security scanners as the unprivileged workspace user", async () => {
+    const script = await readVerifierScript();
+
+    expect(script).toContain("workspace.executeRepositoryCommand?.(");
+    expect(script).toContain('test "$(id -u)" -ne 0');
+    expect(script).toContain(
+      'test ! -w "/opt/makeademo/security-tools/osv-scanner"',
+    );
+    expect(script).toContain(
+      'test ! -w "/opt/makeademo/security/semgrep-rules.yml"',
+    );
+    expect(script).toContain(
+      "/opt/makeademo/security-tools/osv-scanner --version",
+    );
+    expect(script).toContain(
+      "/opt/makeademo/security-tools/guarddog/bin/guarddog --version",
+    );
+    expect(script).toContain(
+      "/opt/makeademo/security-tools/semgrep/bin/semgrep --version",
+    );
+    expect(script).toContain("rg --version");
+    expect(script).toContain("sed --version");
+    expect(script).toMatch(
+      /assertCommandSucceeded\(\s*"parent security scanner toolchain"/,
+    );
+    expect(script).toContain("verifyRepoSecurityScannerSmoke");
+    expect(script).toContain(
+      'console.log("Verifying parent security scanner JSON contracts...")',
+    );
+    expect(script.indexOf("await verifyRepoSecurityScannerSmoke")).toBeLessThan(
+      script.indexOf("Verifying preloaded submitted-code runtime image"),
+    );
+  });
+
+  it.each([
+    ["osv-scanner", { results: [] }],
+    ["guarddog", { results: {} }],
+    ["semgrep", { errors: [], results: [] }],
+  ] as const)(
+    "accepts the expected %s smoke JSON contract",
+    (scanner, value) => {
+      expect(
+        assertRepoSecurityScannerJsonContract(scanner, JSON.stringify(value)),
+      ).toBe(0);
+    },
+  );
+
+  it.each([
+    ["osv-scanner", { results: {} }],
+    ["guarddog", { results: [] }],
+    ["semgrep", { results: [] }],
+  ] as const)("rejects a drifted %s smoke JSON contract", (scanner, value) => {
+    expect(() =>
+      assertRepoSecurityScannerJsonContract(scanner, JSON.stringify(value)),
+    ).toThrow(/JSON|results/);
   });
 
   it("proves submitted lifecycle commands are unprivileged with immutable tool stores", async () => {

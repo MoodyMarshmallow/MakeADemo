@@ -7,7 +7,10 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import type { AgentSession } from "../agent-session";
-import type { AgentSessionProfile } from "../agent-session-runner.interface";
+import type {
+  AgentSessionProfile,
+  AgentSessionRunInput,
+} from "../agent-session-runner.interface";
 import {
   PiAgentSession,
   type PiSessionFactory,
@@ -106,6 +109,61 @@ function createRawPiSdkSession() {
 }
 
 describe("PiAgentSession", () => {
+  it("runs a transient turn with only the active Stage Agent Tools", async () => {
+    const { factory, sessions } = createSessionFactory();
+    const executeWorkspaceCommand = vi.fn(async () => ({
+      exitCode: 0,
+      stderr: "",
+      stdout: "",
+    }));
+    const runner = new PiAgentSession({
+      createSession: factory,
+      globalTools: [
+        {
+          description: "Search",
+          execute: vi.fn() as never,
+          label: "Search",
+          name: "web_search_exa",
+          parameters: {} as never,
+        },
+      ],
+      resolveModel: vi.fn(async ({ modelID }) => ({ id: modelID })),
+    });
+
+    const result = await runner.run({
+      attempt: 1,
+      executionMode: "stage-tools-transient",
+      hardDeadlineAt: Date.now() + 1_000,
+      hardTimeoutMs: 1_000,
+      inactivityTimeoutMs: 1_000,
+      profile,
+      stage: "repo-security",
+      taskPrompt: "inspect this repository",
+      tools: [
+        {
+          args: {},
+          description: "Run one restricted read-only command",
+          execute: vi.fn(async () => "inspected"),
+          name: "exec_command",
+        },
+      ],
+      workspace: { execute: executeWorkspaceCommand },
+    });
+
+    expect(factory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customTools: [expect.objectContaining({ name: "exec_command" })],
+        executionMode: "stage-tools-transient",
+      }),
+    );
+    expect(sessions[0]?.setActiveToolsByName).toHaveBeenCalledWith([
+      "exec_command",
+    ]);
+    expect(executeWorkspaceCommand).not.toHaveBeenCalled();
+    expect(result).not.toHaveProperty("session");
+    expect(sessions[0]?.dispose).toHaveBeenCalledTimes(1);
+  });
+
   it("creates a read-only tool-free turn without coding, global, or Context7 tools", async () => {
     const { factory, sessions } = createSessionFactory();
     const execute = vi.fn(async () => ({
@@ -294,7 +352,7 @@ describe("PiAgentSession", () => {
           agentDir: string;
           cwd: string;
           customTools: readonly ToolDefinition[];
-          executionMode: "default" | "tool-free-transient";
+          executionMode: NonNullable<AgentSessionRunInput["executionMode"]>;
           model: unknown;
           modelID: string;
           providerID: string;

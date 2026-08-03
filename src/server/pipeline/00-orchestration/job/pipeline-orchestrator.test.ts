@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import { createAgentSession } from "../../../test-support/create-agent-session";
-import { repoSecurityEvidenceFixture } from "../../../test-support/repo-security-evidence-fixture";
 import type { RepoSecurityInput } from "../../02-repo-security-screen/repo-security-screen";
 import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
 import type { CapturePathValidationFailureKind } from "../../05-capture-path-validation/capture-path-validator.interface";
@@ -16,18 +15,20 @@ import {
 
 function runPipelineJob(
   input: Omit<PipelineJobInput, "repoSecurity"> & {
-    repoSecurity: Omit<RepoSecurityInput, "evidence"> &
-      Partial<Pick<RepoSecurityInput, "evidence">>;
+    repoSecurity: Partial<RepoSecurityInput>;
   },
   dependencies: Omit<PipelineOrchestratorDependencies, "reviewRepoSecurity"> &
     Partial<Pick<PipelineOrchestratorDependencies, "reviewRepoSecurity">>,
   options?: PipelineOrchestratorOptions,
 ) {
+  const preparationWorkspace =
+    input.preparationWorkspace ?? fakeWorkspaceHandle();
   return runPipelineJobWithDependencies(
     {
       ...input,
+      preparationWorkspace,
       repoSecurity: {
-        evidence: repoSecurityEvidenceFixture(),
+        scannerReports: [],
         ...input.repoSecurity,
       },
     },
@@ -50,6 +51,26 @@ describe("runPipelineJob", () => {
   it("requires read-only agent approval between deterministic screening and Repo Preparation", async () => {
     const calls: string[] = [];
     const commitSha = "0123456789abcdef0123456789abcdef01234567";
+    const parentWorkspace = fakeWorkspaceHandle();
+    const scannerReports: RepoSecurityInput["scannerReports"] = [
+      {
+        findingCount: 1,
+        findings: [
+          {
+            id: "makeademo.test",
+            line: 4,
+            message: "Review this lifecycle behavior.",
+            path: "scripts/install.sh",
+            scanner: "semgrep",
+          },
+        ],
+        omittedFindingCount: 0,
+        scanner: "semgrep",
+        status: "completed",
+        summary: "Semgrep reported one advisory finding.",
+        version: "1.172.0",
+      },
+    ];
 
     const result = await runPipelineJob(
       {
@@ -57,10 +78,10 @@ describe("runPipelineJob", () => {
         demoBrief: { keyProductFeatures: ["validation"] },
         normalizedSupportingDocuments: [],
         repoSecurity: {
-          files: [{ path: "package.json", text: "{}" }],
-          repoStats: { fileCount: 1, sizeBytes: 1_000 },
+          scannerReports,
         },
         repoUrl: "https://github.com/example/app",
+        preparationWorkspace: parentWorkspace,
         workspaceId: "workspace_123",
       },
       {
@@ -72,6 +93,7 @@ describe("runPipelineJob", () => {
           calls.push("repo-preparation");
           expect(input.commitSha).toBe(commitSha);
           expect(input).not.toHaveProperty("repoSecurity");
+          expect(input.preparationWorkspace).toBe(parentWorkspace);
           return {
             manifest: manifest(),
             status: "succeeded",
@@ -80,12 +102,8 @@ describe("runPipelineJob", () => {
         },
         async reviewRepoSecurity(input) {
           calls.push("repo-security-agent-review");
-          expect(input.scan.warnings).toEqual([
-            expect.objectContaining({
-              code: "nested-application-manifest",
-              message: "nested app manifest requires agent review",
-            }),
-          ]);
+          expect(input.preparationWorkspace).toBe(parentWorkspace);
+          expect(input.scannerReports).toBe(scannerReports);
           return {
             concerns: [],
             rationale: "No concrete execution safety risk was found.",
@@ -100,9 +118,12 @@ describe("runPipelineJob", () => {
             status: "passed",
             warnings: [
               {
-                code: "nested-application-manifest",
-                message: "nested app manifest requires agent review",
-                path: "webapp/package.json",
+                code: "scanner-finding",
+                line: 4,
+                message: "Review this lifecycle behavior.",
+                path: "scripts/install.sh",
+                ruleId: "makeademo.test",
+                scanner: "semgrep",
                 severity: "warning",
               },
             ],
@@ -136,49 +157,16 @@ describe("runPipelineJob", () => {
     ]);
   });
 
-  it("stops before agent review and preparation after a deterministic hard rejection", async () => {
-    const calls: string[] = [];
-    const result = await runPipelineJob(pipelineJobInput(), {
-      async generateDemoScript() {
-        throw new Error("must not generate");
-      },
-      async prepareRepo() {
-        calls.push("repo-preparation");
-        throw new Error("must not prepare");
-      },
-      async reviewRepoSecurity() {
-        calls.push("repo-security-agent-review");
-        throw new Error("must not review");
-      },
-      screenRepoSecurity() {
-        calls.push("repo-security-screen");
-        return {
-          rejections: [
-            {
-              code: "lifecycle-root-delete",
-              message:
-                "package script postinstall contains a destructive command",
-              path: "package.json",
-              scriptName: "postinstall",
-              severity: "hard-rejection",
-            },
-          ],
-          status: "rejected",
-          warnings: [],
-        };
-      },
-      async validateCapturePath() {
-        throw new Error("must not validate");
-      },
-    });
-
-    expect(result).toMatchObject({ status: "security-rejected" });
-    expect(calls).toEqual(["repo-security-screen"]);
-  });
-
   it("stops before preparation when the read-only agent rejects execution", async () => {
     const calls: string[] = [];
-    const result = await runPipelineJob(pipelineJobInput(), {
+    const input = pipelineJobInput();
+    input.preparationWorkspace.discard = async () => {
+      calls.push("parent-discard");
+    };
+    input.preparationWorkspace.release = async () => {
+      calls.push("parent-release");
+    };
+    const result = await runPipelineJob(input, {
       async generateDemoScript() {
         throw new Error("must not generate");
       },
@@ -213,6 +201,7 @@ describe("runPipelineJob", () => {
     expect(calls).toEqual([
       "repo-security-screen",
       "repo-security-agent-review",
+      "parent-discard",
     ]);
   });
 
@@ -267,10 +256,7 @@ describe("runPipelineJob", () => {
           commitSha: "0123456789abcdef0123456789abcdef01234567",
           demoBrief: { keyProductFeatures: ["validation"] },
           normalizedSupportingDocuments: [],
-          repoSecurity: {
-            files: [{ path: "package.json", text: "{}" }],
-            repoStats: { fileCount: 1, sizeBytes: 1_000 },
-          },
+          repoSecurity: {},
           repoUrl: "https://github.com/example/app",
           workspaceId: "workspace_123",
         },
@@ -338,10 +324,7 @@ describe("runPipelineJob", () => {
         commitSha: "0123456789abcdef0123456789abcdef01234567",
         demoBrief: { keyProductFeatures: ["validation"] },
         normalizedSupportingDocuments: [],
-        repoSecurity: {
-          files: [{ path: "package.json", text: "{}" }],
-          repoStats: { fileCount: 1, sizeBytes: 1_000 },
-        },
+        repoSecurity: {},
         repoUrl: "https://github.com/example/app",
         workspaceId: "workspace_123",
       },
@@ -391,10 +374,7 @@ describe("runPipelineJob", () => {
         commitSha: "0123456789abcdef0123456789abcdef01234567",
         demoBrief: { keyProductFeatures: ["validation"] },
         normalizedSupportingDocuments: [],
-        repoSecurity: {
-          files: [{ path: "package.json", text: "{}" }],
-          repoStats: { fileCount: 1, sizeBytes: 1_000 },
-        },
+        repoSecurity: {},
         repoUrl: "https://github.com/example/app",
         workspaceId: "workspace_123",
       },
@@ -449,10 +429,7 @@ describe("runPipelineJob", () => {
           commitSha: "0123456789abcdef0123456789abcdef01234567",
           demoBrief: { keyProductFeatures: ["validation"] },
           normalizedSupportingDocuments: [],
-          repoSecurity: {
-            files: [{ path: "package.json", text: "{}" }],
-            repoStats: { fileCount: 1, sizeBytes: 1_000 },
-          },
+          repoSecurity: {},
           repoUrl: "https://github.com/example/app",
           workspaceId: "workspace_123",
         },
@@ -510,10 +487,7 @@ describe("runPipelineJob", () => {
         commitSha: "0123456789abcdef0123456789abcdef01234567",
         demoBrief: { keyProductFeatures: ["validation"] },
         normalizedSupportingDocuments: [],
-        repoSecurity: {
-          files: [{ path: "package.json", text: "{}" }],
-          repoStats: { fileCount: 1, sizeBytes: 1_000 },
-        },
+        repoSecurity: {},
         repoUrl: "https://github.com/example/app",
         workspaceId: "workspace_123",
       },
@@ -543,10 +517,11 @@ describe("runPipelineJob", () => {
             status: "passed",
             warnings: [
               {
-                code: "lifecycle-postinstall",
+                code: "scanner-finding",
                 message: "Uses postinstall script.",
                 path: "package.json",
-                scriptName: "postinstall",
+                ruleId: "guarddog.npm-exec-base64",
+                scanner: "guarddog",
                 severity: "warning",
               },
             ],
@@ -728,10 +703,7 @@ describe("runPipelineJob", () => {
         commitSha: "0123456789abcdef0123456789abcdef01234567",
         demoBrief: { keyProductFeatures: ["validation"] },
         normalizedSupportingDocuments: [],
-        repoSecurity: {
-          files: [{ path: "package.json", text: "{}" }],
-          repoStats: { fileCount: 1, sizeBytes: 1_000 },
-        },
+        repoSecurity: {},
         repoUrl: "https://github.com/example/app",
         workspaceId: "workspace_123",
       },
@@ -799,10 +771,7 @@ describe("runPipelineJob", () => {
           commitSha: "0123456789abcdef0123456789abcdef01234567",
           demoBrief: { keyProductFeatures: ["validation"] },
           normalizedSupportingDocuments: [],
-          repoSecurity: {
-            files: [{ path: "package.json", text: "{}" }],
-            repoStats: { fileCount: 1, sizeBytes: 1_000 },
-          },
+          repoSecurity: {},
           repoUrl: "https://github.com/example/app",
           workspaceId: "workspace_123",
         },
@@ -1009,10 +978,7 @@ describe("runPipelineJob", () => {
         commitSha: "0123456789abcdef0123456789abcdef01234567",
         demoBrief: { keyProductFeatures: ["dashboard"] },
         normalizedSupportingDocuments: [],
-        repoSecurity: {
-          files: [{ path: "package.json", text: "{}" }],
-          repoStats: { fileCount: 1, sizeBytes: 1_000 },
-        },
+        repoSecurity: {},
         repoUrl: "https://github.com/example/app",
         workspaceId: "workspace_123",
       },
@@ -1079,10 +1045,8 @@ function pipelineJobInput() {
     commitSha: "0123456789abcdef0123456789abcdef01234567",
     demoBrief: { keyProductFeatures: ["validation"] },
     normalizedSupportingDocuments: [],
-    repoSecurity: {
-      files: [{ path: "package.json", text: "{}" }],
-      repoStats: { fileCount: 1, sizeBytes: 1_000 },
-    },
+    preparationWorkspace: fakeWorkspaceHandle(),
+    repoSecurity: { scannerReports: [] },
     repoUrl: "https://github.com/example/app",
     workspaceId: "workspace_123",
   };

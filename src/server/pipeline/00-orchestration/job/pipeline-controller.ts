@@ -1,5 +1,4 @@
 import type { RepoSecurityInput } from "../../02-repo-security-screen/repo-security-screen";
-import { repoSecurityEvidenceLimits } from "../../02-repo-security-screen/repository-loading/repo-security-evidence";
 import { readRepoSecurityInput } from "../../02-repo-security-screen/repository-loading/repo-security-input";
 import type { RepoSecurityInputLoader } from "../../02-repo-security-screen/repository-loading/repo-security-input-loader.interface";
 import {
@@ -146,29 +145,5 @@ export function createMakeADemoPipeline(
 }
 
 function unavailableRepoSecurityInput(): RepoSecurityInput {
-  return {
-    evidence: {
-      coverage: {
-        excerptBytes: 0,
-        omittedEligibleFileCount: 0,
-        omittedEligibleSizeBytes: 0,
-        selectedFileCount: 0,
-        truncatedFileCount: 0,
-      },
-      files: [],
-      inventory: {
-        eligibleFileCount: 0,
-        eligibleSizeBytes: 0,
-        omittedEligibleFileCount: 0,
-        omittedEligibleSizeBytes: 0,
-        sampledPathOmissionCount: 0,
-        sampledPaths: [],
-        totalFileCount: 0,
-        totalSizeBytes: 0,
-      },
-      limits: repoSecurityEvidenceLimits,
-    },
-    files: [],
-    repoStats: { fileCount: 0, sizeBytes: 0 },
-  };
+  return { scannerReports: [] };
 }

@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { createAgentSession } from "../../../test-support/create-agent-session";
-import { repoSecurityEvidenceFixture } from "../../../test-support/repo-security-evidence-fixture";
 import type { RepoSecurityInput } from "../../02-repo-security-screen/repo-security-screen";
 import { PreparationWorkspaceInfrastructureError } from "../../03-repo-preparation/preparation-workspace-infrastructure.interface";
 import type {
@@ -24,8 +23,7 @@ import type { PipelineOrchestratorDependencies } from "./pipeline-orchestrator";
 
 function runFullPipelineJob(
   input: Omit<PipelineJobInput, "repoSecurity"> & {
-    repoSecurity: Omit<RepoSecurityInput, "evidence"> &
-      Partial<Pick<RepoSecurityInput, "evidence">>;
+    repoSecurity: Partial<RepoSecurityInput>;
   },
   dependencies: Omit<PipelineOrchestratorDependencies, "reviewRepoSecurity"> &
     Partial<Pick<PipelineOrchestratorDependencies, "reviewRepoSecurity">>,
@@ -35,7 +33,7 @@ function runFullPipelineJob(
     {
       ...input,
       repoSecurity: {
-        evidence: repoSecurityEvidenceFixture(),
+        scannerReports: [],
         ...input.repoSecurity,
       },
     },
@@ -198,41 +196,6 @@ describe("runFullPipelineJob", () => {
     const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
     let prepared = false;
     const input: PipelineJobInput = fullPipelineInput();
-    input.repoSecurity.evidence = {
-      coverage: {
-        excerptBytes: 21,
-        omittedEligibleFileCount: 0,
-        omittedEligibleSizeBytes: 0,
-        selectedFileCount: 1,
-        truncatedFileCount: 0,
-      },
-      files: [
-        {
-          excerpt: "SECRET_SOURCE_EXCERPT",
-          excerptBytes: 21,
-          excerptSha256: "a".repeat(64),
-          path: "scripts/setup.sh",
-          sizeBytes: 21,
-          truncated: false,
-        },
-      ],
-      inventory: {
-        eligibleFileCount: 1,
-        eligibleSizeBytes: 21,
-        omittedEligibleFileCount: 0,
-        omittedEligibleSizeBytes: 0,
-        sampledPathOmissionCount: 0,
-        sampledPaths: ["scripts/setup.sh"],
-        totalFileCount: 1,
-        totalSizeBytes: 21,
-      },
-      limits: {
-        maxEvidenceBytes: 512 * 1_024,
-        maxFileBytes: 32 * 1_024,
-        maxFiles: 128,
-        maxInventorySamplePaths: 128,
-      },
-    };
 
     try {
       const failure = await runFullPipelineJob(
@@ -257,10 +220,11 @@ describe("runFullPipelineJob", () => {
               status: "passed",
               warnings: [
                 {
-                  code: "lifecycle-postinstall",
+                  code: "scanner-finding",
                   message: "postinstall requires agent safety review",
                   path: "package.json",
-                  scriptName: "postinstall",
+                  ruleId: "guarddog.npm-exec-base64",
+                  scanner: "guarddog",
                   severity: "warning",
                 },
               ],
@@ -1779,11 +1743,8 @@ function fullPipelineInput() {
     commitSha: "0123456789abcdef0123456789abcdef01234567",
     demoBrief: { keyProductFeatures: ["article feed"] },
     normalizedSupportingDocuments: [],
-    repoSecurity: {
-      evidence: repoSecurityEvidenceFixture(),
-      files: [{ path: "package.json", text: "{}" }],
-      repoStats: { fileCount: 1, sizeBytes: 100 },
-    },
+    preparationWorkspace: fakePreparationWorkspaceHandle(),
+    repoSecurity: { scannerReports: [] },
     repoUrl: "https://github.com/example/app",
     workspaceId: "workspace_123",
   };

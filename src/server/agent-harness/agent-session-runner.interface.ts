@@ -86,10 +86,12 @@ export type AgentSessionRunInput<T = never> = {
   /** Immutable Pipeline deadline; retry extensions must never pass it. */
   deadlineCeilingAt?: number;
   /**
-   * Harness execution policy. `tool-free-transient` exposes no tools, never
-   * retains or returns a session, and disposes provider state after the turn.
+   * Harness execution policy. Transient modes never retain or return a
+   * session and dispose provider state after the turn. `tool-free-transient`
+   * exposes no tools; `stage-tools-transient` exposes only this turn's Stage
+   * Agent Tools.
    */
-  executionMode?: "default" | "tool-free-transient";
+  executionMode?: "default" | "stage-tools-transient" | "tool-free-transient";
   hardDeadlineAt: number;
   hardTimeoutMs: number;
   inactivityLabel?: string;

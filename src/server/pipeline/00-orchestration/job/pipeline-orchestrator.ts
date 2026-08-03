@@ -144,17 +144,7 @@ export async function runPipelineJob(
     throw error;
   }
 
-  const securityReviewInput: RepoSecurityAgentReviewInput = {
-    ...(options.deadlineAt === undefined
-      ? {}
-      : { deadlineAt: options.deadlineAt }),
-    evidence: input.repoSecurity.evidence,
-    scan: security,
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-  };
-
-  if (security.status === "rejected") {
-    await discardRejectedWorkspace(input.preparationWorkspace);
+  if (input.preparationWorkspace === undefined) {
     reportStageFinished("repo-security-screen", "failed", {
       context,
       now,
@@ -167,8 +157,23 @@ export async function runPipelineJob(
       stage: "repo-security-screen",
       status: "failed",
     });
-    return { security, status: "security-rejected" };
+    return {
+      failureKind: "unavailable",
+      failureReason:
+        "Repo Security agent review requires the retained parent workspace.",
+      stage: "repo-security-screen",
+      status: "infrastructure-failed",
+    };
   }
+
+  const securityReviewInput: RepoSecurityAgentReviewInput = {
+    ...(options.deadlineAt === undefined
+      ? {}
+      : { deadlineAt: options.deadlineAt }),
+    preparationWorkspace: input.preparationWorkspace,
+    scannerReports: input.repoSecurity.scannerReports,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  };
 
   const review = await dependencies.reviewRepoSecurity(securityReviewInput);
   throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);

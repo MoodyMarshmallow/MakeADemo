@@ -1,3 +1,8 @@
+import type {
+  ReadOnlyCommandExecuteOptions,
+  ReadOnlyCommandRequest,
+  ReadOnlyCommandResult,
+} from "../../shared/repository-inspection-command";
 import type { PreparationWorkspaceResourceDiagnostics } from "./preparation-workspace-resource-diagnostics";
 import type { SubmittedCodeToolchainPlan } from "./submitted-code-toolchain.schema";
 
@@ -125,6 +130,16 @@ export interface PreparationWorkspace {
     command: string,
     options?: PreparationWorkspaceExecuteOptions,
   ): Promise<PreparationWorkspaceCommandResult>;
+  /**
+   * Executes one structured, read-only repository inspection request.
+   * Implementations must revalidate argv, keep cwd fixed at `/workspace`,
+   * resolve only trusted absolute binaries, reject path escapes and special
+   * files, and expose no shell, stdin, inherited environment, or network tool.
+   */
+  executeReadOnlyCommand?(
+    request: ReadOnlyCommandRequest,
+    options: ReadOnlyCommandExecuteOptions,
+  ): Promise<ReadOnlyCommandResult>;
   /**
    * Executes an agent-authored shell command as the image's unprivileged
    * workspace user. Implementations must keep the trusted root filesystem and

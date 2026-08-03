@@ -11,11 +11,9 @@ export type RepoSecurityInputLoadInput = {
   repoVisibility?: "private" | "public";
   /** Cancels repository loading and requires owned workspace release. */
   signal?: AbortSignal;
-  /** Returns true only for paths whose text Stage 02 authorizes the loader to read. */
-  shouldReadText(path: string): boolean;
 };
 
-/** Static security evidence plus the untouched pinned parent workspace. */
+/** Advisory scanner reports plus the untouched pinned parent workspace. */
 export type RepoSecurityInputLoadResult = {
   baselineSourceControlledPaths: string[];
   preparationWorkspace: PreparationWorkspaceHandle;
@@ -26,10 +24,8 @@ export type RepoSecurityInputLoadResult = {
  * Loads static repository metadata for the Repo Security Screen.
  *
  * Implementations must not install dependencies or execute submitted code,
- * must return every inventoried path, and must omit text for any path rejected
- * by `shouldReadText`. Remote adapters must also populate bounded review
- * evidence from that same temporary clone before releasing it; evidence reads
- * may target only the selector-authorized inventory paths.
+ * must retain the exact pinned parent clone, and must run trusted static
+ * scanners there without reading repository files into backend memory.
  */
 export interface RepoSecurityInputLoader {
   load(input: RepoSecurityInputLoadInput): Promise<RepoSecurityInputLoadResult>;

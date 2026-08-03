@@ -2,6 +2,7 @@ import { submittedCodeKnownGoodNodeReleaseSnapshot } from "../src/server/pipelin
 import { resolveSubmittedCodeToolchain } from "../src/server/pipeline/03-repo-preparation/submitted-code-toolchain.schema";
 import { executeDemoScriptInSandbox } from "../src/server/pipeline/04-script-generation/demo-script/demo-script-sandbox-executor";
 import { DaytonaSdkPreparationWorkspaceProvider } from "../src/server/shared/integrations/daytona/daytona-sdk-preparation-workspace-provider";
+import { verifyRepoSecurityScannerSmoke } from "./verify-daytona-security-scanners";
 
 const makeADemoCaptureNodeVersion = "v22.12.0";
 const makeADemoCaptureNodeSha256 =
@@ -66,6 +67,36 @@ try {
     },
   );
   assertCommandSucceeded("parent Git/CA trust", parentGitTrust);
+
+  console.log("Verifying parent security scanner toolchain...");
+  const securityScannerToolchain =
+    await handle.workspace.executeRepositoryCommand?.(
+      [
+        'test "$(id -u)" -ne 0',
+        'test ! -w "/opt/makeademo/security-tools/osv-scanner"',
+        'test ! -w "/opt/makeademo/security/semgrep-rules.yml"',
+        'test -z "$(find /opt/makeademo/security-tools /opt/makeademo/security ! -user root -print -quit)"',
+        'test -z "$(find /opt/makeademo/security-tools /opt/makeademo/security ! -type l -perm /222 -print -quit)"',
+        "/opt/makeademo/security-tools/osv-scanner --version | grep -F '2.3.8'",
+        "/opt/makeademo/security-tools/guarddog/bin/guarddog --version | grep -F '3.1.0'",
+        "/opt/makeademo/security-tools/semgrep/bin/semgrep --version | grep -Fx '1.172.0'",
+        "rg --version",
+        "sed --version",
+        "git --version",
+      ].join(" && "),
+    );
+  if (securityScannerToolchain === undefined) {
+    throw new Error(
+      "Prepared Daytona workspace lacks unprivileged repository commands.",
+    );
+  }
+  assertCommandSucceeded(
+    "parent security scanner toolchain",
+    securityScannerToolchain,
+  );
+
+  console.log("Verifying parent security scanner JSON contracts...");
+  await verifyRepoSecurityScannerSmoke(handle.workspace);
 
   console.log("Verifying parent submitted-project toolchain inspector...");
   const inspector = await handle.workspace.execute(

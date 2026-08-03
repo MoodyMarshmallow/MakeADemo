@@ -47,6 +47,12 @@ import {
   createPipelineEventLogger,
 } from "../../logging/pipeline-event-logger";
 import {
+  type ReadOnlyCommandExecuteOptions,
+  type ReadOnlyCommandRequest,
+  type ReadOnlyCommandResult,
+  canonicalizeReadOnlyCommand,
+} from "../../repository-inspection-command";
+import {
   type TrustedSubmittedNodeRuntimeArtifact,
   createTrustedSubmittedNodeProvisionCommand,
   readTrustedSubmittedNodeAttestation,
@@ -516,6 +522,20 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
       this.sandbox,
       createUnprivilegedAgentCommand(command),
       { ...options, env: {} },
+    );
+  }
+
+  async executeReadOnlyCommand(
+    request: ReadOnlyCommandRequest,
+    options: ReadOnlyCommandExecuteOptions,
+  ): Promise<ReadOnlyCommandResult> {
+    const canonical = canonicalizeReadOnlyCommand(request);
+    const timeoutMs = Math.max(1, Math.min(options.timeoutMs, 15_000));
+    return this.executeSandboxCommand(
+      this.sandbox,
+      createUnprivilegedReadOnlyCommand(canonical, timeoutMs),
+      { env: {}, timeoutMs: timeoutMs + 1_000 },
+      "/workspace",
     );
   }
 
@@ -2907,6 +2927,81 @@ function shellQuote(value: string): string {
 function createUnprivilegedAgentCommand(command: string): string {
   const encoded = Buffer.from(command, "utf8").toString("base64");
   return `printf %s ${shellQuote(encoded)} | base64 --decode | runuser -u ${shellQuote(agentWorkspaceUser)} -- env -i HOME=${shellQuote(agentWorkspaceHome)} TMPDIR=${shellQuote(agentWorkspaceTemp)} PATH=${shellQuote(agentWorkspacePath)} /bin/bash --noprofile --norc`;
+}
+
+function createUnprivilegedReadOnlyCommand(
+  request: ReadOnlyCommandRequest,
+  timeoutMs: number,
+): string {
+  const paths = readInspectionFilesystemPaths(request.argv);
+  const pathChecks = paths.map((path) =>
+    [
+      `makeademo_inspection_path=$(/usr/bin/realpath -e -- ${shellQuote(`/workspace/${path}`)}) || { printf '%s\\n' 'Repository path does not exist.' >&2; exit 64; }`,
+      "case \"$makeademo_inspection_path\" in /workspace|/workspace/*) ;; *) printf '%s\\n' 'Repository path escapes /workspace.' >&2; exit 64 ;; esac",
+      "case \"$makeademo_inspection_path\" in /workspace/.git|/workspace/.git/*|/workspace/.makeademo|/workspace/.makeademo/*) printf '%s\\n' 'Repository path resolves to a protected directory.' >&2; exit 64 ;; esac",
+      "/usr/bin/test -f \"$makeademo_inspection_path\" || /usr/bin/test -d \"$makeademo_inspection_path\" || { printf '%s\\n' 'Repository path is not a regular file or directory.' >&2; exit 64; }",
+    ].join("\n"),
+  );
+  const command = createAbsoluteInspectionArgv(request.argv)
+    .map(shellQuote)
+    .join(" ");
+  const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1_000));
+  const script = [
+    "set -o pipefail",
+    "cd -- /workspace",
+    ...pathChecks,
+    `/usr/bin/timeout --signal=KILL ${timeoutSeconds}s ${command} 2> >(/usr/bin/head -c 16385 >&2) | /usr/bin/head -n 2001 | /usr/bin/head -c 131073`,
+  ].join("\n");
+  const environment = [
+    `HOME=${shellQuote(agentWorkspaceHome)}`,
+    `TMPDIR=${shellQuote(agentWorkspaceTemp)}`,
+    `PATH=${shellQuote("/usr/bin:/bin")}`,
+    `LANG=${shellQuote("C.UTF-8")}`,
+    `LC_ALL=${shellQuote("C.UTF-8")}`,
+    `GIT_CONFIG_GLOBAL=${shellQuote("/dev/null")}`,
+    `GIT_CONFIG_SYSTEM=${shellQuote("/dev/null")}`,
+    `GIT_EXTERNAL_DIFF=${shellQuote("")}`,
+    `GIT_OPTIONAL_LOCKS=${shellQuote("0")}`,
+    `GIT_PAGER=${shellQuote("cat")}`,
+    `GIT_TERMINAL_PROMPT=${shellQuote("0")}`,
+    `PAGER=${shellQuote("cat")}`,
+  ].join(" ");
+  return `/usr/sbin/runuser -u ${shellQuote(agentWorkspaceUser)} -- /usr/bin/env -i ${environment} /bin/bash --noprofile --norc -c ${shellQuote(script)}`;
+}
+
+function createAbsoluteInspectionArgv(argv: readonly string[]): string[] {
+  const [program, ...args] = argv;
+  if (program === "rg") return ["/usr/bin/rg", ...args];
+  if (program === "sed") return ["/usr/bin/sed", ...args];
+  if (program === "git") {
+    return [
+      "/usr/bin/git",
+      "-c",
+      "core.fsmonitor=false",
+      "-c",
+      "core.hooksPath=/dev/null",
+      "-c",
+      "core.pager=cat",
+      "-c",
+      "interactive.diffFilter=",
+      ...args,
+    ];
+  }
+  throw new Error("Read-only command was not canonicalized.");
+}
+
+function readInspectionFilesystemPaths(argv: readonly string[]): string[] {
+  const [program, ...args] = argv;
+  if (program === "sed") return [args.at(-1) ?? ""];
+  if (program === "rg") {
+    const separator = args.lastIndexOf("--");
+    return separator < 0 ? [] : args.slice(separator + 1);
+  }
+  if (program === "git" && args[0] === "diff") {
+    const separator = args.lastIndexOf("--");
+    return separator < 0 ? [] : args.slice(separator + 1);
+  }
+  return [];
 }
 
 function createUnprivilegedSubmittedCodeExecution(

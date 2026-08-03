@@ -50,6 +50,15 @@ const retryPolicy = {
 const maxRetryTimeoutExtensionMs =
   retryPolicy.baseDelayMs * (2 ** retryPolicy.maxRetries - 1);
 
+function isTransientExecutionMode(
+  executionMode: AgentSessionRunInput["executionMode"],
+): boolean {
+  return (
+    executionMode === "stage-tools-transient" ||
+    executionMode === "tool-free-transient"
+  );
+}
+
 /** Minimal provider runtime methods used by the harness. */
 export type PiModelRuntime = Pick<ModelRuntime, "getModel"> & {
   setRuntimeApiKey?: (providerID: string, apiKey: string) => Promise<void>;
@@ -75,7 +84,7 @@ export type PiSessionFactoryInput = {
   agentDir: string;
   cwd: string;
   customTools: readonly ToolDefinition[];
-  executionMode: "default" | "tool-free-transient";
+  executionMode: NonNullable<AgentSessionRunInput["executionMode"]>;
   model: unknown;
   modelID: string;
   providerID: string;
@@ -144,6 +153,7 @@ export class PiAgentSession implements AgentSessionRunner {
     const interruption = createPiRunInterruption(input);
     const setupActivity = createPiActivityTracker();
     const toolFreeTransient = input.executionMode === "tool-free-transient";
+    const transient = isTransientExecutionMode(input.executionMode);
     let activeSession: RetainedSession | undefined;
     try {
       await interruption.throwIfExternallyCancelled();
@@ -180,7 +190,7 @@ export class PiAgentSession implements AgentSessionRunner {
       );
       activeSession = retained;
       interruption.attachProvider(retained.providerSession);
-      if (!toolFreeTransient) {
+      if (!transient) {
         const workspaceRebind = this.rebindWorkspaceTools(
           retained,
           input.workspace,
@@ -467,7 +477,7 @@ export class PiAgentSession implements AgentSessionRunner {
           ? {}
           : { lastMeaningfulActivity }),
         ...(providerError === undefined ? {} : { providerError }),
-        ...(toolFreeTransient
+        ...(transient
           ? {}
           : { session: input.session ?? this.createOpaqueSession(retained) }),
         stderr: stderrChunks.join(""),
@@ -475,7 +485,7 @@ export class PiAgentSession implements AgentSessionRunner {
         ...(structuredOutput === undefined ? {} : { structuredOutput }),
       };
     } finally {
-      if (toolFreeTransient && activeSession !== undefined) {
+      if (transient && activeSession !== undefined) {
         this.disposeRetainedSession(activeSession);
       }
       interruption.dispose();
@@ -516,9 +526,11 @@ export class PiAgentSession implements AgentSessionRunner {
     }
     const executionMode = input.executionMode ?? "default";
     const toolFreeTransient = executionMode === "tool-free-transient";
-    if (toolFreeTransient && input.session !== undefined) {
+    const stageToolsTransient = executionMode === "stage-tools-transient";
+    const transient = isTransientExecutionMode(executionMode);
+    if (transient && input.session !== undefined) {
       throw new Error(
-        "A tool-free transient agent turn cannot reuse an existing AgentSession.",
+        "A transient agent turn cannot reuse an existing AgentSession.",
       );
     }
     if (input.session !== undefined) {
@@ -557,22 +569,24 @@ export class PiAgentSession implements AgentSessionRunner {
         : createPiStageToolDefinitions(input.tools ?? []);
     const customTools = toolFreeTransient
       ? []
-      : [
-          ...(this.options.globalTools ?? []),
-          ...createRemoteCodingToolDefinitions({
-            cwd: this.options.cwd ?? defaultCwd,
-            ...(this.options.toolTimeoutMs === undefined
-              ? {}
-              : { timeoutMs: this.options.toolTimeoutMs }),
-            workspace: input.workspace,
-          }),
-          ...createContext7ToolDefinitions(
-            context7ToolTimeoutMs === undefined
-              ? {}
-              : { timeoutMs: context7ToolTimeoutMs },
-          ),
-          ...stageTools,
-        ];
+      : stageToolsTransient
+        ? stageTools
+        : [
+            ...(this.options.globalTools ?? []),
+            ...createRemoteCodingToolDefinitions({
+              cwd: this.options.cwd ?? defaultCwd,
+              ...(this.options.toolTimeoutMs === undefined
+                ? {}
+                : { timeoutMs: this.options.toolTimeoutMs }),
+              workspace: input.workspace,
+            }),
+            ...createContext7ToolDefinitions(
+              context7ToolTimeoutMs === undefined
+                ? {}
+                : { timeoutMs: context7ToolTimeoutMs },
+            ),
+            ...stageTools,
+          ];
     const factory = this.options.createSession ?? this.createDefaultSession;
     const created = await this.ownProviderCreation(
       Promise.resolve().then(() =>
@@ -590,7 +604,7 @@ export class PiAgentSession implements AgentSessionRunner {
       ),
     );
     const retained: RetainedSession = {
-      baseToolNames: toolFreeTransient
+      baseToolNames: transient
         ? []
         : [
             ...builtinToolNames,
@@ -607,7 +621,7 @@ export class PiAgentSession implements AgentSessionRunner {
         customTools.map((tool) => [tool.name, tool] as const),
       ),
     };
-    if (!toolFreeTransient) {
+    if (!transient) {
       this.retainedSessions.add(retained);
     }
     return retained;
@@ -750,11 +764,13 @@ export class PiAgentSession implements AgentSessionRunner {
       tools:
         input.executionMode === "tool-free-transient"
           ? []
-          : [
-              ...builtinToolNames,
-              ...context7ToolNames,
-              ...input.customTools.map((tool) => tool.name),
-            ],
+          : input.executionMode === "stage-tools-transient"
+            ? input.customTools.map((tool) => tool.name)
+            : [
+                ...builtinToolNames,
+                ...context7ToolNames,
+                ...input.customTools.map((tool) => tool.name),
+              ],
     });
     let aborted = false;
     let abortPromise: Promise<void> | undefined;
@@ -789,11 +805,13 @@ export class PiAgentSession implements AgentSessionRunner {
         tools:
           input.executionMode === "tool-free-transient"
             ? []
-            : [
-                ...builtinToolNames,
-                ...context7ToolNames,
-                ...tools.map((tool) => tool.name),
-              ],
+            : input.executionMode === "stage-tools-transient"
+              ? tools.map((tool) => tool.name)
+              : [
+                  ...builtinToolNames,
+                  ...context7ToolNames,
+                  ...tools.map((tool) => tool.name),
+                ],
       });
       if (aborted) {
         await settleInterruption(
