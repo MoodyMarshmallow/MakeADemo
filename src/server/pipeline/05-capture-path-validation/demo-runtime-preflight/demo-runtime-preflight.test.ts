@@ -79,6 +79,66 @@ describe("runDemoRuntimePreflight", () => {
     expect(browserUrls).toEqual(["http://127.0.0.1:3000"]);
   });
 
+  it("preserves verified prepared screenshot and accessibility evidence on success", async () => {
+    const result = await runDemoRuntimePreflight(
+      {
+        preparationManifest: manifest({
+          demoCommand: "npm run demo",
+          url: "http://127.0.0.1:3000",
+        }),
+        preparationWorkspace: workspaceHandle([]),
+      },
+      {
+        browserValidator: {
+          async validate() {
+            return {
+              accessibilitySnapshot: {
+                sha256:
+                  "03b7d980f5554f194901de66d8d33d61dcdd328bbf56e612c97f1f5a7f90d480",
+                sizeBytes: 24,
+                text: '- heading "MakeADemo"',
+              },
+              interactable: true,
+              logs: ["loaded app"],
+              screenshot: {
+                mimeType: "image/png" as const,
+                path: "/workspace/.makeademo/demo-runtime-preflight/browser.png",
+                sha256:
+                  "8d23838e6a521cead2d572f10a4e3c924ffa45be877a0ae23ba69b606b62a5d2",
+                sizeBytes: 67,
+              },
+              screenshotArtifactId: "",
+            };
+          },
+        },
+        sandboxRunner: {
+          async runValidation() {
+            return {
+              blockedNetworkAttempts: [],
+              logs: [],
+              repoFiles: ["package.json"],
+              runtimeExitCode: 0,
+            };
+          },
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      accessibilitySnapshot: {
+        sha256:
+          "03b7d980f5554f194901de66d8d33d61dcdd328bbf56e612c97f1f5a7f90d480",
+        text: '- heading "MakeADemo"',
+      },
+      screenshot: {
+        path: "/workspace/.makeademo/demo-runtime-preflight/browser.png",
+        sha256:
+          "8d23838e6a521cead2d572f10a4e3c924ffa45be877a0ae23ba69b606b62a5d2",
+      },
+      status: "succeeded",
+    });
+  });
+
   it("keeps the preview URL absent when the sandbox only exposes its local manifest URL", async () => {
     const sandboxRunner: SandboxRunner = {
       async runValidation() {
@@ -1029,6 +1089,13 @@ function manifest(overrides: { demoCommand: string; url: string }) {
     demoCommand: overrides.demoCommand,
     diffArtifactId: "artifact_diff",
     existingDemoEvidence: [],
+    mockingPlan: {
+      boundaries: [],
+      fixturePaths: [],
+      loadedPlaybooks: [],
+      nativeUiRoots: ["src/App.tsx"],
+      plannedPresentationChanges: [],
+    },
     mockedServices: [],
     modifiedFiles: [],
     repoUrl: "https://github.com/example/app",

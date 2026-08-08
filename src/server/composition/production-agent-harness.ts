@@ -74,6 +74,16 @@ export function createProductionAgentHarness(
         }),
     profile: profiles.repoSecurityReview,
   });
+  const preparedApplicationIdentityReviewRunner = bindAgentTaskRunner(runner, {
+    classifyProviderFailure,
+    ...(sharedAgentOutput === undefined ? {} : { onOutput: sharedAgentOutput }),
+    ...(options.onAgentEvent === undefined && options.logger === undefined
+      ? {}
+      : {
+          onEvent: createAgentEventSink(options.onAgentEvent, options.logger),
+        }),
+    profile: profiles.preparedApplicationIdentityReview,
+  });
   const scriptGenerationRunner = bindAgentTaskRunner(runner, {
     classifyProviderFailure,
     ...(sharedAgentOutput === undefined ? {} : { onOutput: sharedAgentOutput }),
@@ -108,6 +118,8 @@ export function createProductionAgentHarness(
     agentTaskRunners: {
       capturePathRepair: capturePathRepairRunner,
       draftCompositeReview: draftCompositeReviewRunner,
+      preparedApplicationIdentityReview:
+        preparedApplicationIdentityReviewRunner,
       repoPreparation: repoPreparationRunner,
       repoSecurityReview: repoSecurityReviewRunner,
       scriptGeneration: scriptGenerationRunner,

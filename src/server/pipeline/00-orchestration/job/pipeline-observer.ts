@@ -6,6 +6,7 @@ export type PipelineStage =
   | "demo-runtime-preflight"
   | "draft-composite-review"
   | "footage-capture"
+  | "prepared-application-identity-review"
   | "repo-preparation"
   | "repo-security-screen"
   | "script-generation";

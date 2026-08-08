@@ -5,7 +5,7 @@
  * backend-owned and relative to the workspace archive root; submitted
  * repositories cannot add exclusions or preserve arbitrary paths.
  */
-const generatedWorkspaceCacheDirectories = [
+export const generatedWorkspaceCacheDirectories = [
   "node_modules",
   ".vite",
   ".turbo",

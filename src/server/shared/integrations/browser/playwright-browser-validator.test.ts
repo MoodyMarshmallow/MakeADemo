@@ -640,6 +640,8 @@ describe("PlaywrightBrowserValidator", () => {
     expect(result.screenshot).toEqual({
       mimeType: "image/png",
       path: "/workspace/.makeademo/demo-runtime-preflight/browser.png",
+      sha256:
+        "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460",
       sizeBytes: receiverSensitiveWorkspace.submittedScreenshotBytes.length,
     });
     expect(downloaded).toEqual([

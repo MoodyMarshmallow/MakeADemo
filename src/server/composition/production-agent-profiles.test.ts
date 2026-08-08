@@ -22,6 +22,12 @@ describe("createProductionAgentProfiles", () => {
         providerID: "openai",
         thinkingLevel: "medium",
       },
+      preparedApplicationIdentityReview: {
+        label: "Prepared Application Identity review agent",
+        modelID: "gpt-5.6-terra",
+        providerID: "openai",
+        thinkingLevel: "high",
+      },
       repoPreparation: {
         label: "Repo Preparation",
         modelID: "gpt-5.6-terra",

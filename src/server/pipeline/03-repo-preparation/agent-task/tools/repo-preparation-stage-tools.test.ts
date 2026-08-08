@@ -28,12 +28,38 @@ describe("Repo Preparation stage tools", () => {
     expect(tools.map(({ name }) => name)).toEqual([
       "makeademo_dependency_request_install",
       "makeademo_install_dependencies",
+      "makeademo_load_playbook",
       "makeademo_validate_preparation",
       "makeademo_submit_preparation_result",
     ]);
     expect(tools.every(({ execute }) => typeof execute === "function")).toBe(
       true,
     );
+  });
+
+  it("loads a trusted playbook and records that guidance in backend state", async () => {
+    const state = createState();
+    const tool = createRepoPreparationStageTools(state).find(
+      ({ name }) => name === "makeademo_load_playbook",
+    );
+
+    if (tool === undefined) throw new Error("Playbook tool is missing.");
+
+    expect(tool.args).toEqual({
+      playbook: {
+        description: "Trusted Repo Preparation playbook to load.",
+        type: "enum",
+        values: [
+          "mock-backend-data",
+          "local-authentication",
+          "seed-local-database",
+        ],
+      },
+    });
+    await expect(
+      tool.execute({ playbook: "local-authentication" }),
+    ).resolves.toEqual(expect.any(String));
+    expect(state.readLoadedPlaybooks()).toEqual(["local-authentication"]);
   });
 
   it("requests a backend-selected dependency install without command arguments", async () => {

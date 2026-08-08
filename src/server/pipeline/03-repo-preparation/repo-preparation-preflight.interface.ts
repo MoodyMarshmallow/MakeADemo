@@ -1,3 +1,4 @@
+import type { PreparedAccessibilitySnapshot } from "../05-capture-path-validation/demo-runtime-preflight/validation-evidence";
 import type { PreparationWorkspaceResourceDiagnostics } from "./preparation-workspace.interface";
 
 /**
@@ -8,6 +9,7 @@ import type { PreparationWorkspaceResourceDiagnostics } from "./preparation-work
  * an agent, but never needs Capture Path Validation implementation details.
  */
 export type RepoPreparationPreflightResult = {
+  accessibilitySnapshot?: PreparedAccessibilitySnapshot;
   blockedNetworkAttempts: RepoPreparationNetworkAttempt[];
   browserUrl?: string;
   evidence?: RepoPreparationPreflightEvidence;
@@ -17,7 +19,12 @@ export type RepoPreparationPreflightResult = {
   logs: string[];
   resourceDiagnostics?: PreparationWorkspaceResourceDiagnostics;
   previewUrl?: string;
-  screenshot?: { mimeType: "image/png"; path: string; sizeBytes?: number };
+  screenshot?: {
+    mimeType: "image/png";
+    path: string;
+    sha256?: string;
+    sizeBytes?: number;
+  };
   screenshotArtifactId?: string;
   status: "succeeded" | "failed";
   warnings: string[];

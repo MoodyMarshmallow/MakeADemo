@@ -1,6 +1,9 @@
 import type { PreparationWorkspaceResourceDiagnostics } from "../../03-repo-preparation/preparation-workspace.interface";
 import type { NetworkAttempt } from "./network-isolation-policy";
-import type { BoundedValidationText } from "./validation-evidence";
+import type {
+  BoundedValidationText,
+  PreparedAccessibilitySnapshot,
+} from "./validation-evidence";
 
 /**
  * Stable machine-readable validation failure categories. Producers must only set
@@ -30,6 +33,7 @@ type DemoRuntimePreflightEvidence = {
 };
 
 export type DemoRuntimePreflightResult = {
+  accessibilitySnapshot?: PreparedAccessibilitySnapshot;
   blockedNetworkAttempts: NetworkAttempt[];
   browserUrl?: string;
   /** The sandbox-local URL that was actually validated. */
@@ -41,7 +45,12 @@ export type DemoRuntimePreflightResult = {
   failureReason?: string;
   logs: string[];
   resourceDiagnostics?: PreparationWorkspaceResourceDiagnostics;
-  screenshot?: { mimeType: "image/png"; path: string; sizeBytes?: number };
+  screenshot?: {
+    mimeType: "image/png";
+    path: string;
+    sha256?: string;
+    sizeBytes?: number;
+  };
   screenshotArtifactId?: string;
   status: "succeeded" | "failed";
   warnings: string[];

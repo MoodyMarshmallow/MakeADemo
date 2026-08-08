@@ -70,6 +70,9 @@ describe("createProductionAgentHarness", () => {
     };
     await harness.agentTaskRunners.repoSecurityReview.run(taskInput);
     await harness.agentTaskRunners.repoPreparation.run(taskInput);
+    await harness.agentTaskRunners.preparedApplicationIdentityReview.run(
+      taskInput,
+    );
     await harness.agentTaskRunners.scriptGeneration.run(taskInput);
     await harness.agentTaskRunners.capturePathRepair.run(taskInput);
     await harness.agentTaskRunners.draftCompositeReview.run(taskInput);
@@ -83,6 +86,9 @@ describe("createProductionAgentHarness", () => {
         profile: { label: "Repo Preparation" },
       },
       {
+        profile: { label: "Prepared Application Identity review agent" },
+      },
+      {
         profile: { label: "Script Generation agent" },
       },
       {
@@ -94,6 +100,7 @@ describe("createProductionAgentHarness", () => {
     ]);
     expect(repoOutput).toEqual(["provider output"]);
     expect(sharedOutput).toEqual([
+      "provider output",
       "provider output",
       "provider output",
       "provider output",

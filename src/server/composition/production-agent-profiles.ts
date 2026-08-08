@@ -7,6 +7,7 @@ import type { AgentSessionProfile } from "../agent-harness/agent-session-runner.
 export type ProductionAgentProfiles = {
   capturePathRepair: AgentSessionProfile;
   draftCompositeReview: AgentSessionProfile;
+  preparedApplicationIdentityReview: AgentSessionProfile;
   repoPreparation: AgentSessionProfile;
   repoSecurityReview: AgentSessionProfile;
   scriptGeneration: AgentSessionProfile;
@@ -32,6 +33,12 @@ export function createProductionAgentProfiles(input: {
       modelID: draftCompositeReviewAgentModel.modelID,
       providerID: draftCompositeReviewAgentModel.providerID,
       thinkingLevel: draftCompositeReviewAgentModel.reasoningEffort,
+    },
+    preparedApplicationIdentityReview: {
+      label: "Prepared Application Identity review agent",
+      modelID: input.modelID,
+      providerID: input.providerID,
+      thinkingLevel: defaultAgentModel.reasoningEffort,
     },
     repoPreparation: {
       label: "Repo Preparation",

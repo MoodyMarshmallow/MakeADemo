@@ -1,3 +1,4 @@
+import type { ApplicationIdentityBaseline } from "../../03-repo-preparation/application-identity-evidence.interface";
 import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
 import type { RepoSecurityInput } from "../repo-security-screen";
 
@@ -15,7 +16,9 @@ export type RepoSecurityInputLoadInput = {
 
 /** Advisory scanner reports plus the untouched pinned parent workspace. */
 export type RepoSecurityInputLoadResult = {
-  baselineSourceControlledPaths: string[];
+  applicationIdentityBaseline?: ApplicationIdentityBaseline;
+  /** @deprecated Use applicationIdentityBaseline.sourceControlledPaths. */
+  baselineSourceControlledPaths?: string[];
   preparationWorkspace: PreparationWorkspaceHandle;
   repoSecurity: RepoSecurityInput;
 };

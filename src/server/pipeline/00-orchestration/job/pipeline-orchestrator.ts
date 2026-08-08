@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { AgentSession } from "../../../agent-harness/agent-session";
 import type {
   RepoSecurityAgentReviewInput,
@@ -7,7 +9,22 @@ import type {
   RepoSecurityInput,
   RepoSecurityResult,
 } from "../../02-repo-security-screen/repo-security-screen";
+import { createPreparedApplicationIdentityEvidenceLedger } from "../../03-prepared-application-identity-review/prepared-application-identity-evidence";
 import type {
+  PreparedApplicationIdentityReviewResult,
+  PreparedApplicationIdentityReviewer,
+} from "../../03-prepared-application-identity-review/prepared-application-identity-reviewer.interface";
+import { verifyPreparedWorkspaceIdentitySeal } from "../../03-prepared-application-identity-review/prepared-workspace-identity-seal";
+import {
+  applicationIdentityBaselineHasValidDigests,
+  applicationIdentityBaselinesMatch,
+} from "../../03-repo-preparation/application-identity-evidence";
+import type {
+  ApplicationIdentityBaseline,
+  PreparedWorkspaceDiff,
+} from "../../03-repo-preparation/application-identity-evidence.interface";
+import type {
+  PreparedApplicationIdentityEvidenceSource,
   RepoPreparationInput,
   RepoPreparationResult,
 } from "../../03-repo-preparation/repo-preparation-agent.interface";
@@ -38,6 +55,7 @@ export type PipelineOrchestratorDependencies = {
   generateDemoScript(input: ScriptGenerationInput): Promise<DemoScript>;
   prepareRepo(input: RepoPreparationInput): Promise<RepoPreparationResult>;
   repairCapturePathFailure?: CapturePathRepairer["repairCapturePathFailure"];
+  reviewPreparedApplicationIdentity: PreparedApplicationIdentityReviewer["review"];
   reviewRepoSecurity: RepoSecurityAgentReviewer["review"];
   screenRepoSecurity(input: RepoSecurityInput): RepoSecurityResult;
   validateCapturePath(
@@ -46,6 +64,7 @@ export type PipelineOrchestratorDependencies = {
 };
 
 type PipelineProgressEvent = {
+  reason?: string;
   stage: PipelineStage;
   status: "failed" | "started" | "succeeded";
 };
@@ -80,6 +99,7 @@ export type CapturePathValidationRepairLifecycleInput = {
     | undefined;
   preparationManifest: CapturePathValidationInput["preparationManifest"];
   preparationWorkspace: CapturePathValidationInput["preparationWorkspace"];
+  reviewedPreparedWorkspaceDiff: PreparedWorkspaceDiff;
   repoUrl: string;
   signal?: AbortSignal;
 };
@@ -98,6 +118,13 @@ export type CapturePathValidationRepairLifecycleResult =
   | {
       capturePathValidation: CapturePathValidationResult;
       status: "failed";
+    }
+  | {
+      identityReview: Extract<
+        PreparedApplicationIdentityReviewResult,
+        { status: "succeeded"; verdict: "fail" }
+      >;
+      status: "identity-review-failed";
     };
 
 export async function runPipelineJob(
@@ -253,10 +280,10 @@ export async function runPipelineJob(
   try {
     preparation = await dependencies.prepareRepo({
       commitSha: input.commitSha,
-      ...(input.baselineSourceControlledPaths === undefined
+      ...(input.applicationIdentityBaseline === undefined
         ? {}
         : {
-            baselineSourceControlledPaths: input.baselineSourceControlledPaths,
+            applicationIdentityBaseline: input.applicationIdentityBaseline,
           }),
       normalizedSupportingDocuments: input.normalizedSupportingDocuments,
       repoUrl: input.repoUrl,
@@ -352,6 +379,152 @@ export async function runPipelineJob(
   });
   throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
 
+  const identityStartedAt = reportStageStarted(
+    "prepared-application-identity-review",
+    {
+      context,
+      now,
+      observer,
+      onProgress: options.onProgress,
+    },
+  );
+  await emitProgress(options, {
+    stage: "prepared-application-identity-review",
+    status: "started",
+  });
+
+  const identityEvidence = readPreparedIdentityEvidence({
+    applicationIdentityBaseline: input.applicationIdentityBaseline,
+    commitSha: input.commitSha,
+    preparation,
+    repoUrl: input.repoUrl,
+  });
+  if (identityEvidence.status === "failed") {
+    reportStageFinished("prepared-application-identity-review", "failed", {
+      context,
+      now,
+      observer,
+      onProgress: options.onProgress,
+      reason: identityEvidence.failureReason,
+      startedAt: identityStartedAt,
+    });
+    await emitProgress(options, {
+      reason: identityEvidence.failureReason,
+      stage: "prepared-application-identity-review",
+      status: "failed",
+    });
+    return {
+      failureKind: "invalid-output",
+      failureReason: identityEvidence.failureReason,
+      stage: "prepared-application-identity-review",
+      status: "infrastructure-failed",
+    };
+  }
+  const identityEvidenceSource = createIdentityEvidenceSource(preparation);
+
+  let identityReview: PreparedApplicationIdentityReviewResult;
+  try {
+    identityReview = await dependencies.reviewPreparedApplicationIdentity({
+      ...(options.deadlineAt === undefined
+        ? {}
+        : { deadlineAt: options.deadlineAt }),
+      evidenceLedger: identityEvidence.evidenceLedger,
+      preparationManifest: preparation.manifest,
+      preparationWorkspace,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+    throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
+  } catch (error) {
+    if (isPipelineCancellationError(error)) throw error;
+    throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
+    reportStageFinished("prepared-application-identity-review", "failed", {
+      context,
+      error,
+      now,
+      observer,
+      onProgress: options.onProgress,
+      startedAt: identityStartedAt,
+    });
+    await emitProgress(options, {
+      reason:
+        "Prepared Application Identity Review could not complete because reviewer infrastructure was unavailable.",
+      stage: "prepared-application-identity-review",
+      status: "failed",
+    });
+    const failedIdentityReview = {
+      failureKind: "unavailable",
+      status: "failed",
+    } as const;
+    return {
+      identityEvidenceSource,
+      identityReview: failedIdentityReview,
+      failureKind: failedIdentityReview.failureKind,
+      failureReason:
+        "Prepared Application Identity Review could not complete because reviewer infrastructure was unavailable.",
+      stage: "prepared-application-identity-review",
+      status: "infrastructure-failed",
+    };
+  }
+
+  if (identityReview.status === "failed") {
+    const failureReason = `Prepared Application Identity Review ${identityReview.failureKind}.`;
+    reportStageFinished("prepared-application-identity-review", "failed", {
+      context,
+      now,
+      observer,
+      onProgress: options.onProgress,
+      reason: failureReason,
+      startedAt: identityStartedAt,
+    });
+    await emitProgress(options, {
+      reason: failureReason,
+      stage: "prepared-application-identity-review",
+      status: "failed",
+    });
+    return {
+      identityEvidenceSource,
+      identityReview,
+      failureKind: identityReview.failureKind,
+      failureReason,
+      stage: "prepared-application-identity-review",
+      status: "infrastructure-failed",
+    };
+  }
+
+  if (identityReview.verdict === "fail") {
+    reportStageFinished("prepared-application-identity-review", "failed", {
+      context,
+      now,
+      observer,
+      onProgress: options.onProgress,
+      reason: identityReview.failureKind,
+      startedAt: identityStartedAt,
+    });
+    await emitProgress(options, {
+      reason: identityReview.failureKind,
+      stage: "prepared-application-identity-review",
+      status: "failed",
+    });
+    return {
+      identityEvidenceSource,
+      identityReview,
+      status: "identity-review-failed",
+    };
+  }
+
+  reportStageFinished("prepared-application-identity-review", "succeeded", {
+    context,
+    now,
+    observer,
+    onProgress: options.onProgress,
+    startedAt: identityStartedAt,
+  });
+  await emitProgress(options, {
+    stage: "prepared-application-identity-review",
+    status: "succeeded",
+  });
+  throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
+
   const scriptStartedAt = reportStageStarted("script-generation", {
     context,
     now,
@@ -400,6 +573,24 @@ export async function runPipelineJob(
     });
     throw error;
   }
+  const scriptGenerationSeal = await verifyPreparedWorkspaceIdentitySeal({
+    reviewedDiff: identityEvidence.evidenceLedger.preparedWorkspaceDiff,
+    stage: "Script Generation",
+    workspace: preparationWorkspace,
+  });
+  throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
+  if (scriptGenerationSeal.status === "changed") {
+    await emitProgress(options, {
+      reason: scriptGenerationSeal.identityReview.failureKind,
+      stage: "prepared-application-identity-review",
+      status: "failed",
+    });
+    return {
+      identityEvidenceSource,
+      identityReview: scriptGenerationSeal.identityReview,
+      status: "identity-review-failed",
+    };
+  }
   reportStageFinished("script-generation", "succeeded", {
     context,
     now,
@@ -429,6 +620,8 @@ export async function runPipelineJob(
     onProgress: options.onProgress,
     preparationManifest,
     preparationWorkspace,
+    reviewedPreparedWorkspaceDiff:
+      identityEvidence.evidenceLedger.preparedWorkspaceDiff,
     repoUrl: input.repoUrl,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
@@ -441,6 +634,18 @@ export async function runPipelineJob(
     signal: options.signal,
   });
   throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
+  if (capturePathLifecycle.status === "identity-review-failed") {
+    await emitProgress(options, {
+      reason: capturePathLifecycle.identityReview.failureKind,
+      stage: "prepared-application-identity-review",
+      status: "failed",
+    });
+    return {
+      identityEvidenceSource,
+      identityReview: capturePathLifecycle.identityReview,
+      status: "identity-review-failed",
+    };
+  }
   if (capturePathLifecycle.status === "failed") {
     const failure = capturePathLifecycle.capturePathValidation;
     if (isPipelineInfrastructureFailureKind(failure.failureKind)) {
@@ -462,14 +667,167 @@ export async function runPipelineJob(
 
   return {
     capturePathValidation: capturePathLifecycle.capturePathValidation,
+    identityEvidenceSource,
+    identityReview,
     preparationManifest: capturePathLifecycle.preparationManifest,
     ...(preparation.agentSession === undefined
       ? {}
       : { agentSession: preparation.agentSession }),
     preparationWorkspace,
+    reviewedPreparedWorkspaceDiff:
+      identityEvidence.evidenceLedger.preparedWorkspaceDiff,
     status: "succeeded",
     demoScript: capturePathLifecycle.demoScript,
   };
+}
+
+type SuccessfulPreparation = Extract<
+  RepoPreparationResult,
+  { status: "succeeded" }
+>;
+
+function createIdentityEvidenceSource(
+  preparation: SuccessfulPreparation,
+): PreparedApplicationIdentityEvidenceSource {
+  return {
+    applicationIdentityBaseline: preparation.applicationIdentityBaseline,
+    manifest: preparation.manifest,
+    preparedWorkspaceDiff: preparation.preparedWorkspaceDiff,
+    runtimePreflight: preparation.runtimePreflight,
+  };
+}
+
+type IdentityReadyPreparation = Omit<
+  SuccessfulPreparation,
+  "applicationIdentityBaseline" | "preparedWorkspaceDiff" | "runtimePreflight"
+> & {
+  applicationIdentityBaseline?: ApplicationIdentityBaseline;
+  preparedWorkspaceDiff?: PreparedWorkspaceDiff;
+  runtimePreflight?: {
+    accessibilitySnapshot?: {
+      sha256: string;
+      sizeBytes: number;
+      text: string;
+    };
+    screenshot?: {
+      mimeType: "image/png";
+      path: string;
+      sha256?: string;
+      sizeBytes?: number;
+    };
+    status: "succeeded" | "failed";
+  };
+};
+
+function readPreparedIdentityEvidence(input: {
+  applicationIdentityBaseline: ApplicationIdentityBaseline | undefined;
+  commitSha: string;
+  preparation: Extract<RepoPreparationResult, { status: "succeeded" }>;
+  repoUrl: string;
+}):
+  | {
+      evidenceLedger: ReturnType<
+        typeof createPreparedApplicationIdentityEvidenceLedger
+      >;
+      status: "succeeded";
+    }
+  | { failureReason: string; status: "failed" } {
+  const preparation = input.preparation as IdentityReadyPreparation;
+  const baseline = preparation.applicationIdentityBaseline;
+  const diff = preparation.preparedWorkspaceDiff;
+  const preflight = preparation.runtimePreflight;
+  const snapshot = preflight?.accessibilitySnapshot;
+  const screenshot = preflight?.screenshot;
+  if (
+    baseline === undefined ||
+    diff === undefined ||
+    preflight?.status !== "succeeded" ||
+    snapshot === undefined ||
+    screenshot?.sha256 === undefined
+  ) {
+    return {
+      failureReason:
+        "Prepared Application Identity Review requires a backend baseline, complete workspace diff, successful runtime preflight, screenshot digest, and accessibility snapshot.",
+      status: "failed",
+    };
+  }
+  if (
+    baseline.pinnedRevision !== input.commitSha ||
+    baseline.repoUrl !== input.repoUrl ||
+    diff.artifactId !== preparation.manifest.diffArtifactId ||
+    (input.applicationIdentityBaseline !== undefined &&
+      !applicationIdentityBaselinesMatch(
+        baseline,
+        input.applicationIdentityBaseline,
+      ))
+  ) {
+    return {
+      failureReason:
+        "Prepared Application Identity evidence did not match the submitted revision, repository, or Preparation Manifest diff artifact.",
+      status: "failed",
+    };
+  }
+  if (
+    !applicationIdentityBaselineHasValidDigests(baseline) ||
+    !isSha256(diff.patchSha256) ||
+    !isSha256(snapshot.sha256) ||
+    !isSha256(screenshot.sha256) ||
+    sha256(diff.patch) !== diff.patchSha256 ||
+    Buffer.byteLength(diff.patch) !== diff.sizeBytes ||
+    sha256(snapshot.text) !== snapshot.sha256 ||
+    Buffer.byteLength(snapshot.text) !== snapshot.sizeBytes
+  ) {
+    return {
+      failureReason:
+        "Prepared Application Identity evidence content did not match its backend-owned digest or size.",
+      status: "failed",
+    };
+  }
+
+  try {
+    return {
+      evidenceLedger: createPreparedApplicationIdentityEvidenceLedger({
+        applicationIdentityBaseline: baseline,
+        evidence: [
+          {
+            content: JSON.stringify({
+              mimeType: screenshot.mimeType,
+              path: screenshot.path,
+              sha256: screenshot.sha256,
+              ...(screenshot.sizeBytes === undefined
+                ? {}
+                : { sizeBytes: screenshot.sizeBytes }),
+            }),
+            id: `prepared-screenshot:sha256:${screenshot.sha256}`,
+            kind: "prepared-screenshot",
+          },
+          {
+            content: snapshot.text,
+            id: `accessibility-snapshot:sha256:${snapshot.sha256}`,
+            kind: "accessibility-snapshot",
+          },
+        ],
+        mockedBoundaries: preparation.manifest.mockingPlan.boundaries.map(
+          (boundary, index) => `${index}:${boundary.kind}:${boundary.source}`,
+        ),
+        preparedWorkspaceDiff: diff,
+      }),
+      status: "succeeded",
+    };
+  } catch (error) {
+    return {
+      failureReason: `Prepared Application Identity evidence was invalid: ${error instanceof Error ? error.message : String(error)}`,
+      status: "failed",
+    };
+  }
+}
+
+function isSha256(value: string) {
+  return /^[0-9a-f]{64}$/i.test(value);
+}
+
+function sha256(value: string) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 async function discardRejectedWorkspace(
@@ -588,6 +946,18 @@ export async function runCapturePathValidationAndRepair(
     throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
     preparationManifest = repair.preparationManifest;
     demoScript = repair.demoScript;
+    const repairSeal = await verifyPreparedWorkspaceIdentitySeal({
+      reviewedDiff: input.reviewedPreparedWorkspaceDiff,
+      stage: "Capture Path repair",
+      workspace: input.preparationWorkspace,
+    });
+    throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
+    if (repairSeal.status === "changed") {
+      return {
+        identityReview: repairSeal.identityReview,
+        status: "identity-review-failed",
+      };
+    }
     failure = undefined;
   }
 }

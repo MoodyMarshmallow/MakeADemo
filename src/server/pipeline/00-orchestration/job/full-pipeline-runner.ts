@@ -6,6 +6,7 @@ import {
   createFilePipelineLogSink,
   createPipelineEventLogger,
 } from "../../../shared/logging/pipeline-event-logger";
+import { PreparedWorkspaceIdentitySealError } from "../../03-prepared-application-identity-review/prepared-workspace-identity-seal";
 import {
   type PreparationWorkspaceInfrastructureDiagnostic,
   readPreparationWorkspaceInfrastructureDiagnostic,
@@ -33,12 +34,17 @@ import {
   runDraftCompositeReviewLoop,
 } from "./draft-composite-review-loop";
 import {
+  type FullPipelineIdentityEvidenceArtifactPaths,
+  writeFullPipelineIdentityEvidenceArtifacts,
+} from "./full-pipeline-identity-evidence-artifacts";
+import {
   type PipelineCancellationReason,
   isPipelineCancellationError,
   runSettledPipelineOperation,
   throwIfPipelineDeadlineReached,
 } from "./pipeline-cancellation";
 import type { PipelineJobInput } from "./pipeline-job";
+import type { PipelineStage } from "./pipeline-observer";
 import { runPipelineJob } from "./pipeline-orchestrator";
 import type {
   PipelineOrchestratorDependencies,
@@ -49,6 +55,7 @@ export type FullPipelineResult = {
   captureManifest: CaptureManifest;
   draftCompositeReview: DraftCompositeReviewSummary;
   finalVideo: CompositedVideoManifest;
+  identityAuditPath: string;
   logPath: string;
   resultPath: string;
   sandboxProvider?: "daytona";
@@ -58,6 +65,7 @@ export type FullPipelineResult = {
     Awaited<ReturnType<typeof runPipelineJob>>,
     { status: "succeeded" }
   >;
+  preparedWorkspacePatchPath: string;
   publicationWarnings?: FinalVideoPublicationWarning[];
   status: "succeeded";
 };
@@ -68,7 +76,7 @@ export type FullPipelineFailureContext = {
   logPath: string;
   agentAuditLogPath: string | undefined;
   resultPath: string;
-  stage: "pipeline" | "repo-security-screen";
+  stage: "pipeline" | PipelineStage;
   status:
     | Exclude<
         Awaited<ReturnType<typeof runPipelineJob>>,
@@ -135,7 +143,9 @@ type FullPipelineArtifactSummary = {
     finalVideoPath: string;
     generatedScriptDemoRequestId?: string;
     generatedScriptPath?: string;
+    identityAuditPath: string;
     logPath: string;
+    preparedWorkspacePatchPath: string;
     renderPlanPath: string;
     scriptGenerationAuditLogPath?: string;
     sandboxLogPath?: string;
@@ -228,6 +238,9 @@ export async function runFullPipelineJob(
   const approvedPreparationWorkspaces = new Set<
     NonNullable<PreparedDemoResult["preparationWorkspace"]>
   >();
+  let identityEvidenceArtifacts:
+    | FullPipelineIdentityEvidenceArtifactPaths
+    | undefined;
   if (input.preparationWorkspace !== undefined) {
     preparationWorkspaces.add(input.preparationWorkspace);
   }
@@ -235,9 +248,10 @@ export async function runFullPipelineJob(
     ...dependencies,
     async prepareRepo(preparationInput) {
       const result = await dependencies.prepareRepo(preparationInput);
-      if (result.status === "succeeded" && result.workspace !== undefined) {
-        preparationWorkspaces.add(result.workspace);
-        approvedPreparationWorkspaces.add(result.workspace);
+      if (result.status === "succeeded") {
+        if (result.workspace !== undefined) {
+          preparationWorkspaces.add(result.workspace);
+        }
       }
       return result;
     },
@@ -255,6 +269,7 @@ export async function runFullPipelineJob(
       severity: severityForPipelineStageStatus(event.status),
       stage: event.stage,
       status: event.status,
+      ...(event.reason === undefined ? {} : { reason: event.reason }),
     });
   };
   const pipelineOptions: FullPipelineRunnerOptions = {
@@ -327,16 +342,32 @@ export async function runFullPipelineJob(
       if (initialPreparedDemo.status !== "succeeded") {
         const status = initialPreparedDemo.status;
         const resultPath = join(runDirectory, "full-pipeline-result.json");
-        const failureSummary = createFailureSummary({
-          logPath,
-          agentAuditLogPath: options.agentAuditLogPath,
-          runDirectory,
-          runId,
-          sandboxLogPath,
-          sandboxProvider: options.sandboxProvider,
-          scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
-          preparedDemo: initialPreparedDemo,
-        });
+        if (
+          "identityEvidenceSource" in initialPreparedDemo &&
+          initialPreparedDemo.identityEvidenceSource !== undefined &&
+          "identityReview" in initialPreparedDemo &&
+          initialPreparedDemo.identityReview !== undefined
+        ) {
+          identityEvidenceArtifacts =
+            await writeFullPipelineIdentityEvidenceArtifacts({
+              identityReview: initialPreparedDemo.identityReview,
+              preparation: initialPreparedDemo.identityEvidenceSource,
+              runDirectory,
+            });
+        }
+        const failureSummary = withIdentityEvidenceArtifacts(
+          createFailureSummary({
+            logPath,
+            agentAuditLogPath: options.agentAuditLogPath,
+            runDirectory,
+            runId,
+            sandboxLogPath,
+            sandboxProvider: options.sandboxProvider,
+            scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
+            preparedDemo: initialPreparedDemo,
+          }),
+          identityEvidenceArtifacts,
+        );
         await log({
           event: "pipeline-failed",
           message: `Pipeline failed with status ${initialPreparedDemo.status}.`,
@@ -359,10 +390,24 @@ export async function runFullPipelineJob(
           logPath,
           agentAuditLogPath: options.agentAuditLogPath,
           resultPath,
-          stage: "pipeline",
+          stage: readPipelineFailureStage(initialPreparedDemo),
           status,
         });
       }
+      if (initialPreparedDemo.identityReview === undefined) {
+        throw new Error(
+          "Successful Pipeline preparation omitted durable identity evidence.",
+        );
+      }
+      identityEvidenceArtifacts =
+        await writeFullPipelineIdentityEvidenceArtifacts({
+          identityReview: initialPreparedDemo.identityReview,
+          preparation: initialPreparedDemo.identityEvidenceSource,
+          runDirectory,
+        });
+      approvedPreparationWorkspaces.add(
+        initialPreparedDemo.preparationWorkspace,
+      );
 
       let preparedDemo: PreparedDemoResult = initialPreparedDemo;
 
@@ -409,6 +454,18 @@ export async function runFullPipelineJob(
       });
       throwIfPipelineDeadlineReached(options.signal, options.deadlineAt);
       preparedDemo = reviewResult.preparedDemo;
+      if (preparedDemo.identityReview === undefined) {
+        throw new Error(
+          "Successful Pipeline repair omitted durable identity evidence.",
+        );
+      }
+      identityEvidenceArtifacts =
+        await writeFullPipelineIdentityEvidenceArtifacts({
+          identityReview: preparedDemo.identityReview,
+          preparation: preparedDemo.identityEvidenceSource,
+          runDirectory,
+        });
+      approvedPreparationWorkspaces.add(preparedDemo.preparationWorkspace);
       scriptSummary = summarizeDemoScript(preparedDemo.demoScript);
       scriptPersistence = reviewResult.scriptPersistence;
       const { captureManifest, reviewSummary } = reviewResult;
@@ -418,6 +475,10 @@ export async function runFullPipelineJob(
         reviewSummary,
       });
       const resultPath = join(runDirectory, "full-pipeline-result.json");
+      const durableIdentityArtifacts = identityEvidenceArtifacts;
+      if (durableIdentityArtifacts === undefined) {
+        throw new Error("Full Pipeline identity artifacts were not persisted.");
+      }
       const artifactSummary: FullPipelineArtifactSummary = {
         artifacts: {
           captureManifestPath: captureManifest.manifestPath,
@@ -431,7 +492,10 @@ export async function runFullPipelineJob(
           ...(scriptPersistence.scriptPath === undefined
             ? {}
             : { generatedScriptPath: scriptPersistence.scriptPath }),
+          identityAuditPath: durableIdentityArtifacts.identityAuditPath,
           logPath,
+          preparedWorkspacePatchPath:
+            durableIdentityArtifacts.preparedWorkspacePatchPath,
           ...(options.agentAuditLogPath === undefined
             ? {}
             : { agentAuditLogPath: options.agentAuditLogPath }),
@@ -480,6 +544,7 @@ export async function runFullPipelineJob(
         captureManifest,
         draftCompositeReview: reviewSummary,
         finalVideo,
+        identityAuditPath: durableIdentityArtifacts.identityAuditPath,
         logPath,
         resultPath,
         ...(options.sandboxProvider === undefined
@@ -490,6 +555,8 @@ export async function runFullPipelineJob(
           ? {}
           : { scriptPath: scriptPersistence.scriptPath }),
         preparedDemo,
+        preparedWorkspacePatchPath:
+          durableIdentityArtifacts.preparedWorkspacePatchPath,
         status: "succeeded",
       };
       return result;
@@ -503,18 +570,21 @@ export async function runFullPipelineJob(
         });
         const infrastructure =
           readPreparationWorkspaceInfrastructureDiagnostic(error);
-        const cancellationSummary = createCancellationSummary({
-          agentAuditLogPath: options.agentAuditLogPath,
-          cancellationReason: error.reason,
-          cleanup,
-          ...(infrastructure === undefined ? {} : { infrastructure }),
-          logPath,
-          runDirectory,
-          runId,
-          sandboxLogPath,
-          sandboxProvider: options.sandboxProvider,
-          scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
-        });
+        const cancellationSummary = withIdentityEvidenceArtifacts(
+          createCancellationSummary({
+            agentAuditLogPath: options.agentAuditLogPath,
+            cancellationReason: error.reason,
+            cleanup,
+            ...(infrastructure === undefined ? {} : { infrastructure }),
+            logPath,
+            runDirectory,
+            runId,
+            sandboxLogPath,
+            sandboxProvider: options.sandboxProvider,
+            scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
+          }),
+          identityEvidenceArtifacts,
+        );
         logBestEffort(log, {
           cancellationReason: error.reason,
           event: "pipeline-cancelled",
@@ -545,17 +615,80 @@ export async function runFullPipelineJob(
         terminalFailure = failure;
         throw failure;
       }
+      if (error instanceof PreparedWorkspaceIdentitySealError) {
+        for (const workspace of preparationWorkspaces) {
+          if (workspace.id === error.workspaceId) {
+            approvedPreparationWorkspaces.delete(workspace);
+          }
+        }
+        const resultPath = join(runDirectory, "full-pipeline-result.json");
+        const preparedDemo = {
+          identityEvidenceSource: error.identityEvidenceSource,
+          identityReview: error.identityReview,
+          status: "identity-review-failed" as const,
+        };
+        identityEvidenceArtifacts =
+          await writeFullPipelineIdentityEvidenceArtifacts({
+            identityReview: error.identityReview,
+            preparation: error.identityEvidenceSource,
+            runDirectory,
+          });
+        const failureSummary = withIdentityEvidenceArtifacts(
+          createFailureSummary({
+            agentAuditLogPath: options.agentAuditLogPath,
+            logPath,
+            preparedDemo,
+            runDirectory,
+            runId,
+            sandboxLogPath,
+            sandboxProvider: options.sandboxProvider,
+            scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
+          }),
+          identityEvidenceArtifacts,
+        );
+        await reportPipelineProgress({
+          reason: error.identityReview.explanation,
+          stage: "prepared-application-identity-review",
+          status: "failed",
+        });
+        await log({
+          event: "pipeline-failed",
+          message: "Prepared workspace source changed after identity review.",
+          severity: "error",
+          stage: "prepared-application-identity-review",
+          status: "identity-review-failed",
+        });
+        terminalFailureLogged = true;
+        await writeFile(
+          resultPath,
+          `${JSON.stringify(failureSummary, null, 2)}\n`,
+        );
+        const failure = new FullPipelineStageFailure({
+          cause: error,
+          failure: failureSummary.failure,
+          logPath,
+          agentAuditLogPath: options.agentAuditLogPath,
+          resultPath,
+          stage: "prepared-application-identity-review",
+          status: "identity-review-failed",
+        });
+        terminalFailure = failure;
+        throw failure;
+      }
       if (!terminalFailureLogged) {
         const resultPath = join(runDirectory, "full-pipeline-result.json");
-        const failureSummary = createUnexpectedFailureSummary({
-          agentAuditLogPath: options.agentAuditLogPath,
-          logPath,
-          runDirectory,
-          runId,
-          sandboxLogPath,
-          sandboxProvider: options.sandboxProvider,
-          scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
-        });
+        const failureSummary = withIdentityEvidenceArtifacts(
+          createUnexpectedFailureSummary({
+            agentAuditLogPath: options.agentAuditLogPath,
+            logPath,
+            runDirectory,
+            runId,
+            sandboxLogPath,
+            sandboxProvider: options.sandboxProvider,
+            scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
+          }),
+          identityEvidenceArtifacts,
+        );
         await log({
           error: readErrorMessage(error),
           event: "pipeline-failed",
@@ -600,16 +733,19 @@ export async function runFullPipelineJob(
     log,
   });
   if (cleanup !== undefined && completed.status === "succeeded") {
-    const failureSummary = createPreparationWorkspaceCleanupFailureSummary({
-      agentAuditLogPath: options.agentAuditLogPath,
-      cleanup,
-      logPath,
-      runDirectory,
-      runId,
-      sandboxLogPath,
-      sandboxProvider: options.sandboxProvider,
-      scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
-    });
+    const failureSummary = withIdentityEvidenceArtifacts(
+      createPreparationWorkspaceCleanupFailureSummary({
+        agentAuditLogPath: options.agentAuditLogPath,
+        cleanup,
+        logPath,
+        runDirectory,
+        runId,
+        sandboxLogPath,
+        sandboxProvider: options.sandboxProvider,
+        scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
+      }),
+      identityEvidenceArtifacts,
+    );
     logBestEffort(log, {
       event: "pipeline-failed",
       message:
@@ -731,17 +867,20 @@ export async function runFullPipelineJob(
     };
   } catch (error) {
     if (isPipelineCancellationError(error)) {
-      const cancellationSummary = createCancellationSummary({
-        agentAuditLogPath: options.agentAuditLogPath,
-        cancellationReason: error.reason,
-        cleanup: undefined,
-        logPath,
-        runDirectory,
-        runId,
-        sandboxLogPath,
-        sandboxProvider: options.sandboxProvider,
-        scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
-      });
+      const cancellationSummary = withIdentityEvidenceArtifacts(
+        createCancellationSummary({
+          agentAuditLogPath: options.agentAuditLogPath,
+          cancellationReason: error.reason,
+          cleanup: undefined,
+          logPath,
+          runDirectory,
+          runId,
+          sandboxLogPath,
+          sandboxProvider: options.sandboxProvider,
+          scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
+        }),
+        identityEvidenceArtifacts,
+      );
       await writeFile(
         completed.result.resultPath,
         `${JSON.stringify(cancellationSummary, null, 2)}\n`,
@@ -763,15 +902,18 @@ export async function runFullPipelineJob(
       });
     }
 
-    const failureSummary = createUnexpectedFailureSummary({
-      agentAuditLogPath: options.agentAuditLogPath,
-      logPath,
-      runDirectory,
-      runId,
-      sandboxLogPath,
-      sandboxProvider: options.sandboxProvider,
-      scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
-    });
+    const failureSummary = withIdentityEvidenceArtifacts(
+      createUnexpectedFailureSummary({
+        agentAuditLogPath: options.agentAuditLogPath,
+        logPath,
+        runDirectory,
+        runId,
+        sandboxLogPath,
+        sandboxProvider: options.sandboxProvider,
+        scriptGenerationAuditLogPath: options.scriptGenerationAuditLogPath,
+      }),
+      identityEvidenceArtifacts,
+    );
     await log({
       error: readErrorMessage(error),
       event: "pipeline-failed",
@@ -792,6 +934,23 @@ export async function runFullPipelineJob(
       status: "infrastructure-failed",
     });
   }
+}
+
+function withIdentityEvidenceArtifacts<
+  Summary extends { artifacts: Record<string, unknown> },
+>(
+  summary: Summary,
+  artifacts: FullPipelineIdentityEvidenceArtifactPaths | undefined,
+): Summary {
+  if (artifacts === undefined) return summary;
+  return {
+    ...summary,
+    artifacts: {
+      ...summary.artifacts,
+      identityAuditPath: artifacts.identityAuditPath,
+      preparedWorkspacePatchPath: artifacts.preparedWorkspacePatchPath,
+    },
+  };
 }
 
 function createCancellationSummary(input: {
@@ -1253,6 +1412,7 @@ function readPipelineFailure(
             ]
           : [preparedDemo.failureReason],
       failureKind: preparedDemo.failureKind,
+      failureReason: preparedDemo.failureReason,
       ...(preparedDemo.infrastructure === undefined
         ? {}
         : { infrastructure: preparedDemo.infrastructure }),
@@ -1260,6 +1420,7 @@ function readPipelineFailure(
         ? {}
         : { resourceDiagnostics: preparedDemo.resourceDiagnostics }),
       suggestedChanges: [],
+      stage: preparedDemo.stage,
     };
   }
   if (preparedDemo.status === "preparation-failed") {
@@ -1301,6 +1462,19 @@ function readPipelineFailure(
     };
   }
 
+  if (preparedDemo.status === "identity-review-failed") {
+    return {
+      blockers: [
+        `Prepared Application Identity Review failed: ${preparedDemo.identityReview.failureKind}.`,
+        preparedDemo.identityReview.explanation,
+      ],
+      identityReview: preparedDemo.identityReview,
+      reason: preparedDemo.identityReview.explanation,
+      stage: "prepared-application-identity-review" as const,
+      suggestedChanges: [],
+    };
+  }
+
   return {
     blockers: [
       ...(preparedDemo.review === undefined
@@ -1316,6 +1490,23 @@ function readPipelineFailure(
       (finding) => finding.message,
     ),
   };
+}
+
+function readPipelineFailureStage(
+  preparedDemo: Exclude<
+    Awaited<ReturnType<typeof runPipelineJob>>,
+    { status: "succeeded" }
+  >,
+): "pipeline" | PipelineStage {
+  if (preparedDemo.status === "infrastructure-failed") {
+    return preparedDemo.stage === "prepared-application-identity-review"
+      ? preparedDemo.stage
+      : "pipeline";
+  }
+  if (preparedDemo.status === "identity-review-failed") {
+    return "prepared-application-identity-review";
+  }
+  return "pipeline";
 }
 
 function removeUndefinedFields(input: Record<string, unknown>) {

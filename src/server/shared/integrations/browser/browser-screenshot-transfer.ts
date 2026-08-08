@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,7 +40,7 @@ export async function transferBrowserScreenshot(input: {
   sourcePath: string;
   timeoutMs?: number;
   workspace: PreparationWorkspace;
-}): Promise<{ sizeBytes: number }> {
+}): Promise<{ sha256: string; sizeBytes: number }> {
   if (input.workspace.downloadSubmittedCodeFiles === undefined) {
     throw new BrowserScreenshotTransferError("download");
   }
@@ -96,7 +97,10 @@ export async function transferBrowserScreenshot(input: {
     } catch (error) {
       throw new BrowserScreenshotTransferError("upload");
     }
-    return { sizeBytes };
+    return {
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      sizeBytes,
+    };
   } finally {
     if (directory !== undefined) {
       await rm(directory, { force: true, recursive: true }).catch(() => {});

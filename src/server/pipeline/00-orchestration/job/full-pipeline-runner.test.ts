@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +7,13 @@ import { describe, expect, it } from "vitest";
 
 import { createAgentSession } from "../../../test-support/create-agent-session";
 import type { RepoSecurityInput } from "../../02-repo-security-screen/repo-security-screen";
+import { createApplicationIdentityBaseline } from "../../03-repo-preparation/application-identity-evidence";
 import { PreparationWorkspaceInfrastructureError } from "../../03-repo-preparation/preparation-workspace-infrastructure.interface";
+import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
+import type {
+  RepoPreparationInput,
+  RepoPreparationResult,
+} from "../../03-repo-preparation/repo-preparation-agent.interface";
 import type {
   CaptureManifest,
   CaptureScenesFromScriptInput,
@@ -21,14 +28,48 @@ import { PipelineCancellationError } from "./pipeline-cancellation";
 import type { PipelineJobInput } from "./pipeline-job";
 import type { PipelineOrchestratorDependencies } from "./pipeline-orchestrator";
 
+type SuccessfulRepoPreparation = Extract<
+  RepoPreparationResult,
+  { status: "succeeded" }
+>;
+
+type TestRepoPreparationResult =
+  | Exclude<RepoPreparationResult, { status: "succeeded" }>
+  | (Omit<
+      SuccessfulRepoPreparation,
+      | "applicationIdentityBaseline"
+      | "preparedWorkspaceDiff"
+      | "runtimePreflight"
+    > &
+      Partial<
+        Pick<
+          SuccessfulRepoPreparation,
+          | "applicationIdentityBaseline"
+          | "preparedWorkspaceDiff"
+          | "runtimePreflight"
+        >
+      >);
+
+type TestPipelineOrchestratorDependencies = Omit<
+  PipelineOrchestratorDependencies,
+  "prepareRepo" | "reviewPreparedApplicationIdentity" | "reviewRepoSecurity"
+> & {
+  prepareRepo(input: RepoPreparationInput): Promise<TestRepoPreparationResult>;
+} & Partial<
+    Pick<
+      PipelineOrchestratorDependencies,
+      "reviewPreparedApplicationIdentity" | "reviewRepoSecurity"
+    >
+  >;
+
 function runFullPipelineJob(
   input: Omit<PipelineJobInput, "repoSecurity"> & {
     repoSecurity: Partial<RepoSecurityInput>;
   },
-  dependencies: Omit<PipelineOrchestratorDependencies, "reviewRepoSecurity"> &
-    Partial<Pick<PipelineOrchestratorDependencies, "reviewRepoSecurity">>,
+  dependencies: TestPipelineOrchestratorDependencies,
   options?: FullPipelineRunnerOptions,
 ) {
+  const prepareRepo = dependencies.prepareRepo;
   return runFullPipelineJobWithDependencies(
     {
       ...input,
@@ -38,15 +79,24 @@ function runFullPipelineJob(
       },
     },
     {
-      async reviewRepoSecurity() {
-        return {
+      ...dependencies,
+      async prepareRepo(preparationInput) {
+        const result = await prepareRepo(preparationInput);
+        return result.status === "succeeded"
+          ? withPreparedIdentityEvidence(preparationInput, result)
+          : result;
+      },
+      reviewPreparedApplicationIdentity:
+        dependencies.reviewPreparedApplicationIdentity ??
+        (async () => passingIdentityReview()),
+      reviewRepoSecurity:
+        dependencies.reviewRepoSecurity ??
+        (async () => ({
           concerns: [],
           rationale: "Test fixture approval.",
-          status: "succeeded",
-          verdict: "approved",
-        };
-      },
-      ...dependencies,
+          status: "succeeded" as const,
+          verdict: "approved" as const,
+        })),
     },
     options,
   );
@@ -163,12 +213,67 @@ describe("runFullPipelineJob", () => {
       expect(result.resultPath).toBe(
         join(outputRoot, "full-run", "full-pipeline-result.json"),
       );
+      expect(result.identityAuditPath).toBe(
+        join(
+          outputRoot,
+          "full-run",
+          "prepared-application-identity-audit.json",
+        ),
+      );
+      expect(result.preparedWorkspacePatchPath).toBe(
+        join(outputRoot, "full-run", "prepared-workspace.patch"),
+      );
+      await expect(
+        readFile(result.preparedWorkspacePatchPath, "utf8"),
+      ).resolves.toBe("diff --git a/src/App.tsx b/src/App.tsx\n");
+      await expect(
+        readFile(result.identityAuditPath, "utf8"),
+      ).resolves.not.toContain("INTERNAL_RUNTIME_SECRET=do-not-persist");
+      await expect(
+        readJsonFile(result.identityAuditPath),
+      ).resolves.toMatchObject({
+        baseline: {
+          pathInventorySha256: sha256("src/App.tsx\0"),
+          pinnedRevision: "0123456789abcdef0123456789abcdef01234567",
+          sourcePathCount: 1,
+          sourceTreeObjectId: "1111111111111111111111111111111111111111",
+        },
+        identityReview: {
+          explanation: "The prepared runtime renders the submitted native UI.",
+          status: "succeeded",
+          verdict: "pass",
+        },
+        preparationManifest: {
+          diffArtifactId: "diff",
+          mockingPlan: {
+            boundaries: [],
+            nativeUiRoots: ["src/App.tsx"],
+          },
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+        preparedEvidence: {
+          accessibilitySnapshot: {
+            sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          },
+          screenshot: {
+            sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          },
+        },
+        preparedWorkspaceDiff: {
+          artifactId: "diff",
+          patchSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          patchSizeBytes: 39,
+        },
+        version: 1,
+      });
       await expect(readJsonFile(result.resultPath)).resolves.toMatchObject({
         artifacts: {
           captureManifestPath: join(outputRoot, "capture-manifest.json"),
           finalVideoPath: join(outputRoot, "final-video.mp4"),
           generatedScriptPath: join(outputRoot, "full-run", "demo-script.json"),
+          identityAuditPath: result.identityAuditPath,
           logPath: join(outputRoot, "full-run", "pipeline-log.jsonl"),
+          preparedWorkspacePatchPath: result.preparedWorkspacePatchPath,
           agentAuditLogPath: join(
             outputRoot,
             "full-run",
@@ -248,6 +353,165 @@ describe("runFullPipelineJob", () => {
       expect(prepared).toBe(false);
       expect(resultText).not.toContain("SECRET_SOURCE_EXCERPT");
       expect(resultText).not.toContain("must not prepare");
+    } finally {
+      await rm(outputRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("serializes prepared application identity rejection with its stage and structured reason", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
+    let generated = false;
+    const cleanupCalls: string[] = [];
+    const preparationWorkspace = fakePreparationWorkspaceHandle();
+    preparationWorkspace.discard = async () => {
+      cleanupCalls.push("discard");
+    };
+    preparationWorkspace.release = async () => {
+      cleanupCalls.push("release");
+    };
+    const input = fullPipelineInput();
+    input.preparationWorkspace = preparationWorkspace;
+
+    try {
+      const failure = await runFullPipelineJob(
+        input,
+        {
+          ...orchestratorDependencies([], undefined, preparationWorkspace),
+          async generateDemoScript() {
+            generated = true;
+            throw new Error("must not generate");
+          },
+          async reviewPreparedApplicationIdentity() {
+            return {
+              explanation:
+                "The prepared runtime replaced the submitted Midday interface with a generic dashboard.",
+              failureKind: "replacement-detected" as const,
+              mockedBoundaries: [],
+              nativeSurfacesRendered: [],
+              replacementEvidence: [
+                "accessibility-snapshot:sha256:replacement",
+              ],
+              sourceCitations: [
+                { endLine: 80, path: "src/App.tsx", startLine: 1 },
+              ],
+              status: "succeeded" as const,
+              verdict: "fail" as const,
+            };
+          },
+        },
+        { outputRoot, runId: "identity-review-rejected" },
+      ).catch((error: unknown) => error);
+      if (!(failure instanceof FullPipelineStageFailure)) throw failure;
+
+      expect(failure.stage).toBe("prepared-application-identity-review");
+      expect(generated).toBe(false);
+      const identityAuditPath = join(
+        outputRoot,
+        "identity-review-rejected",
+        "prepared-application-identity-audit.json",
+      );
+      const preparedWorkspacePatchPath = join(
+        outputRoot,
+        "identity-review-rejected",
+        "prepared-workspace.patch",
+      );
+      await expect(readJsonFile(failure.resultPath)).resolves.toMatchObject({
+        artifacts: {
+          identityAuditPath,
+          preparedWorkspacePatchPath,
+        },
+        failure: {
+          blockers: [
+            "Prepared Application Identity Review failed: replacement-detected.",
+            "The prepared runtime replaced the submitted Midday interface with a generic dashboard.",
+          ],
+          identityReview: {
+            failureKind: "replacement-detected",
+            verdict: "fail",
+          },
+          reason:
+            "The prepared runtime replaced the submitted Midday interface with a generic dashboard.",
+          stage: "prepared-application-identity-review",
+          suggestedChanges: [],
+        },
+        status: "identity-review-failed",
+      });
+      await expect(readFile(preparedWorkspacePatchPath, "utf8")).resolves.toBe(
+        "diff --git a/src/App.tsx b/src/App.tsx\n",
+      );
+      await expect(readJsonFile(identityAuditPath)).resolves.toMatchObject({
+        identityReview: {
+          explanation:
+            "The prepared runtime replaced the submitted Midday interface with a generic dashboard.",
+          failureKind: "replacement-detected",
+          status: "succeeded",
+          verdict: "fail",
+        },
+        preparedWorkspaceDiff: {
+          artifactId: "diff",
+          patchSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          patchSizeBytes: 39,
+        },
+        version: 1,
+      });
+      expect(cleanupCalls).toEqual(["discard"]);
+    } finally {
+      await rm(outputRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("retains safe preparation evidence for a structured identity reviewer infrastructure failure", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "makeademo-full-"));
+    const preparationWorkspace = fakePreparationWorkspaceHandle();
+
+    try {
+      const failure = await runFullPipelineJob(
+        fullPipelineInput(),
+        {
+          ...orchestratorDependencies([], undefined, preparationWorkspace),
+          async reviewPreparedApplicationIdentity() {
+            return {
+              failureKind: "timeout" as const,
+              status: "failed" as const,
+            };
+          },
+        },
+        { outputRoot, runId: "identity-review-timeout" },
+      ).catch((error: unknown) => error);
+      if (!(failure instanceof FullPipelineStageFailure)) throw failure;
+
+      const identityAuditPath = join(
+        outputRoot,
+        "identity-review-timeout",
+        "prepared-application-identity-audit.json",
+      );
+      const preparedWorkspacePatchPath = join(
+        outputRoot,
+        "identity-review-timeout",
+        "prepared-workspace.patch",
+      );
+      expect(failure).toMatchObject({
+        stage: "prepared-application-identity-review",
+        status: "infrastructure-failed",
+      });
+      await expect(readJsonFile(failure.resultPath)).resolves.toMatchObject({
+        artifacts: { identityAuditPath, preparedWorkspacePatchPath },
+        status: "infrastructure-failed",
+      });
+      await expect(readJsonFile(identityAuditPath)).resolves.toMatchObject({
+        identityReview: { failureKind: "timeout", status: "failed" },
+        preparedWorkspaceDiff: {
+          artifactId: "diff",
+          patchSizeBytes: 39,
+        },
+        version: 1,
+      });
+      await expect(readFile(identityAuditPath, "utf8")).resolves.not.toContain(
+        "INTERNAL_RUNTIME_SECRET=do-not-persist",
+      );
+      await expect(readFile(preparedWorkspacePatchPath, "utf8")).resolves.toBe(
+        "diff --git a/src/App.tsx b/src/App.tsx\n",
+      );
     } finally {
       await rm(outputRoot, { force: true, recursive: true });
     }
@@ -1514,6 +1778,13 @@ describe("runFullPipelineJob", () => {
                 demoCommand: "npm run demo",
                 diffArtifactId: "diff",
                 existingDemoEvidence: [],
+                mockingPlan: {
+                  boundaries: [],
+                  fixturePaths: [],
+                  loadedPlaybooks: [],
+                  nativeUiRoots: ["src/App.tsx"],
+                  plannedPresentationChanges: [],
+                },
                 mockedServices: [],
                 modifiedFiles: [],
                 repoUrl: "https://github.com/example/app",
@@ -1750,6 +2021,70 @@ function fullPipelineInput() {
   };
 }
 
+function withPreparedIdentityEvidence(
+  input: { commitSha: string; repoUrl: string },
+  result: Extract<TestRepoPreparationResult, { status: "succeeded" }>,
+): SuccessfulRepoPreparation {
+  const accessibilityText = "main: Native article feed\nbutton: Open article";
+  const patch = "diff --git a/src/App.tsx b/src/App.tsx\n";
+  const applicationIdentityBaseline = createApplicationIdentityBaseline({
+    pinnedRevision: input.commitSha,
+    repoUrl: input.repoUrl,
+    sourceControlledPaths: ["src/App.tsx"],
+    sourceTreeObjectId: "1111111111111111111111111111111111111111",
+  });
+  const preparedWorkspaceDiff = {
+    artifactId: result.manifest.diffArtifactId,
+    createdPaths: [],
+    deletedPaths: [],
+    modifiedPaths: ["src/App.tsx"],
+    patch,
+    patchSha256: sha256(patch),
+    sizeBytes: Buffer.byteLength(patch),
+  };
+  const runtimePreflight = {
+    accessibilitySnapshot: {
+      sha256: sha256(accessibilityText),
+      sizeBytes: Buffer.byteLength(accessibilityText),
+      text: accessibilityText,
+    },
+    blockedNetworkAttempts: [],
+    logs: ["INTERNAL_RUNTIME_SECRET=do-not-persist"],
+    screenshot: {
+      mimeType: "image/png" as const,
+      path: "/tmp/prepared-app.png",
+      sha256: sha256("prepared-app-screenshot"),
+      sizeBytes: 23,
+    },
+    status: "succeeded" as const,
+    warnings: [],
+  };
+  return {
+    ...result,
+    applicationIdentityBaseline:
+      result.applicationIdentityBaseline ?? applicationIdentityBaseline,
+    preparedWorkspaceDiff:
+      result.preparedWorkspaceDiff ?? preparedWorkspaceDiff,
+    runtimePreflight: result.runtimePreflight ?? runtimePreflight,
+  };
+}
+
+function passingIdentityReview() {
+  return {
+    explanation: "The prepared runtime renders the submitted native UI.",
+    mockedBoundaries: [],
+    nativeSurfacesRendered: ["src/App.tsx"],
+    replacementEvidence: [],
+    sourceCitations: [{ endLine: 12, path: "src/App.tsx", startLine: 1 }],
+    status: "succeeded" as const,
+    verdict: "pass" as const,
+  };
+}
+
+function sha256(value: string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 function orchestratorDependencies(
   calls: string[],
   options: { includeBrowserUrl?: boolean; musicEnabled?: boolean } = {
@@ -1758,7 +2093,7 @@ function orchestratorDependencies(
   },
   preparationWorkspace = fakePreparationWorkspaceHandle(),
   agentSession = createAgentSession(),
-): PipelineOrchestratorDependencies {
+): TestPipelineOrchestratorDependencies {
   return {
     async generateDemoScript() {
       calls.push("script-generation");
@@ -1794,6 +2129,13 @@ function orchestratorDependencies(
           demoCommand: "npm run demo",
           diffArtifactId: "diff",
           existingDemoEvidence: [],
+          mockingPlan: {
+            boundaries: [],
+            fixturePaths: [],
+            loadedPlaybooks: [],
+            nativeUiRoots: ["src/App.tsx"],
+            plannedPresentationChanges: [],
+          },
           mockedServices: [],
           modifiedFiles: [],
           repoUrl: "https://github.com/example/app",
@@ -1836,11 +2178,23 @@ function orchestratorDependencies(
   };
 }
 
-function fakePreparationWorkspaceHandle() {
+function fakePreparationWorkspaceHandle(): PreparationWorkspaceHandle {
   return {
     async release() {},
     id: "daytona_workspace",
     workspace: {
+      async capturePreparedWorkspaceDiff() {
+        const patch = "diff --git a/src/App.tsx b/src/App.tsx\n";
+        return {
+          artifactId: "diff",
+          createdPaths: [],
+          deletedPaths: [],
+          modifiedPaths: ["src/App.tsx"],
+          patch,
+          patchSha256: sha256(patch),
+          sizeBytes: Buffer.byteLength(patch),
+        };
+      },
       async execute() {
         return { exitCode: 0, stderr: "", stdout: "" };
       },

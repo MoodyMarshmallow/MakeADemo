@@ -1,7 +1,10 @@
+import { createHash } from "node:crypto";
+
 const replacement = "[redacted]";
 
 export const validationEvidenceCaps = {
   browser: 8 * 1024,
+  accessibilitySnapshot: 16 * 1024,
   failureReason: 2 * 1024,
   prompt: 32 * 1024,
   server: 16 * 1024,
@@ -12,6 +15,30 @@ export type BoundedValidationText = {
   text: string;
   truncated?: true;
 };
+
+export type PreparedAccessibilitySnapshot = BoundedValidationText & {
+  sha256: string;
+  sizeBytes: number;
+};
+
+/** Retains a redacted, bounded, content-addressed accessibility snapshot. */
+export function createPreparedAccessibilitySnapshot(
+  value: string,
+  upstreamOmittedChars = 0,
+): PreparedAccessibilitySnapshot {
+  const bounded = boundValidationEvidence(
+    value,
+    validationEvidenceCaps.accessibilitySnapshot,
+  );
+  const omittedChars = upstreamOmittedChars + (bounded.omittedChars ?? 0);
+  const bytes = Buffer.from(bounded.text, "utf8");
+  return {
+    ...(omittedChars === 0 ? {} : { omittedChars, truncated: true as const }),
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    sizeBytes: bytes.length,
+    text: bounded.text,
+  };
+}
 
 /** Redacts secret-like values and retains only a bounded diagnostic excerpt. */
 export function boundValidationEvidence(

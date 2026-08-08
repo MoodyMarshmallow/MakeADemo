@@ -1,10 +1,21 @@
+import { writeFile } from "node:fs/promises";
+
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentSessionRunner } from "../agent-harness/agent-session-runner.interface";
+import type {
+  AgentSessionRunInput,
+  AgentSessionRunner,
+  AgentTaskRunner,
+} from "../agent-harness/agent-session-runner.interface";
 import {
   type PipelineOrchestratorDependencies,
   runPipelineJob,
 } from "../pipeline/00-orchestration/job/pipeline-orchestrator";
+import { createPreparedApplicationIdentityEvidenceLedger } from "../pipeline/03-prepared-application-identity-review/prepared-application-identity-evidence";
+import {
+  createApplicationIdentityBaseline,
+  createPreparedWorkspaceDiff,
+} from "../pipeline/03-repo-preparation/application-identity-evidence";
 import type { PreparationWorkspaceHandle } from "../pipeline/03-repo-preparation/preparation-workspace-runner";
 import type { RepoPreparationAgent } from "../pipeline/03-repo-preparation/repo-preparation-agent.interface";
 import { submittedCodeKnownGoodNodeReleaseCatalog } from "../pipeline/03-repo-preparation/submitted-code-node-release-catalog.interface";
@@ -13,12 +24,15 @@ import type { ScriptGenerationAgent } from "../pipeline/04-script-generation/scr
 import type { CapturePathRepairer } from "../pipeline/05-capture-path-validation/capture-path-repairer.interface";
 import type { BrowserValidator } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/browser-validator.interface";
 import type { SandboxRunner } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/sandbox-runner.interface";
+import { createPreparedAccessibilitySnapshot } from "../pipeline/05-capture-path-validation/demo-runtime-preflight/validation-evidence";
+import { createProductionAgentHarness } from "./production-agent-harness";
 import { resolveProductionAgentModelConfig } from "./production-agent-model-config";
 import {
   createDaytonaFreshCaptureStatePreparer,
   createProductionPipeline,
   createProductionPipelineDependencies,
   resolveProductionRuntimeNetworkPolicy,
+  toRepoPreparationPreflightResult,
 } from "./production-pipeline";
 
 describe("production Pipeline assembly", () => {
@@ -65,12 +79,141 @@ describe("production Pipeline assembly", () => {
     }
   });
 
+  it("runs Prepared Application Identity Review with a distinct fresh profile and only its stage tools", async () => {
+    const calls: Array<{
+      executionMode: string | undefined;
+      profileLabel: string;
+      session: unknown;
+      stage: string;
+      toolNames: string[];
+    }> = [];
+    const agentSessionRunner: AgentSessionRunner = {
+      async run(input) {
+        calls.push({
+          executionMode: input.executionMode,
+          profileLabel: input.profile.label,
+          session: input.session,
+          stage: input.stage,
+          toolNames: input.tools?.map((tool) => tool.name) ?? [],
+        });
+        await inspectPreparedApplicationIdentityEvidence(input);
+        return {
+          exitCode: 0,
+          stderr: "",
+          stdout: "",
+          structuredOutput: {
+            explanation:
+              "The prepared application retains its pinned native surface.",
+            mockedBoundaries: [],
+            nativeSurfacesRendered: ["src/App.tsx"],
+            replacementEvidence: [],
+            sourceCitations: [
+              { endLine: 20, path: "src/App.tsx", startLine: 1 },
+            ],
+            verdict: "pass",
+          },
+        };
+      },
+    };
+    const harness = createProductionAgentHarness({
+      agentModel: resolveProductionAgentModelConfig({
+        modelID: "gpt-5.6",
+        providerID: "openai",
+      }),
+      agentSessionRunner,
+    });
+    const dependencies = createProductionPipelineDependencies({
+      nodeReleaseCatalog: submittedCodeKnownGoodNodeReleaseCatalog,
+      preparedApplicationIdentityReviewRunner:
+        harness.agentTaskRunners.preparedApplicationIdentityReview,
+      repoPreparationAgent: {
+        async prepare() {
+          throw new Error("not used");
+        },
+      },
+      repoSecurityReviewer: approvingRepoSecurityReviewer(),
+      sandboxRunner: {
+        async runValidation() {
+          throw new Error("not used");
+        },
+      },
+    });
+
+    await expect(
+      dependencies.reviewPreparedApplicationIdentity(
+        preparedApplicationIdentityReviewInput(),
+      ),
+    ).resolves.toMatchObject({ status: "succeeded", verdict: "pass" });
+    expect(calls).toEqual([
+      {
+        executionMode: "stage-tools-transient",
+        profileLabel: "Prepared Application Identity review agent",
+        session: undefined,
+        stage: "prepared-application-identity-review",
+        toolNames: [
+          "inspect_pinned_source",
+          "search_pinned_source_paths",
+          "search_pinned_ui_identity",
+          "read_prepared_identity_evidence",
+        ],
+      },
+    ]);
+  });
+
+  it("preserves preflight visual evidence for Prepared Application Identity Review", () => {
+    const result = toRepoPreparationPreflightResult({
+      accessibilitySnapshot: {
+        omittedChars: 12,
+        sha256:
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        sizeBytes: 24,
+        text: "Native app accessibility",
+        truncated: true,
+      },
+      blockedNetworkAttempts: [],
+      logs: [],
+      screenshot: {
+        mimeType: "image/png",
+        path: "/workspace/.makeademo/validation-screenshot.png",
+        sha256:
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        sizeBytes: 1_024,
+      },
+      status: "succeeded",
+      warnings: [],
+    });
+
+    expect(result).toMatchObject({
+      accessibilitySnapshot: {
+        omittedChars: 12,
+        sha256:
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        sizeBytes: 24,
+        text: "Native app accessibility",
+        truncated: true,
+      },
+      screenshot: {
+        mimeType: "image/png",
+        path: "/workspace/.makeademo/validation-screenshot.png",
+        sha256:
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        sizeBytes: 1_024,
+      },
+    });
+  });
+
   it("runs Repo Preparation, Script Generation, and Capture Path Validation through the Pipeline Job", async () => {
     const repoPreparationAgent: RepoPreparationAgent = {
       async prepare() {
+        const diff = preparedWorkspaceDiff();
         return {
-          baselineSourceControlledPaths: ["src/App.tsx"],
-          manifest: preparationManifest(),
+          applicationIdentityBaseline: applicationIdentityBaseline(),
+          manifest: {
+            ...preparationManifest(),
+            diffArtifactId: diff.artifactId,
+          },
+          preparedWorkspaceDiff: diff,
+          runtimePreflight: succeededRepoPreparationPreflight(),
           status: "succeeded",
           workspace: preparationWorkspaceHandle(),
         };
@@ -109,6 +252,8 @@ describe("production Pipeline assembly", () => {
       createProductionPipelineDependencies({
         browserValidator,
         nodeReleaseCatalog: submittedCodeKnownGoodNodeReleaseCatalog,
+        preparedApplicationIdentityReviewRunner:
+          passingPreparedApplicationIdentityReviewRunner(),
         repoPreparationAgent,
         repoSecurityReviewer: approvingRepoSecurityReviewer(),
         sandboxRunner,
@@ -179,6 +324,8 @@ describe("production Pipeline assembly", () => {
 
     const dependencies = createProductionPipelineDependencies({
       nodeReleaseCatalog: submittedCodeKnownGoodNodeReleaseCatalog,
+      preparedApplicationIdentityReviewRunner:
+        passingPreparedApplicationIdentityReviewRunner(),
       repoPreparationAgent: {
         async prepare() {
           throw new Error("not used");
@@ -222,6 +369,13 @@ function preparationManifest() {
     demoCommand: "npm run demo:makeademo",
     diffArtifactId: "artifact_diff",
     existingDemoEvidence: [],
+    mockingPlan: {
+      boundaries: [],
+      fixturePaths: [],
+      loadedPlaybooks: [],
+      nativeUiRoots: ["src/App.tsx"],
+      plannedPresentationChanges: [],
+    },
     mockedServices: [],
     modifiedFiles: [],
     nativeVisibleInterface: {
@@ -238,11 +392,105 @@ function preparationManifest() {
   };
 }
 
+function applicationIdentityBaseline() {
+  return createApplicationIdentityBaseline({
+    pinnedRevision: "0123456789abcdef0123456789abcdef01234567",
+    repoUrl: "https://github.com/example/app",
+    sourceControlledPaths: ["src/App.tsx"],
+    sourceTreeObjectId: "abcdef0123456789abcdef0123456789abcdef01",
+  });
+}
+
+function preparedWorkspaceDiff() {
+  return createPreparedWorkspaceDiff({
+    createdPaths: [],
+    deletedPaths: [],
+    modifiedPaths: [],
+    patch: "",
+  });
+}
+
+function succeededRepoPreparationPreflight() {
+  return {
+    accessibilitySnapshot: createPreparedAccessibilitySnapshot(
+      "Native application heading and validation control",
+    ),
+    blockedNetworkAttempts: [],
+    logs: ["browser loaded"],
+    screenshot: {
+      mimeType: "image/png" as const,
+      path: "/workspace/.makeademo/validation-screenshot.png",
+      sha256:
+        "4c4b6a3be1314ab86138bef4314dde022e600960d8689a2c8f8631802d20dab6",
+      sizeBytes: identityScreenshotBytes.length,
+    },
+    status: "succeeded" as const,
+    warnings: [],
+  };
+}
+
+function passingPreparedApplicationIdentityReviewRunner(): AgentTaskRunner {
+  return {
+    async run(input) {
+      await inspectPreparedApplicationIdentityEvidence(input);
+      return {
+        exitCode: 0,
+        structuredOutput: {
+          explanation:
+            "The prepared application retains its pinned native surface.",
+          mockedBoundaries: [],
+          nativeSurfacesRendered: ["src/App.tsx"],
+          replacementEvidence: [],
+          sourceCitations: [{ endLine: 20, path: "src/App.tsx", startLine: 1 }],
+          verdict: "pass",
+        },
+      };
+    },
+  };
+}
+
+function preparedApplicationIdentityReviewInput() {
+  const diff = preparedWorkspaceDiff();
+  return {
+    evidenceLedger: createPreparedApplicationIdentityEvidenceLedger({
+      applicationIdentityBaseline: applicationIdentityBaseline(),
+      evidence: [
+        {
+          content: JSON.stringify({
+            mimeType: "image/png",
+            path: "/workspace/.makeademo/validation-screenshot.png",
+            sha256:
+              "4c4b6a3be1314ab86138bef4314dde022e600960d8689a2c8f8631802d20dab6",
+            sizeBytes: identityScreenshotBytes.length,
+          }),
+          id: "prepared:screenshot",
+          kind: "prepared-screenshot",
+        },
+        {
+          content: "Native application heading and navigation are visible.",
+          id: "prepared:accessibility",
+          kind: "accessibility-snapshot",
+        },
+      ],
+      mockedBoundaries: [],
+      preparedWorkspaceDiff: diff,
+    }),
+    preparationManifest: {
+      ...preparationManifest(),
+      diffArtifactId: diff.artifactId,
+    },
+    preparationWorkspace: preparationWorkspaceHandle(),
+  };
+}
+
 function preparationWorkspaceHandle(): PreparationWorkspaceHandle {
   return {
     async release() {},
     id: "workspace_123",
     workspace: {
+      async capturePreparedWorkspaceDiff() {
+        return preparedWorkspaceDiff();
+      },
       async execute(command) {
         if (command === "makeademo-inspect-submitted-code-toolchain") {
           return {
@@ -266,6 +514,23 @@ function preparationWorkspaceHandle(): PreparationWorkspaceHandle {
         }
         return { exitCode: 0, stderr: "", stdout: "" };
       },
+      async executeReadOnlyCommand() {
+        return {
+          exitCode: 0,
+          stderr: "",
+          stdout: Array.from(
+            { length: 20 },
+            (_, index) => `export const nativeLine${index + 1} = true;`,
+          ).join("\n"),
+        };
+      },
+      async downloadFiles(files) {
+        await Promise.all(
+          files.map(({ destinationPath }) =>
+            writeFile(destinationPath, identityScreenshotBytes),
+          ),
+        );
+      },
       async getPreviewUrl() {
         return "https://preview.example.test";
       },
@@ -274,10 +539,38 @@ function preparationWorkspaceHandle(): PreparationWorkspaceHandle {
   };
 }
 
+const identityScreenshotBytes = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
+
+async function inspectPreparedApplicationIdentityEvidence(
+  input: Pick<AgentSessionRunInput, "tools">,
+): Promise<void> {
+  const sourceTool = input.tools?.find(
+    ({ name }) => name === "inspect_pinned_source",
+  );
+  const evidenceTool = input.tools?.find(
+    ({ name }) => name === "read_prepared_identity_evidence",
+  );
+  if (sourceTool === undefined || evidenceTool === undefined) {
+    throw new Error("Identity review tools were not supplied.");
+  }
+  await sourceTool.execute({
+    endLine: "20",
+    path: "src/App.tsx",
+    startLine: "1",
+  });
+  for (const evidenceId of evidenceTool.args.evidenceId?.values ?? []) {
+    await evidenceTool.execute({ evidenceId });
+  }
+}
+
 function succeededPreparedDemo(
   preparationWorkspace: PreparationWorkspaceHandle,
 ) {
   const demoScript = createDemoScript("script_test");
+  const manifest = preparationManifest();
+  const diff = preparedWorkspaceDiff();
 
   return {
     demoScript,
@@ -288,8 +581,15 @@ function succeededPreparedDemo(
       status: "succeeded" as const,
       warnings: [],
     },
-    preparationManifest: preparationManifest(),
+    identityEvidenceSource: {
+      applicationIdentityBaseline: applicationIdentityBaseline(),
+      manifest,
+      preparedWorkspaceDiff: diff,
+      runtimePreflight: succeededRepoPreparationPreflight(),
+    },
+    preparationManifest: manifest,
     preparationWorkspace,
+    reviewedPreparedWorkspaceDiff: diff,
     status: "succeeded" as const,
   };
 }

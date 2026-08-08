@@ -1,24 +1,28 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
 
-import type { AgentToolDefinition } from "../agent-session-runner.interface";
+import type {
+  AgentToolDefinition,
+  AgentToolResult,
+} from "../agent-session-runner.interface";
 
 /** Adapts a Pipeline-owned tool contract to Pi's TypeBox tool definition. */
 export function createPiStageToolDefinitions(
-  tools: readonly AgentToolDefinition[],
+  tools: readonly AgentToolDefinition<AgentToolResult>[],
 ): ToolDefinition[] {
   return tools.map((tool) => ({
     description: tool.description,
     executionMode: "sequential",
-    execute: async (_toolCallId, args) => ({
-      content: [
-        {
-          text: await tool.execute(args as Record<string, unknown>),
-          type: "text",
-        },
-      ],
-      details: undefined,
-    }),
+    execute: async (_toolCallId, args) => {
+      const result = await tool.execute(args as Record<string, unknown>);
+      return {
+        content:
+          typeof result === "string"
+            ? [{ text: result, type: "text" as const }]
+            : [...result],
+        details: undefined,
+      };
+    },
     label: tool.name,
     name: tool.name,
     parameters: Type.Object(
@@ -35,7 +39,7 @@ export function createPiStageToolDefinitions(
 }
 
 function createArgumentSchema(
-  argument: AgentToolDefinition["args"][string],
+  argument: AgentToolDefinition<AgentToolResult>["args"][string],
 ): TSchema {
   if (argument.type === "string") {
     return Type.String({ description: argument.description });

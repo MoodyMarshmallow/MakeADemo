@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,6 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { createAgentSession } from "../../../test-support/create-agent-session";
+import { createApplicationIdentityBaseline } from "../../03-repo-preparation/application-identity-evidence";
 import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
 import type { CaptureManifest } from "../../06-footage-capture/capture-scenes";
 import type { CompositedVideoManifest } from "../../07-compositing/composite-video";
@@ -329,6 +331,57 @@ describe("runDraftCompositeReviewLoop", () => {
     }
   });
 
+  it("fails identity review when Draft Composite Demo Script repair changes reviewed source", async () => {
+    const root = await mkdtemp(join(tmpdir(), "makeademo-review-"));
+    let repairChangedSource = false;
+    let captureCalls = 0;
+    try {
+      const dependencies = loopDependencies(() => {});
+      dependencies.repairCapturePathFailure = async (input) => {
+        repairChangedSource = true;
+        return {
+          preparationManifest: input.preparationManifest,
+          demoScript: { ...input.demoScript, scriptId: "repaired" },
+        };
+      };
+      const input = loopInput(root, {
+        dependencies,
+        captureScenes: async (captureInput) => {
+          captureCalls += 1;
+          return captureManifest(root, captureInput.runId ?? "capture");
+        },
+        reviewDraftComposite: async ({ attempt }) =>
+          attempt === 1
+            ? {
+                decision: "repair",
+                reason: "Fix the flow.",
+                repairScope: "demo-script",
+              }
+            : { decision: "accept" },
+      });
+      input.preparedDemo.preparationWorkspace.workspace.capturePreparedWorkspaceDiff =
+        async () =>
+          repairChangedSource
+            ? reviewedPreparedWorkspaceDiff({
+                artifactId: "workspace-diff:sha256:changed-after-draft",
+                createdPaths: ["src/replacement-dashboard.tsx"],
+                patch:
+                  "diff --git a/src/replacement-dashboard.tsx b/src/replacement-dashboard.tsx\n+replacement\n",
+              })
+            : reviewedPreparedWorkspaceDiff();
+
+      await expect(runDraftCompositeReviewLoop(input)).rejects.toMatchObject({
+        identityReview: {
+          failureKind: "identity-not-proven",
+          verdict: "fail",
+        },
+      });
+      expect(captureCalls).toBe(1);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
   it("reruns pipeline preparation for workspace repair and persists the repaired script after compositing", async () => {
     const root = await mkdtemp(join(tmpdir(), "makeademo-review-"));
     const calls: string[] = [];
@@ -338,6 +391,28 @@ describe("runDraftCompositeReviewLoop", () => {
       const dependencies = loopDependencies(() => {
         stageRuns += 1;
       });
+      const prepareRepo = dependencies.prepareRepo;
+      dependencies.prepareRepo = async (input) => {
+        const result = await prepareRepo(input);
+        if (result.status !== "succeeded" || result.workspace === undefined) {
+          return result;
+        }
+        const repairedDiff = reviewedPreparedWorkspaceDiff({
+          artifactId: "repair-diff",
+          modifiedPaths: ["src/App.tsx"],
+          patch: "diff --git a/src/App.tsx b/src/App.tsx\n+repair\n",
+        });
+        result.workspace.workspace.capturePreparedWorkspaceDiff = async () =>
+          repairedDiff;
+        return {
+          ...result,
+          manifest: {
+            ...result.manifest,
+            diffArtifactId: repairedDiff.artifactId,
+          },
+          preparedWorkspaceDiff: repairedDiff,
+        };
+      };
       const result = await runDraftCompositeReviewLoop(
         loopInput(root, {
           dependencies,
@@ -362,8 +437,61 @@ describe("runDraftCompositeReviewLoop", () => {
         }),
       );
       expect(result.reviewSummary.status).toBe("accepted");
+      expect(
+        result.preparedDemo.identityEvidenceSource.preparedWorkspaceDiff,
+      ).toMatchObject({
+        artifactId: "repair-diff",
+        patchSha256: sha256(
+          "diff --git a/src/App.tsx b/src/App.tsx\n+repair\n",
+        ),
+      });
       expect(stageRuns).toBe(1);
       expect(persisted).toBe(1);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("propagates a workspace repair identity rejection instead of restoring the previous draft", async () => {
+    const root = await mkdtemp(join(tmpdir(), "makeademo-review-"));
+    let captureCalls = 0;
+    try {
+      const dependencies = loopDependencies(() => {});
+      dependencies.reviewPreparedApplicationIdentity = async () => ({
+        explanation:
+          "The repaired workspace replaced the submitted application.",
+        failureKind: "replacement-detected",
+        mockedBoundaries: [],
+        nativeSurfacesRendered: [],
+        replacementEvidence: ["prepared-workspace-diff:sha256:replacement"],
+        sourceCitations: [{ endLine: 20, path: "src/App.tsx", startLine: 1 }],
+        status: "succeeded",
+        verdict: "fail",
+      });
+
+      await expect(
+        runDraftCompositeReviewLoop(
+          loopInput(root, {
+            dependencies,
+            captureScenes: async (input) => {
+              captureCalls += 1;
+              return captureManifest(root, input.runId ?? "capture");
+            },
+            reviewDraftComposite: async () => ({
+              decision: "repair",
+              reason: "Workspace needs repair.",
+              repairScope: "workspace",
+            }),
+          }),
+        ),
+      ).rejects.toMatchObject({
+        identityReview: {
+          failureKind: "replacement-detected",
+          verdict: "fail",
+        },
+        name: "PreparedWorkspaceIdentitySealError",
+      });
+      expect(captureCalls).toBe(1);
     } finally {
       await rm(root, { force: true, recursive: true });
     }
@@ -485,13 +613,54 @@ function loopDependencies(
     generateDemoScript: async () => succeededPreparedDemo().demoScript,
     prepareRepo: async () => {
       onPrepare();
+      const accessibilityText = "main: Native article feed";
       return {
+        applicationIdentityBaseline: createApplicationIdentityBaseline({
+          pinnedRevision: "0123456789abcdef0123456789abcdef01234567",
+          repoUrl: "https://github.com/example/app",
+          sourceControlledPaths: ["src/App.tsx"],
+          sourceTreeObjectId: "1111111111111111111111111111111111111111",
+        }),
         manifest: succeededPreparedDemo().preparationManifest,
+        preparedWorkspaceDiff: {
+          artifactId: "diff",
+          createdPaths: [],
+          deletedPaths: [],
+          modifiedPaths: [],
+          patch: "",
+          patchSha256: sha256(""),
+          sizeBytes: 0,
+        },
         agentSession: createAgentSession(),
+        runtimePreflight: {
+          accessibilitySnapshot: {
+            sha256: sha256(accessibilityText),
+            sizeBytes: Buffer.byteLength(accessibilityText),
+            text: accessibilityText,
+          },
+          blockedNetworkAttempts: [],
+          logs: [],
+          screenshot: {
+            mimeType: "image/png" as const,
+            path: "/tmp/prepared-app.png",
+            sha256: sha256("prepared-app-screenshot"),
+          },
+          status: "succeeded" as const,
+          warnings: [],
+        },
         workspace: preparationWorkspaceHandle(),
         status: "succeeded",
       };
     },
+    reviewPreparedApplicationIdentity: async () => ({
+      explanation: "The prepared runtime renders the submitted native UI.",
+      mockedBoundaries: [],
+      nativeSurfacesRendered: ["src/App.tsx"],
+      replacementEvidence: [],
+      sourceCitations: [{ endLine: 12, path: "src/App.tsx", startLine: 1 }],
+      status: "succeeded",
+      verdict: "pass",
+    }),
     reviewRepoSecurity: async () => ({
       concerns: [],
       rationale: "Test fixture approval.",
@@ -517,7 +686,36 @@ function loopDependencies(
   };
 }
 
+function sha256(value: string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 function succeededPreparedDemo(): DraftCompositeReviewLoopInput["preparedDemo"] {
+  const accessibilityText = "main: Native article feed";
+  const preparationManifest = {
+    assumptions: [],
+    createdFiles: [],
+    demoCommand: "npm run demo",
+    diffArtifactId: "diff",
+    existingDemoEvidence: [],
+    mockingPlan: {
+      boundaries: [],
+      fixturePaths: [],
+      loadedPlaybooks: [],
+      nativeUiRoots: ["src/App.tsx"],
+      plannedPresentationChanges: [],
+    },
+    mockedServices: [],
+    modifiedFiles: [],
+    repoUrl: "https://github.com/example/app",
+    risks: [],
+    scriptGenerationContext: [],
+    setupSummary: "Prepared app.",
+    status: "adapted-existing-demo" as const,
+    url: "http://localhost:3000/",
+    workspaceId: "workspace_123",
+  };
+  const preparedWorkspaceDiff = reviewedPreparedWorkspaceDiff();
   return {
     capturePathValidation: {
       browserUrl: "https://preview.example.test/",
@@ -546,24 +744,57 @@ function succeededPreparedDemo(): DraftCompositeReviewLoopInput["preparedDemo"] 
       version: 1,
     },
     agentSession: createAgentSession(),
-    preparationManifest: {
-      assumptions: [],
-      createdFiles: [],
-      demoCommand: "npm run demo",
-      diffArtifactId: "diff",
-      existingDemoEvidence: [],
-      mockedServices: [],
-      modifiedFiles: [],
-      repoUrl: "https://github.com/example/app",
-      risks: [],
-      scriptGenerationContext: [],
-      setupSummary: "Prepared app.",
-      status: "adapted-existing-demo",
-      url: "http://localhost:3000/",
-      workspaceId: "workspace_123",
+    identityEvidenceSource: {
+      applicationIdentityBaseline: createApplicationIdentityBaseline({
+        pinnedRevision: "0123456789abcdef0123456789abcdef01234567",
+        repoUrl: "https://github.com/example/app",
+        sourceControlledPaths: ["src/App.tsx"],
+        sourceTreeObjectId: "1111111111111111111111111111111111111111",
+      }),
+      manifest: preparationManifest,
+      preparedWorkspaceDiff,
+      runtimePreflight: {
+        accessibilitySnapshot: {
+          sha256: sha256(accessibilityText),
+          sizeBytes: Buffer.byteLength(accessibilityText),
+          text: accessibilityText,
+        },
+        blockedNetworkAttempts: [],
+        logs: [],
+        screenshot: {
+          mimeType: "image/png",
+          path: "/tmp/prepared-app.png",
+          sha256: sha256("prepared-app-screenshot"),
+        },
+        status: "succeeded",
+        warnings: [],
+      },
     },
+    preparationManifest,
     preparationWorkspace: preparationWorkspaceHandle(),
+    reviewedPreparedWorkspaceDiff: preparedWorkspaceDiff,
     status: "succeeded",
+  };
+}
+
+function reviewedPreparedWorkspaceDiff(
+  input: {
+    artifactId?: string;
+    createdPaths?: string[];
+    deletedPaths?: string[];
+    modifiedPaths?: string[];
+    patch?: string;
+  } = {},
+) {
+  const patch = input.patch ?? "";
+  return {
+    artifactId: input.artifactId ?? "diff",
+    createdPaths: input.createdPaths ?? [],
+    deletedPaths: input.deletedPaths ?? [],
+    modifiedPaths: input.modifiedPaths ?? [],
+    patch,
+    patchSha256: sha256(patch),
+    sizeBytes: Buffer.byteLength(patch),
   };
 }
 
@@ -572,6 +803,9 @@ function preparationWorkspaceHandle(): PreparationWorkspaceHandle {
     async release() {},
     id: "workspace_123",
     workspace: {
+      async capturePreparedWorkspaceDiff() {
+        return reviewedPreparedWorkspaceDiff();
+      },
       async execute() {
         return { exitCode: 0, stderr: "", stdout: "" };
       },

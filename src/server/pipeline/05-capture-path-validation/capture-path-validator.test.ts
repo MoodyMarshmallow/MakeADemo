@@ -857,6 +857,13 @@ function manifest() {
     demoCommand: "npm run demo:makeademo",
     diffArtifactId: "artifact_diff",
     existingDemoEvidence: [],
+    mockingPlan: {
+      boundaries: [],
+      fixturePaths: [],
+      loadedPlaybooks: [],
+      nativeUiRoots: ["src/App.tsx"],
+      plannedPresentationChanges: [],
+    },
     mockedServices: [],
     modifiedFiles: [],
     repoUrl: "https://github.com/example/app",

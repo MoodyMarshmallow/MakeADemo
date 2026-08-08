@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { createApplicationIdentityBaseline } from "../../../pipeline/03-repo-preparation/application-identity-evidence";
 import type {
   PreparationWorkspace,
   PreparationWorkspaceCommandResult,
@@ -11,7 +12,7 @@ import {
 } from "./daytona-repo-security-input-loader";
 
 describe("DaytonaRepoSecurityInputLoader", () => {
-  it("retains one pinned parent and returns only its baseline and scanner reports", async () => {
+  it("captures the pinned Application Identity Baseline before static scanning", async () => {
     const commands: string[] = [];
     const workspace = new FakeRepositoryLoadingWorkspace({ commands });
     const provider = new FakeRepositoryLoadingWorkspaceProvider([workspace]);
@@ -22,10 +23,14 @@ describe("DaytonaRepoSecurityInputLoader", () => {
     });
 
     expect(loaded.preparationWorkspace.workspace).toBe(workspace);
-    expect(loaded.baselineSourceControlledPaths).toEqual([
-      "package.json",
-      "src/app.ts",
-    ]);
+    expect(loaded.applicationIdentityBaseline).toEqual(
+      createApplicationIdentityBaseline({
+        pinnedRevision: "0123456789abcdef0123456789abcdef01234567",
+        repoUrl: "https://github.com/example/app",
+        sourceControlledPaths: ["package.json", "src/app.ts"],
+        sourceTreeObjectId: "89abcdef0123456789abcdef0123456789abcdef",
+      }),
+    );
     expect(
       loaded.repoSecurity.scannerReports.map((report) => report.scanner),
     ).toEqual(["osv-scanner", "guarddog", "semgrep"]);
@@ -34,6 +39,11 @@ describe("DaytonaRepoSecurityInputLoader", () => {
       "fetch --depth=1 --no-tags --recurse-submodules=no origin '0123456789abcdef0123456789abcdef01234567'",
     );
     expect(commands.findIndex(isGitAcquisitionCommand)).toBeLessThan(
+      commands.indexOf("capture-application-identity-baseline"),
+    );
+    expect(
+      commands.indexOf("capture-application-identity-baseline"),
+    ).toBeLessThan(
       commands.findIndex((command) => command.includes("osv-scanner")),
     );
     const backendCommands = commands.filter(
@@ -180,6 +190,16 @@ class FakeRepositoryLoadingWorkspace implements PreparationWorkspace {
     throw new Error("Repository loading must not use privileged execution.");
   }
 
+  async captureApplicationIdentityBaseline() {
+    this.input.commands?.push("capture-application-identity-baseline");
+    return createApplicationIdentityBaseline({
+      pinnedRevision: "0123456789abcdef0123456789abcdef01234567",
+      repoUrl: "https://github.com/example/app",
+      sourceControlledPaths: ["package.json", "src/app.ts"],
+      sourceTreeObjectId: "89abcdef0123456789abcdef0123456789abcdef",
+    });
+  }
+
   async executeRepositoryCommand(command: string) {
     this.input.commands?.push(command);
     if (isGitAcquisitionCommand(command) || command.includes("tar -xzf")) {
@@ -209,13 +229,6 @@ class FakeRepositoryLoadingWorkspace implements PreparationWorkspace {
         exitCode: 0,
         stderr: "",
         stdout: JSON.stringify({ errors: [], results: [] }),
-      };
-    }
-    if (command === "git -C /workspace ls-files -z") {
-      return {
-        exitCode: 0,
-        stderr: "",
-        stdout: "package.json\0src/app.ts\0",
       };
     }
     throw new Error(`Unexpected command: ${command}`);

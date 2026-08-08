@@ -20,9 +20,14 @@ import {
   defaultRuntimeNetworkPolicy,
 } from "../../05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
 import { isPipelineInfrastructureFailureKind } from "../../pipeline-infrastructure-failure";
+import type {
+  ApplicationIdentityBaseline,
+  PreparedWorkspaceDiff,
+} from "../application-identity-evidence.interface";
 import { classifyDependencyInstallFailure } from "../dependency-install-failure-classifier";
 import { runPlannedDependencyInstall } from "../planned-dependency-install";
 import {
+  createAuthoritativePreparationManifest,
   type readPreparationManifest,
   validateNativeVisibleInterfaceProvenance,
 } from "../preparation-manifest";
@@ -49,6 +54,7 @@ import {
 } from "../submitted-code-execution";
 import type { SubmittedCodeNodeReleaseCatalog } from "../submitted-code-node-release-catalog.interface";
 import { inspectSubmittedCodeToolchain } from "../submitted-code-toolchain-inspection";
+import { validatePreparationMockingPlanPlaybooks } from "./playbooks/repo-preparation-playbooks";
 import { createRepoPreparationAgentWorkspace } from "./repo-preparation-agent-workspace";
 import {
   type ValidationRequest,
@@ -286,7 +292,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
           handle,
           input,
           result.value.prompt,
-          result.value.baselineSourceControlledPaths,
+          result.value.applicationIdentityBaseline,
           deadlineAt,
         );
       } catch (error) {
@@ -348,9 +354,9 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     input: RepoPreparationInput,
   ): Promise<PreparationSetupResult> {
     throwIfPipelineCancelled(input.signal);
-    const baselineSourceControlledPaths =
-      input.baselineSourceControlledPaths ??
-      (await bootstrapRepoPreparationWorkspace({
+    let applicationIdentityBaseline = input.applicationIdentityBaseline;
+    if (applicationIdentityBaseline === undefined) {
+      const bootstrap = await bootstrapRepoPreparationWorkspace({
         commitSha: input.commitSha,
         ...(this.cloneFailureDiagnosticsContext === undefined
           ? {}
@@ -361,20 +367,22 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         logger: this.logger,
         repoUrl: input.repoUrl,
         workspace: handle.workspace,
-      }));
-    throwIfPipelineCancelled(input.signal);
-    if (
-      !Array.isArray(baselineSourceControlledPaths) &&
-      baselineSourceControlledPaths.failure !== undefined
-    ) {
-      return {
-        result: baselineSourceControlledPaths.failure,
-        status: "result",
-      };
+      });
+      throwIfPipelineCancelled(input.signal);
+      if (bootstrap.failure !== undefined) {
+        return { result: bootstrap.failure, status: "result" };
+      }
+      if (handle.workspace.captureApplicationIdentityBaseline === undefined) {
+        throw new Error(
+          "Repo Preparation workspace cannot capture an Application Identity Baseline.",
+        );
+      }
+      applicationIdentityBaseline =
+        await handle.workspace.captureApplicationIdentityBaseline({
+          pinnedRevision: input.commitSha,
+          repoUrl: input.repoUrl,
+        });
     }
-    const baseline = Array.isArray(baselineSourceControlledPaths)
-      ? baselineSourceControlledPaths
-      : baselineSourceControlledPaths.baselineSourceControlledPaths;
     const toolchain = await inspectSubmittedCodeToolchain(
       handle.workspace,
       this.nodeReleaseCatalog,
@@ -425,7 +433,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     throwIfPipelineCancelled(input.signal);
 
     return {
-      baselineSourceControlledPaths: baseline,
+      applicationIdentityBaseline,
       prompt: createDaytonaRepoPreparationPrompt(input, {
         runtimeNetworkPolicy: this.runtimeNetworkPolicy,
         ...(toolchainAdvisory === undefined ? {} : { toolchainAdvisory }),
@@ -438,7 +446,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     handle: PreparationWorkspaceHandle,
     input: RepoPreparationInput,
     initialPrompt: string,
-    baselineSourceControlledPaths: string[],
+    applicationIdentityBaseline: ApplicationIdentityBaseline,
     initialHardDeadlineAt: number,
   ): Promise<AgentTaskLoopResult> {
     let hardDeadlineAt = initialHardDeadlineAt;
@@ -447,7 +455,9 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     let agentSession: AgentSession | undefined;
     let validationRepairAttempts = 0;
     const controlState = createRepoPreparationControlState({
-      baselineSourceControlledPaths,
+      baselineSourceControlledPaths: [
+        ...applicationIdentityBaseline.sourceControlledPaths,
+      ],
       readManifest: () =>
         readPreparationManifestFile(handle.workspace, preparationManifestPath),
     });
@@ -608,7 +618,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
           deadlineAt,
           handle,
           input,
-          baselineSourceControlledPaths,
+          applicationIdentityBaseline,
           validationRepairAttempts,
           validationRequest,
         });
@@ -877,7 +887,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
           return {
             ...preparationResult,
             ...(agentSession === undefined ? {} : { agentSession }),
-            baselineSourceControlledPaths,
+            applicationIdentityBaseline,
             runtimePreflight,
             workspace: handle,
           };
@@ -938,7 +948,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
 
   private async processValidationRequest(input: {
     attempt: number;
-    baselineSourceControlledPaths: string[];
+    applicationIdentityBaseline: ApplicationIdentityBaseline;
     canExecuteRetry: boolean;
     agentSession: AgentSession | undefined;
     controlState: RepoPreparationControlState;
@@ -974,6 +984,7 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
     }
     const runRuntimePreflight = this.runRuntimePreflight;
     let manifest: ReturnType<typeof readPreparationManifest> | undefined;
+    let preparedWorkspaceDiff: PreparedWorkspaceDiff | undefined;
     let runtimePreflight: RepoPreparationPreflightResult;
     try {
       const validationRun = await runSettledPreparationOperation({
@@ -984,7 +995,23 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
           );
           validateNativeVisibleInterfaceProvenance(
             manifest,
-            input.baselineSourceControlledPaths,
+            input.applicationIdentityBaseline,
+          );
+          validatePreparationMockingPlanPlaybooks(
+            manifest.mockingPlan,
+            input.controlState.readLoadedPlaybooks(),
+          );
+          const capturePreparedWorkspaceDiff =
+            input.handle.workspace.capturePreparedWorkspaceDiff;
+          if (capturePreparedWorkspaceDiff === undefined) {
+            return createUnavailablePreparedWorkspaceDiffResult();
+          }
+          preparedWorkspaceDiff = await capturePreparedWorkspaceDiff.call(
+            input.handle.workspace,
+          );
+          manifest = createAuthoritativePreparationManifest(
+            manifest,
+            preparedWorkspaceDiff,
           );
           return await runRuntimePreflight({
             manifest,
@@ -1043,15 +1070,20 @@ export class AgenticRepoPreparation implements RepoPreparationAgent {
         status: "done",
       };
     }
-    if (runtimePreflight.status === "succeeded" && manifest !== undefined) {
+    if (
+      runtimePreflight.status === "succeeded" &&
+      manifest !== undefined &&
+      preparedWorkspaceDiff !== undefined
+    ) {
       await this.writeSandboxLog(input.handle.workspace, {
         event: "preparation-auto-succeeded-after-preflight",
         status: runtimePreflight.status,
       });
       return {
         result: {
-          baselineSourceControlledPaths: input.baselineSourceControlledPaths,
+          applicationIdentityBaseline: input.applicationIdentityBaseline,
           manifest,
+          preparedWorkspaceDiff,
           ...(input.agentSession === undefined
             ? {}
             : { agentSession: input.agentSession }),
@@ -1152,7 +1184,7 @@ type TimeoutMetadata = {
 
 type PreparationSetupResult =
   | {
-      baselineSourceControlledPaths: string[];
+      applicationIdentityBaseline: ApplicationIdentityBaseline;
       prompt: string;
       status: "ready";
     }
@@ -1552,6 +1584,20 @@ function createRuntimePreflightHandoffFailure(
       "MakeADemo could not run preparation preflight because the preparation manifest handoff was invalid.",
       `Manifest path: ${preparationManifestPath}`,
       `Error: ${reason}`,
+    ],
+    status: "failed",
+    warnings: [],
+  };
+}
+
+function createUnavailablePreparedWorkspaceDiffResult(): RepoPreparationPreflightResult {
+  return {
+    blockedNetworkAttempts: [],
+    failureKind: "unavailable",
+    failureReason:
+      "Repo Preparation workspace cannot capture the backend-owned prepared workspace diff.",
+    logs: [
+      "MakeADemo could not capture authoritative prepared workspace diff evidence.",
     ],
     status: "failed",
     warnings: [],

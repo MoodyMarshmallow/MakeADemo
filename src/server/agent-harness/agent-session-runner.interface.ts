@@ -41,8 +41,19 @@ export type AgentToolExecution = {
   status: "completed" | "started";
 };
 
+/** Provider-neutral text or PNG content returned by a Pipeline Stage tool. */
+type AgentToolResultContent =
+  | { text: string; type: "text" }
+  | { data: string; mimeType: "image/png"; type: "image" };
+
+/**
+ * Provider-neutral Stage Tool output. A string remains the shorthand for one
+ * text item; structured output may add bounded image proof beside bounded text.
+ */
+export type AgentToolResult = string | readonly AgentToolResultContent[];
+
 /** Provider-neutral schema and execution contract for a Pipeline Stage tool. */
-export type AgentToolDefinition = {
+export type AgentToolDefinition<TResult extends AgentToolResult = string> = {
   args: Readonly<
     Record<
       string,
@@ -55,7 +66,7 @@ export type AgentToolDefinition = {
     >
   >;
   description: string;
-  execute: (args: Record<string, unknown>) => Promise<string>;
+  execute: (args: Record<string, unknown>) => Promise<TResult>;
   name: string;
 };
 
@@ -101,7 +112,7 @@ export type AgentSessionRunInput<T = never> = {
   signal?: AbortSignal;
   taskPrompt: string;
   /** Stage-owned tools for this turn; never inferred from provider configuration. */
-  tools?: readonly AgentToolDefinition[];
+  tools?: readonly AgentToolDefinition<AgentToolResult>[];
   /** Receives reasoning text or summaries explicitly exposed by the provider. */
   onReasoning?: (content: string) => void;
   /**

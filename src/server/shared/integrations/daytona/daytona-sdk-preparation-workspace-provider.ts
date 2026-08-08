@@ -10,6 +10,16 @@ import { satisfies as semverSatisfies } from "semver";
 import { Daytona } from "@daytona/sdk";
 
 import {
+  applicationIdentityEvidenceCaps,
+  createApplicationIdentityBaseline,
+  createPreparedWorkspaceDiff,
+} from "../../../pipeline/03-repo-preparation/application-identity-evidence";
+import type {
+  ApplicationIdentityBaseline,
+  PreparedWorkspaceDiff,
+} from "../../../pipeline/03-repo-preparation/application-identity-evidence.interface";
+import {
+  generatedWorkspaceCacheDirectories,
   generatedWorkspaceCacheFindPredicates,
   generatedWorkspaceCachePathPatterns,
 } from "../../../pipeline/03-repo-preparation/generated-workspace-cache-policy";
@@ -473,6 +483,7 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
   private submittedRuntimeMutation = Promise.resolve();
   private submittedRuntimeIdentity: SubmittedRuntimeLaunchIdentity | undefined;
   private submittedCodeSandbox: DaytonaSdkSandbox | undefined;
+  private applicationIdentityBaseline: ApplicationIdentityBaseline | undefined;
 
   constructor(
     private readonly sandbox: DaytonaSdkSandbox,
@@ -529,6 +540,96 @@ class DaytonaSdkPreparationWorkspace implements PreparationWorkspace {
       createUnprivilegedAgentCommand(command),
       { ...options, env: {} },
     );
+  }
+
+  async captureApplicationIdentityBaseline(input: {
+    pinnedRevision: string;
+    repoUrl: string;
+  }): Promise<ApplicationIdentityBaseline> {
+    const retained = this.applicationIdentityBaseline;
+    if (retained !== undefined) {
+      if (
+        retained.pinnedRevision !== input.pinnedRevision.toLowerCase() ||
+        retained.repoUrl !== input.repoUrl
+      ) {
+        throw new Error(
+          "Preparation workspace is already bound to a different Application Identity Baseline.",
+        );
+      }
+      return retained;
+    }
+
+    const result = await this.executeRepositoryCommand(
+      createApplicationIdentityBaselineCommand(input.pinnedRevision),
+      { timeoutMs: this.commandTimeoutMs },
+    );
+    if (result.exitCode !== 0) {
+      throw new Error(
+        "Failed to capture the pinned Application Identity Baseline.",
+      );
+    }
+    const fields = result.stdout.split("\0");
+    const checkedOutRevision = fields.shift();
+    const sourceTreeObjectId = fields.shift();
+    if (
+      checkedOutRevision === undefined ||
+      sourceTreeObjectId === undefined ||
+      checkedOutRevision.toLowerCase() !== input.pinnedRevision.toLowerCase()
+    ) {
+      throw new Error(
+        "Application Identity Baseline does not match the pinned revision.",
+      );
+    }
+    const sourceControlledPaths = fields.filter((path) => path.length > 0);
+    const baseline = createApplicationIdentityBaseline({
+      pinnedRevision: checkedOutRevision,
+      repoUrl: input.repoUrl,
+      sourceControlledPaths,
+      sourceTreeObjectId,
+    });
+    this.applicationIdentityBaseline = baseline;
+    return baseline;
+  }
+
+  async capturePreparedWorkspaceDiff(): Promise<PreparedWorkspaceDiff> {
+    const baseline = this.applicationIdentityBaseline;
+    if (baseline === undefined) {
+      throw new Error(
+        "Prepared Workspace diff requires a bound Application Identity Baseline.",
+      );
+    }
+    const result = await this.executeRepositoryCommand(
+      createPreparedWorkspaceDiffCommand(baseline.pinnedRevision),
+      { timeoutMs: this.commandTimeoutMs },
+    );
+    if (result.exitCode !== 0) {
+      throw new Error("Failed to capture the Prepared Workspace diff.");
+    }
+    const parsed = parsePreparedWorkspaceDiffProtocol(result.stdout);
+    const baselinePaths = new Set(baseline.sourceControlledPaths);
+    const currentPaths = parseNulPaths(parsed.currentPaths);
+    const createdPaths = currentPaths.filter(
+      (path) => !baselinePaths.has(path),
+    );
+    const modifiedPaths: string[] = [];
+    const deletedPaths: string[] = [];
+    const statusFields = parseNulPaths(parsed.nameStatus);
+    for (let index = 0; index < statusFields.length; index += 2) {
+      const status = statusFields[index];
+      const path = statusFields[index + 1];
+      if (status === undefined || path === undefined) {
+        throw new Error("Prepared Workspace diff status is malformed.");
+      }
+      if (status === "D") deletedPaths.push(path);
+      else if (status !== "A") modifiedPaths.push(path);
+      else if (!createdPaths.includes(path)) createdPaths.push(path);
+    }
+    return createPreparedWorkspaceDiff({
+      createdPaths: createdPaths.sort(),
+      deletedPaths: deletedPaths.sort(),
+      modifiedPaths: modifiedPaths.sort(),
+      patch: parsed.patch,
+    });
   }
 
   async executeReadOnlyCommand(
@@ -2977,6 +3078,123 @@ function readSandboxLogMessage(entry: PreparationWorkspaceLogEntry): string {
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function createApplicationIdentityBaselineCommand(
+  pinnedRevision: string,
+): string {
+  if (!/^[0-9a-f]{40}$/i.test(pinnedRevision)) {
+    throw new Error("pinnedRevision must be a full 40-character Git SHA");
+  }
+  const revision = shellQuote(pinnedRevision.toLowerCase());
+  const pathCount = applicationIdentityEvidenceCaps.pathCount;
+  const pathBytes = applicationIdentityEvidenceCaps.pathInventoryBytes;
+  return [
+    ": makeademo-application-identity-baseline",
+    "set -eu",
+    "ulimit -f 32768",
+    "makeademo_revision=$(/usr/bin/git -C /workspace rev-parse --verify HEAD)",
+    `test "$makeademo_revision" = ${revision}`,
+    `makeademo_tree=$(/usr/bin/git -C /workspace rev-parse --verify ${revision}^{tree})`,
+    "makeademo_paths=$(/usr/bin/mktemp)",
+    "trap '/bin/rm -f -- \"$makeademo_paths\"' EXIT",
+    `/usr/bin/git -C /workspace ls-tree -r -z --name-only ${revision} > "$makeademo_paths"`,
+    `test "$(/usr/bin/wc -c < \"$makeademo_paths\")" -le ${pathBytes}`,
+    `test "$(/usr/bin/tr -cd '\\000' < \"$makeademo_paths\" | /usr/bin/wc -c)" -le ${pathCount}`,
+    `/usr/bin/printf '%s\\0%s\\0' "$makeademo_revision" "$makeademo_tree"`,
+    '/bin/cat -- "$makeademo_paths"',
+  ].join("\n");
+}
+
+function createPreparedWorkspaceDiffCommand(pinnedRevision: string): string {
+  const revision = shellQuote(pinnedRevision);
+  const excludedPathspecs = [
+    ".makeademo",
+    ...generatedWorkspaceCacheDirectories,
+  ]
+    .flatMap((directory) => [
+      `:(exclude)${directory}`,
+      `:(exclude)${directory}/**`,
+      `:(exclude)**/${directory}`,
+      `:(exclude)**/${directory}/**`,
+    ])
+    .map(shellQuote)
+    .join(" ");
+  const cachePrunes = generatedWorkspaceCacheFindPredicates.join(" -o ");
+  return [
+    ": makeademo-prepared-workspace-diff",
+    "set -eu",
+    "ulimit -f 32768",
+    `makeademo_revision=${revision}`,
+    '/usr/bin/git -C /workspace cat-file -e "$makeademo_revision^{tree}"',
+    "makeademo_status=$(/usr/bin/mktemp)",
+    "makeademo_current=$(/usr/bin/mktemp)",
+    "makeademo_patch=$(/usr/bin/mktemp)",
+    'trap \'/bin/rm -f -- "$makeademo_status" "$makeademo_current" "$makeademo_patch"\' EXIT',
+    `/usr/bin/git -C /workspace diff --name-status -z --no-renames --no-ext-diff --no-textconv "$makeademo_revision" -- . ${excludedPathspecs} > "$makeademo_status"`,
+    `/usr/bin/find /workspace -mindepth 1 \\( -path /workspace/.git -o -path /workspace/.makeademo -o ${cachePrunes} \\) -prune -o \\( -type f -o -type l \\) -printf '%P\\0' > "$makeademo_current"`,
+    `/usr/bin/git -C /workspace diff --binary --full-index --no-renames --no-ext-diff --no-textconv "$makeademo_revision" -- . ${excludedPathspecs} > "$makeademo_patch"`,
+    "while IFS= read -r -d '' makeademo_path; do",
+    '  if ! /usr/bin/git -C /workspace cat-file -e "$makeademo_revision:$makeademo_path" 2>/dev/null; then',
+    '    makeademo_diff_exit=0; /usr/bin/git -C /workspace diff --no-index --binary --full-index --no-ext-diff --no-textconv -- /dev/null "/workspace/$makeademo_path" >> "$makeademo_patch" || makeademo_diff_exit=$?',
+    '    test "$makeademo_diff_exit" -eq 1',
+    "  fi",
+    'done < "$makeademo_current"',
+    `test "$(/usr/bin/wc -c < \"$makeademo_patch\")" -le ${applicationIdentityEvidenceCaps.workspaceDiffBytes}`,
+    `test "$(/usr/bin/wc -c < \"$makeademo_current\")" -le ${applicationIdentityEvidenceCaps.pathInventoryBytes}`,
+    `test "$(/usr/bin/tr -cd '\\000' < \"$makeademo_current\" | /usr/bin/wc -c)" -le ${applicationIdentityEvidenceCaps.pathCount}`,
+    "/usr/bin/printf '%s\\n' MAKEADEMO_PREPARED_WORKSPACE_DIFF_V1",
+    "/usr/bin/base64 -w0 < \"$makeademo_status\"; /usr/bin/printf '\\n'",
+    "/usr/bin/base64 -w0 < \"$makeademo_current\"; /usr/bin/printf '\\n'",
+    "/usr/bin/base64 -w0 < \"$makeademo_patch\"; /usr/bin/printf '\\n'",
+  ].join("\n");
+}
+
+function parsePreparedWorkspaceDiffProtocol(value: string): {
+  currentPaths: string;
+  nameStatus: string;
+  patch: string;
+} {
+  if (!value.endsWith("\n")) {
+    throw new Error("Prepared Workspace diff protocol is malformed.");
+  }
+  const [marker, nameStatus, currentPaths, patch, ...remainder] = value
+    .slice(0, -1)
+    .split("\n");
+  if (
+    marker !== "MAKEADEMO_PREPARED_WORKSPACE_DIFF_V1" ||
+    nameStatus === undefined ||
+    currentPaths === undefined ||
+    patch === undefined ||
+    remainder.length > 0
+  ) {
+    throw new Error("Prepared Workspace diff protocol is malformed.");
+  }
+  return {
+    currentPaths: decodeBase64Evidence(currentPaths),
+    nameStatus: decodeBase64Evidence(nameStatus),
+    patch: decodeBase64Evidence(patch),
+  };
+}
+
+function decodeBase64Evidence(value: string): string {
+  if (
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+      value,
+    )
+  ) {
+    throw new Error(
+      "Prepared Workspace diff protocol contains invalid base64.",
+    );
+  }
+  return Buffer.from(value, "base64").toString("utf8");
+}
+
+function parseNulPaths(value: string): string[] {
+  if (value.length > 0 && !value.endsWith("\0")) {
+    throw new Error("Prepared Workspace diff path inventory is malformed.");
+  }
+  return value.split("\0").filter((path) => path.length > 0);
 }
 
 function createUnprivilegedAgentCommand(command: string): string {

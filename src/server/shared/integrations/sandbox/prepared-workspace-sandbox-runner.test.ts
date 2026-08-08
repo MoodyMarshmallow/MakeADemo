@@ -1391,6 +1391,13 @@ function manifest(
     dependencyInstall,
     diffArtifactId: "artifact_diff",
     existingDemoEvidence: [],
+    mockingPlan: {
+      boundaries: [],
+      fixturePaths: [],
+      loadedPlaybooks: [],
+      nativeUiRoots: ["src/App.tsx"],
+      plannedPresentationChanges: [],
+    },
     mockedServices: [],
     modifiedFiles: [],
     repoUrl: "https://github.com/example/app",

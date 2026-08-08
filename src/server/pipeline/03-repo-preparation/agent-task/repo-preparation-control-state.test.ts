@@ -7,6 +7,13 @@ import {
 
 const manifest = {
   demoCommand: "npm run demo",
+  mockingPlan: {
+    boundaries: [],
+    fixturePaths: [],
+    loadedPlaybooks: [],
+    nativeUiRoots: ["src/App.tsx"],
+    plannedPresentationChanges: [],
+  },
   status: "ready",
   url: "http://127.0.0.1:3000",
   workspaceId: "workspace-1",
@@ -52,10 +59,85 @@ describe("Repo Preparation control state", () => {
         warnings: [],
       },
     });
-    currentManifest = { ...manifest, workspaceId: "forged-workspace" };
+    currentManifest = {
+      ...manifest,
+      mockingPlan: {
+        ...manifest.mockingPlan,
+        plannedPresentationChanges: ["Replace the native interface"],
+      },
+    };
 
     await expect(state.submit({ status: "succeeded" })).rejects.toThrow(
       "must match the latest passed preflight manifest",
+    );
+    expect(state.readSubmittedResult()).toBeUndefined();
+  });
+
+  it("requires fresh validation when the loaded-playbook set changes", async () => {
+    const state = createState();
+    state.recordValidation({
+      manifest,
+      runtimePreflight: {
+        blockedNetworkAttempts: [],
+        logs: [],
+        status: "succeeded",
+        warnings: [],
+      },
+    });
+
+    state.recordLoadedPlaybook("mock-backend-data");
+
+    await expect(state.submit({ status: "succeeded" })).rejects.toThrow(
+      "Run makeademo_validate_preparation",
+    );
+    expect(state.readSubmittedResult()).toBeUndefined();
+  });
+
+  it("keeps validation when loading a playbook already present in the set", async () => {
+    const state = createState();
+    state.recordLoadedPlaybook("mock-backend-data");
+    state.recordValidation({
+      manifest,
+      runtimePreflight: {
+        blockedNetworkAttempts: [],
+        logs: [],
+        status: "succeeded",
+        warnings: [],
+      },
+    });
+
+    state.recordLoadedPlaybook("mock-backend-data");
+
+    await expect(
+      state.submit({ status: "succeeded" }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("rejects submission when the loaded-playbook set changes during manifest reread", async () => {
+    let finishManifestRead: ((value: unknown) => void) | undefined;
+    const state = createState(
+      () =>
+        new Promise((resolve) => {
+          finishManifestRead = resolve;
+        }),
+    );
+    state.recordValidation({
+      manifest,
+      runtimePreflight: {
+        blockedNetworkAttempts: [],
+        logs: [],
+        status: "succeeded",
+        warnings: [],
+      },
+    });
+
+    const submission = state.submit({ status: "succeeded" });
+    await Promise.resolve();
+    state.recordLoadedPlaybook("mock-backend-data");
+    finishManifestRead?.(manifest);
+
+    await expect(submission).rejects.toThrow(
+      "Run makeademo_validate_preparation",
     );
     expect(state.readSubmittedResult()).toBeUndefined();
   });

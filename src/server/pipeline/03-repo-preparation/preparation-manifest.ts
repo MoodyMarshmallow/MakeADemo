@@ -1,3 +1,12 @@
+import type {
+  ApplicationIdentityBaseline,
+  PreparedWorkspaceDiff,
+} from "./application-identity-evidence.interface";
+import {
+  type PreparationMockingPlan,
+  readPreparationMockingPlan,
+} from "./preparation-mocking-plan.schema";
+
 type PreparationStatus =
   | "adapted-existing-demo"
   | "created-new-demo"
@@ -6,12 +15,6 @@ type PreparationStatus =
 /** Controls whether validation infers and runs a package-manager install. */
 type DependencyInstallStrategy = "inferred" | "not-required";
 
-/**
- * Identifies the submitted repository UI that the prepared visible interface
- * must render. Paths must come from the source-controlled baseline captured
- * before Repo Preparation; startup attempts describe how native UI startup was
- * attempted rather than a replacement standalone entrypoint.
- */
 type NativeVisibleInterfaceProvenance = {
   nativeStartupAttempts: string[];
   sourceControlledUiPaths: string[];
@@ -20,12 +23,16 @@ type NativeVisibleInterfaceProvenance = {
 export type PreparationManifest = {
   assumptions: string[];
   createdFiles: string[];
+  deletedFiles?: string[];
   demoCommand: string;
   dependencyInstall?: DependencyInstallStrategy;
   diffArtifactId: string;
   existingDemoEvidence: string[];
+  mockingPlan: PreparationMockingPlan;
+  /** @deprecated Derived from mockingPlan.boundaries. */
   mockedServices: string[];
   modifiedFiles: string[];
+  /** @deprecated Derived from demoCommand and mockingPlan.nativeUiRoots. */
   nativeVisibleInterface?: NativeVisibleInterfaceProvenance;
   repoUrl: string;
   risks: string[];
@@ -45,20 +52,30 @@ const statuses = new Set<PreparationStatus>([
 export function readPreparationManifest(value: unknown): PreparationManifest {
   const record = assertRecord(value, "Preparation Manifest");
   const status = readStatus(record);
+  const demoCommand = readNonEmptyString(record, "demoCommand");
+  const mockingPlan = readPreparationMockingPlan(record.mockingPlan);
+  const mockedServices = [
+    ...new Set(mockingPlan.boundaries.map((boundary) => boundary.source)),
+  ];
 
   return {
     assumptions: readStringArray(record, "assumptions"),
     createdFiles: readOptionalStringArray(record, "createdFiles"),
-    demoCommand: readNonEmptyString(record, "demoCommand"),
+    deletedFiles: readOptionalStringArray(record, "deletedFiles"),
+    demoCommand,
     dependencyInstall: readDependencyInstallStrategy(record),
     diffArtifactId: readNonEmptyString(record, "diffArtifactId"),
     existingDemoEvidence: readOptionalStringArray(
       record,
       "existingDemoEvidence",
     ),
-    mockedServices: readOptionalStringArray(record, "mockedServices"),
+    mockingPlan,
+    mockedServices,
     modifiedFiles: readOptionalStringArray(record, "modifiedFiles"),
-    nativeVisibleInterface: readNativeVisibleInterface(record),
+    nativeVisibleInterface: {
+      nativeStartupAttempts: [demoCommand],
+      sourceControlledUiPaths: [...mockingPlan.nativeUiRoots],
+    },
     repoUrl: readNonEmptyString(record, "repoUrl"),
     risks: readStringArray(record, "risks"),
     scriptGenerationContext: readOptionalStringArray(
@@ -72,56 +89,91 @@ export function readPreparationManifest(value: unknown): PreparationManifest {
   };
 }
 
-/**
- * Verifies that claimed visible UI paths existed in the submitted repository
- * before Repo Preparation. Callers must supply the backend-captured baseline,
- * never an agent-provided path inventory.
- */
+/** Validates plan paths against backend-owned source and workspace evidence. */
 export function validateNativeVisibleInterfaceProvenance(
   manifest: PreparationManifest,
-  baselineSourceControlledPaths: readonly string[],
+  applicationIdentityBaseline: ApplicationIdentityBaseline,
 ): void {
-  const provenance = manifest.nativeVisibleInterface;
-  if (provenance === undefined) {
-    throw new Error("nativeVisibleInterface must be present");
-  }
-  const baselinePaths = new Set(baselineSourceControlledPaths);
-  for (const path of provenance.sourceControlledUiPaths) {
+  const baselinePaths = new Set(
+    applicationIdentityBaseline.sourceControlledPaths,
+  );
+  const indexedSourcePaths = new Set(
+    applicationIdentityBaseline.uiIdentityIndex.entries.map(
+      (entry) => entry.path,
+    ),
+  );
+  for (const path of manifest.mockingPlan.nativeUiRoots) {
     if (!baselinePaths.has(path)) {
       throw new Error(
-        `nativeVisibleInterface.sourceControlledUiPaths includes ${path}, which was not source-controlled before Repo Preparation`,
+        `mockingPlan.nativeUiRoots includes ${path}, which was not source-controlled before Repo Preparation`,
+      );
+    }
+    if (!indexedSourcePaths.has(path)) {
+      throw new Error(
+        `mockingPlan.nativeUiRoots includes ${path}, which was not indexed as pre-mutation source evidence`,
+      );
+    }
+  }
+  const preparedPaths = new Set(baselinePaths);
+  for (const path of manifest.deletedFiles ?? []) preparedPaths.delete(path);
+  for (const path of manifest.createdFiles) preparedPaths.add(path);
+  for (const path of manifest.mockingPlan.fixturePaths) {
+    if (!preparedPaths.has(path)) {
+      throw new Error(
+        `mockingPlan.fixturePaths includes ${path}, which was not present in the pinned source or backend-captured workspace diff`,
       );
     }
   }
 }
 
-function readNativeVisibleInterface(
-  record: Record<string, unknown>,
-): NativeVisibleInterfaceProvenance {
-  const provenance = assertRecord(
-    record.nativeVisibleInterface,
-    "nativeVisibleInterface",
+/**
+ * Binds agent-authored manifest claims to the backend-captured workspace diff.
+ * The returned manifest always carries the backend artifact identifier; agent
+ * output cannot select or replace diff evidence.
+ */
+export function createAuthoritativePreparationManifest(
+  manifest: PreparationManifest,
+  diff: PreparedWorkspaceDiff,
+): PreparationManifest {
+  assertSamePaths("createdFiles", manifest.createdFiles, diff.createdPaths);
+  assertSamePaths(
+    "deletedFiles",
+    manifest.deletedFiles ?? [],
+    diff.deletedPaths,
   );
-  const sourceControlledUiPaths = readStringArray(
-    provenance,
-    "sourceControlledUiPaths",
-  );
-  if (sourceControlledUiPaths.length === 0) {
-    throw new Error(
-      "nativeVisibleInterface.sourceControlledUiPaths must not be empty",
-    );
-  }
-  const nativeStartupAttempts = readStringArray(
-    provenance,
-    "nativeStartupAttempts",
-  );
-  if (nativeStartupAttempts.length === 0) {
-    throw new Error(
-      "nativeVisibleInterface.nativeStartupAttempts must not be empty",
-    );
-  }
+  assertSamePaths("modifiedFiles", manifest.modifiedFiles, diff.modifiedPaths);
+  return {
+    ...manifest,
+    deletedFiles: manifest.deletedFiles ?? [],
+    diffArtifactId: diff.artifactId,
+  };
+}
 
-  return { nativeStartupAttempts, sourceControlledUiPaths };
+function assertSamePaths(
+  manifestField: "createdFiles" | "deletedFiles" | "modifiedFiles",
+  claimedPaths: readonly string[],
+  actualPaths: readonly string[],
+): void {
+  assertSameValues(
+    `${manifestField} must exactly match the backend-captured prepared workspace diff`,
+    claimedPaths,
+    actualPaths,
+  );
+}
+
+function assertSameValues(
+  message: string,
+  claimedValues: readonly string[],
+  actualValues: readonly string[],
+): void {
+  const claimed = [...claimedValues].sort();
+  const actual = [...actualValues].sort();
+  if (
+    claimed.length !== actual.length ||
+    claimed.some((value, index) => value !== actual[index])
+  ) {
+    throw new Error(message);
+  }
 }
 
 function readDependencyInstallStrategy(

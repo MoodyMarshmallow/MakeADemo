@@ -13,7 +13,11 @@ import {
   sanitizeNetworkAttemptUrl,
   sanitizeNetworkAttempts,
 } from "../../../pipeline/05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
-import { boundValidationLogs } from "../../../pipeline/05-capture-path-validation/demo-runtime-preflight/validation-evidence";
+import {
+  boundValidationLogs,
+  createPreparedAccessibilitySnapshot,
+  validationEvidenceCaps,
+} from "../../../pipeline/05-capture-path-validation/demo-runtime-preflight/validation-evidence";
 import {
   BrowserScreenshotTransferError,
   transferBrowserScreenshot,
@@ -166,8 +170,11 @@ export class PlaywrightBrowserValidator implements BrowserValidator {
       preparationWorkspace,
       screenshot,
     );
-    const { screenshot: _submittedScreenshot, ...parsedWithoutScreenshot } =
-      parsed;
+    const {
+      accessibilitySnapshot: submittedAccessibilitySnapshot,
+      screenshot: _submittedScreenshot,
+      ...parsedWithoutScreenshot
+    } = parsed;
     return {
       ...parsedWithoutScreenshot,
       ...(parsed.interactable
@@ -180,6 +187,14 @@ export class PlaywrightBrowserValidator implements BrowserValidator {
                 : "browser-not-interactable"),
           }),
       logs: boundValidationLogs(parsed.logs),
+      ...(submittedAccessibilitySnapshot === undefined
+        ? {}
+        : {
+            accessibilitySnapshot: createPreparedAccessibilitySnapshot(
+              submittedAccessibilitySnapshot.text,
+              submittedAccessibilitySnapshot.omittedChars,
+            ),
+          }),
       ...(accessibleScreenshot.screenshot === undefined
         ? {}
         : { screenshot: accessibleScreenshot.screenshot }),
@@ -299,6 +314,7 @@ async function copyScreenshotToRepairWorkspace(
       screenshot: {
         ...screenshot,
         path: repairScreenshotPath,
+        sha256: transferred.sha256,
         sizeBytes: transferred.sizeBytes,
       },
     };
@@ -415,6 +431,18 @@ async function main() {
     process.exit(0);
   }
   const bodyText = await page.innerText("body");
+  let accessibilitySnapshot;
+  if (typeof page.locator === "function") {
+    try {
+      const snapshot = await page.locator("body").ariaSnapshot({ timeout: 5000 });
+      const snapshotLimit = ${validationEvidenceCaps.accessibilitySnapshot};
+      accessibilitySnapshot = snapshot.length <= snapshotLimit
+        ? { text: snapshot }
+        : { omittedChars: snapshot.length - snapshotLimit, text: snapshot.slice(0, snapshotLimit), truncated: true };
+    } catch (error) {
+      pageErrors.push("Accessibility snapshot failed: " + (error instanceof Error ? error.message : String(error)));
+    }
+  }
   let screenshotPath = "/workspace/.makeademo/validation-screenshot.png";
   try {
     require("node:fs").mkdirSync("/workspace/.makeademo", { recursive: true });
@@ -425,6 +453,7 @@ async function main() {
   const screenshot = await page.screenshot({ path: screenshotPath, type: "png" });
   const interactable = bodyText.trim().length > 0 && !fatalRenderedPagePattern.test(bodyText);
   console.log(JSON.stringify({
+    ...(accessibilitySnapshot === undefined ? {} : { accessibilitySnapshot }),
     interactable,
     logs: ["Loaded " + targetUrl, "Captured screenshot proof.", ...consoleErrors, ...pageErrors, bodyText.slice(0, 2048)],
     screenshot: { mimeType: "image/png", path: screenshotPath, sizeBytes: screenshot.length },
@@ -466,6 +495,12 @@ function tryParseBrowserValidationOutput(
       typeof payload.interactable === "boolean" &&
       Array.isArray(payload.logs) &&
       typeof payload.screenshotArtifactId === "string" &&
+      (payload.accessibilitySnapshot === undefined ||
+        (typeof payload.accessibilitySnapshot === "object" &&
+          payload.accessibilitySnapshot !== null &&
+          typeof payload.accessibilitySnapshot.text === "string" &&
+          (payload.accessibilitySnapshot.omittedChars === undefined ||
+            typeof payload.accessibilitySnapshot.omittedChars === "number"))) &&
       (payload.screenshot === undefined ||
         (typeof payload.screenshot === "object" &&
           payload.screenshot !== null &&

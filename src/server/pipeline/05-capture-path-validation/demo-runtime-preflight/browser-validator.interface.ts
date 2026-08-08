@@ -1,5 +1,6 @@
 import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
 import type { NetworkAttempt } from "./network-isolation-policy";
+import type { PreparedAccessibilitySnapshot } from "./validation-evidence";
 import type { DemoRuntimePreflightFailureKind } from "./validation-result";
 
 export type BrowserValidationInput = {
@@ -8,11 +9,17 @@ export type BrowserValidationInput = {
 };
 
 export type BrowserValidationOutput = {
+  accessibilitySnapshot?: PreparedAccessibilitySnapshot;
   blockedNetworkAttempts?: NetworkAttempt[];
   failureKind?: DemoRuntimePreflightFailureKind;
   interactable: boolean;
   logs: string[];
-  screenshot?: { mimeType: "image/png"; path: string; sizeBytes?: number };
+  screenshot?: {
+    mimeType: "image/png";
+    path: string;
+    sha256?: string;
+    sizeBytes?: number;
+  };
   screenshotArtifactId: string;
 };
 

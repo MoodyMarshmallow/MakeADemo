@@ -78,7 +78,7 @@ export function createMakeADemoPipeline(
       } = input;
       let repoSecurity = unavailableRepoSecurityInput();
       let preparationWorkspace: PipelineJobInput["preparationWorkspace"];
-      let baselineSourceControlledPaths: string[] | undefined;
+      let applicationIdentityBaseline: PipelineJobInput["applicationIdentityBaseline"];
       let repoSecurityInputFailure = false;
       if (runOptions.signal?.aborted !== true) {
         try {
@@ -100,9 +100,14 @@ export function createMakeADemoPipeline(
                 : { signal: runOptions.signal }),
             },
           );
+          if (loaded.applicationIdentityBaseline === undefined) {
+            throw new Error(
+              "Repo Security input omitted the Application Identity Baseline.",
+            );
+          }
           repoSecurity = loaded.repoSecurity;
           preparationWorkspace = loaded.preparationWorkspace;
-          baselineSourceControlledPaths = loaded.baselineSourceControlledPaths;
+          applicationIdentityBaseline = loaded.applicationIdentityBaseline;
         } catch (error) {
           if (isPipelineCancellationError(error)) {
             // The full runner owns the durable terminal cancellation artifact.
@@ -119,9 +124,9 @@ export function createMakeADemoPipeline(
           ...(preparationWorkspace === undefined
             ? {}
             : { preparationWorkspace }),
-          ...(baselineSourceControlledPaths === undefined
+          ...(applicationIdentityBaseline === undefined
             ? {}
-            : { baselineSourceControlledPaths }),
+            : { applicationIdentityBaseline }),
         },
         options.pipelineDependencies,
         {

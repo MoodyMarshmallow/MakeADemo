@@ -3,6 +3,10 @@ import type {
   ReadOnlyCommandRequest,
   ReadOnlyCommandResult,
 } from "../../shared/repository-inspection-command";
+import type {
+  ApplicationIdentityBaseline,
+  PreparedWorkspaceDiff,
+} from "./application-identity-evidence.interface";
 import type { PreparationWorkspaceResourceDiagnostics } from "./preparation-workspace-resource-diagnostics";
 import type { SubmittedCodeToolchainPlan } from "./submitted-code-toolchain.schema";
 
@@ -107,6 +111,21 @@ export type MakeADemoCaptureExecutionRequest = {
  * must not expose agent-only secrets to submitted app build or runtime commands.
  */
 export interface PreparationWorkspace {
+  /**
+   * Captures and privately binds the pinned repository identity before agent
+   * mutation. Implementations must compare the checked-out commit to the exact
+   * requested revision and inventory that revision rather than mutable HEAD.
+   */
+  captureApplicationIdentityBaseline?(input: {
+    pinnedRevision: string;
+    repoUrl: string;
+  }): Promise<ApplicationIdentityBaseline>;
+  /**
+   * Captures the complete prepared source diff against the privately bound
+   * pinned revision. Implementations must include relevant untracked files,
+   * exclude control/VCS/generated-cache paths, and enforce content bounds.
+   */
+  capturePreparedWorkspaceDiff?(): Promise<PreparedWorkspaceDiff>;
   /**
    * Terminates active primary and submitted-code commands and waits for their
    * provider command handles to settle before returning.

@@ -510,6 +510,117 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     );
   });
 
+  it("binds Application Identity to the explicit pinned revision", async () => {
+    const calls: unknown[] = [];
+    const pinnedRevision = "0123456789abcdef0123456789abcdef01234567";
+    const sourceTreeObjectId = "89abcdef0123456789abcdef0123456789abcdef";
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeClient(calls, {
+        ptyCommandResponse() {
+          return {
+            exitCode: 0,
+            stderr: "",
+            stdout: `${pinnedRevision}\0${sourceTreeObjectId}\0package.json\0src/app.ts\0`,
+          };
+        },
+      }),
+    });
+    const handle = await provider.create();
+
+    const baseline =
+      await handle.workspace.captureApplicationIdentityBaseline?.({
+        pinnedRevision,
+        repoUrl: "https://github.com/example/app",
+      });
+
+    expect(baseline).toEqual({
+      pathInventorySha256:
+        "e51bfeac950794cd0e820c3af5d2aee782425119ea6d26b8e931d0f6e063cb25",
+      pinnedRevision,
+      repoUrl: "https://github.com/example/app",
+      sourceControlledPaths: ["package.json", "src/app.ts"],
+      sourceTreeObjectId,
+      uiIdentityIndex: {
+        entries: [
+          { path: "package.json", roles: ["source-path"] },
+          { path: "src/app.ts", roles: ["source-path"] },
+        ],
+        entryCount: 2,
+        indexSha256:
+          "cbd95b350088536c5f68bf5291d57c6dabbfd4946f712643ccefd82696505a94",
+        sizeBytes: 89,
+      },
+    });
+  });
+
+  it("captures the prepared workspace diff against its bound pinned revision", async () => {
+    const calls: unknown[] = [];
+    const pinnedRevision = "0123456789abcdef0123456789abcdef01234567";
+    const sourceTreeObjectId = "89abcdef0123456789abcdef0123456789abcdef";
+    const patch = [
+      "diff --git a/src/app.ts b/src/app.ts",
+      "--- a/src/app.ts",
+      "+++ b/src/app.ts",
+      "@@ -1 +1 @@",
+      "-old",
+      "+prepared",
+      "",
+    ].join("\n");
+    let responseIndex = 0;
+    let preparedDiffScript: string | undefined;
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeClient(calls, {
+        ptyCommandResponse(script) {
+          responseIndex += 1;
+          if (responseIndex === 1) {
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: `${pinnedRevision}\0${sourceTreeObjectId}\0old.ts\0package.json\0src/app.ts\0`,
+            };
+          }
+          preparedDiffScript = (script.match(/[A-Za-z0-9+/=]{100,}/g) ?? [])
+            .map((encoded) => Buffer.from(encoded, "base64").toString("utf8"))
+            .find((decoded) =>
+              decoded.includes("makeademo-prepared-workspace-diff"),
+            );
+          return {
+            exitCode: 0,
+            stderr: "",
+            stdout: `${[
+              "MAKEADEMO_PREPARED_WORKSPACE_DIFF_V1",
+              Buffer.from("M\0src/app.ts\0D\0old.ts\0").toString("base64"),
+              Buffer.from("package.json\0src/app.ts\0demo/new.ts\0").toString(
+                "base64",
+              ),
+              Buffer.from(patch).toString("base64"),
+            ].join("\n")}\n`,
+          };
+        },
+      }),
+    });
+    const handle = await provider.create();
+    await handle.workspace.captureApplicationIdentityBaseline?.({
+      pinnedRevision,
+      repoUrl: "https://github.com/example/app",
+    });
+
+    const diff = await handle.workspace.capturePreparedWorkspaceDiff?.();
+
+    expect(diff).toEqual({
+      artifactId:
+        "workspace-diff:sha256:1f54ed6aeecad2e86e6d9472f07e351ba32071a42a01a8957a2e14237cbe7722",
+      createdPaths: ["demo/new.ts"],
+      deletedPaths: ["old.ts"],
+      modifiedPaths: ["src/app.ts"],
+      patch,
+      patchSha256:
+        "1f54ed6aeecad2e86e6d9472f07e351ba32071a42a01a8957a2e14237cbe7722",
+      sizeBytes: 98,
+    });
+    expect(preparedDiffScript).toContain("ulimit -f 32768");
+  });
+
   it("executes commands, stops, and archives the sandbox", async () => {
     const calls: unknown[] = [];
     const provider = new DaytonaSdkPreparationWorkspaceProvider({
@@ -582,6 +693,37 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
     expect(script).toContain("/usr/bin/rg");
     expect(script).toContain("/usr/bin/realpath -e --");
     expect(script).toContain("/workspace/src");
+  });
+
+  it("executes a reviewer source read at the backend-pinned Git object", async () => {
+    const calls: unknown[] = [];
+    const provider = new DaytonaSdkPreparationWorkspaceProvider({
+      client: fakeClient(calls),
+    });
+    const handle = await provider.create();
+
+    await handle.workspace.executeReadOnlyCommand?.(
+      {
+        argv: [
+          "git",
+          "show",
+          "0123456789abcdef0123456789abcdef01234567:src/app/page.tsx",
+        ],
+      },
+      { timeoutMs: 10_000 },
+    );
+
+    const script = calls
+      .flatMap((call) => {
+        const decoded = (call as { decodedPtyScript?: unknown })
+          .decodedPtyScript;
+        return typeof decoded === "string" ? [decoded] : [];
+      })
+      .find((value) => value.includes("/usr/bin/git"));
+    expect(script).toContain(
+      "0123456789abcdef0123456789abcdef01234567:src/app/page.tsx",
+    );
+    expect(script).not.toContain("HEAD:src/app/page.tsx");
   });
 
   it("revalidates read-only argv at the Daytona provider boundary", async () => {
@@ -5064,6 +5206,9 @@ function fakeClient(
     ptyWaitsForKill?: boolean;
     ptyWaitsForDisconnect?: boolean;
     ptySuppressExitMarker?: boolean;
+    ptyCommandResponse?: (
+      script: string,
+    ) => { exitCode: number; stderr: string; stdout: string } | undefined;
   } = {},
 ) {
   let submittedCodeInitializationFailures = 0;
@@ -5198,16 +5343,19 @@ function fakeClient(
             const script = decodeNoninteractivePtyCommand(input);
             calls.push({ decodedPtyScript: script });
             if (script.includes("__MAKEADEMO_COMMAND_STDOUT__:")) {
+              const configuredResponse = options.ptyCommandResponse?.(script);
               emitFramedCommandResponse(script, ptyOptions.onData, {
-                exitCode: 0,
-                stderr: "",
-                stdout:
-                  trustedNodeProvisionAttestation(script) ??
-                  (script.includes("MAKEADEMO_ARTIFACT_SHA512")
-                    ? hydrationAttestationStdout()
-                    : script.includes("MAKEADEMO_ARTIFACT_SHA256")
-                      ? bunHydrationAttestationStdout()
-                      : "ok"),
+                ...(configuredResponse ?? {
+                  exitCode: 0,
+                  stderr: "",
+                  stdout:
+                    trustedNodeProvisionAttestation(script) ??
+                    (script.includes("MAKEADEMO_ARTIFACT_SHA512")
+                      ? hydrationAttestationStdout()
+                      : script.includes("MAKEADEMO_ARTIFACT_SHA256")
+                        ? bunHydrationAttestationStdout()
+                        : "ok"),
+                }),
               });
               return;
             }

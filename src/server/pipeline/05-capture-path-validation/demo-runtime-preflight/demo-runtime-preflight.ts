@@ -318,6 +318,9 @@ export async function runDemoRuntimePreflight(
         : { screenshot: browserResult.screenshot }),
     });
     return {
+      ...(browserResult.accessibilitySnapshot === undefined
+        ? {}
+        : { accessibilitySnapshot: browserResult.accessibilitySnapshot }),
       blockedNetworkAttempts: [],
       browserUrl,
       logs: boundValidationLogs([...sandboxResult.logs, ...browserResult.logs]),
@@ -326,6 +329,9 @@ export async function runDemoRuntimePreflight(
         ? {}
         : { previewUrl: sandboxResult.previewUrl }),
       screenshotArtifactId: browserResult.screenshotArtifactId,
+      ...(browserResult.screenshot === undefined
+        ? {}
+        : { screenshot: browserResult.screenshot }),
       status: "succeeded",
       warnings: toolchainWarnings,
     };

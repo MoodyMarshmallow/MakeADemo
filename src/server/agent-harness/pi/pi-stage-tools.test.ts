@@ -27,4 +27,37 @@ describe("Pi stage tool adapter", () => {
     );
     expect(Value.Check(tool.parameters, {})).toBe(false);
   });
+
+  it("forwards provider-neutral image content to Pi without converting it to text", async () => {
+    const [tool] = createPiStageToolDefinitions([
+      {
+        args: {},
+        description: "Inspect image proof",
+        execute: async () => [
+          { text: "Verified screenshot proof.", type: "text" as const },
+          {
+            data: "iVBORw0KGgo=",
+            mimeType: "image/png" as const,
+            type: "image" as const,
+          },
+        ],
+        name: "inspect_image",
+      },
+    ]);
+    if (tool === undefined) throw new Error("Expected a stage tool.");
+
+    await expect(
+      tool.execute("call-1", {}, undefined, undefined, {} as never),
+    ).resolves.toEqual({
+      content: [
+        { text: "Verified screenshot proof.", type: "text" },
+        {
+          data: "iVBORw0KGgo=",
+          mimeType: "image/png",
+          type: "image",
+        },
+      ],
+      details: undefined,
+    });
+  });
 });

@@ -11,6 +11,11 @@ import type { BrowserToolController } from "../../../agent-harness/tools/browser
 import { createPipelineEventLogger } from "../../../shared/logging/pipeline-event-logger";
 import { createAgentSession } from "../../../test-support/create-agent-session";
 import { PipelineCancellationError } from "../../00-orchestration/job/pipeline-cancellation";
+import { createApplicationIdentityBaseline } from "../application-identity-evidence";
+import type {
+  ApplicationIdentityBaseline,
+  PreparedWorkspaceDiff,
+} from "../application-identity-evidence.interface";
 import { PreparationWorkspaceInfrastructureError } from "../preparation-workspace-infrastructure.interface";
 import type { PreparationWorkspaceProvider } from "../preparation-workspace-runner";
 import type {
@@ -2357,6 +2362,60 @@ describe("AgenticRepoPreparation", () => {
     );
   });
 
+  it("does not start preparation preflight when an authentication mock claims an unloaded playbook", async () => {
+    let preflightStarted = false;
+    const runner = new RecordingAgentTaskRunner();
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider([], {
+        agentResults: [
+          validationHandoff(),
+          {
+            exitCode: 0,
+            structuredOutput: {
+              assumptions: [],
+              blockers: ["Missing trusted playbook guidance."],
+              status: "failed",
+              suggestedChanges: [],
+            },
+          },
+        ],
+        manifestPayload: {
+          ...successResult().manifest,
+          mockedServices: ["Hosted OAuth provider"],
+          mockingPlan: {
+            ...successResult().manifest.mockingPlan,
+            boundaries: [
+              {
+                kind: "authentication",
+                localReplacement: "Local demo session",
+                source: "Hosted OAuth provider",
+              },
+            ],
+            loadedPlaybooks: ["local-authentication"],
+          },
+        },
+      }),
+      runner,
+      runRuntimePreflight: async () => {
+        preflightStarted = true;
+        return validationArtifact().runtimePreflight;
+      },
+      timeoutMs: 1_000,
+    });
+
+    const result = await agent.prepare({
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
+      normalizedSupportingDocuments: [],
+      repoUrl: "https://github.com/example/app",
+      structuredDemoIntent: { keyProductFeatures: ["validation"] },
+      workspaceId: "workspace_123",
+    });
+
+    expect(result.status).toBe("failed");
+    expect(preflightStarted).toBe(false);
+    expect(runner.calls).toHaveLength(2);
+  });
+
   it("returns a successful preparation result as soon as preparation preflight passes", async () => {
     const events: unknown[] = [];
     const validations: unknown[] = [];
@@ -2401,6 +2460,141 @@ describe("AgenticRepoPreparation", () => {
       }),
     ]);
     expect(events).toEqual(expect.arrayContaining([]));
+  });
+
+  it("rejects a claimed Midday-style created route before runtime preflight when the backend diff does not contain it", async () => {
+    const runner = new RecordingAgentTaskRunner();
+    const runRuntimePreflight = vi.fn(
+      async () => validationArtifact().runtimePreflight,
+    );
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider([], {
+        agentResults: [
+          validationHandoff(),
+          {
+            exitCode: 0,
+            structuredOutput: {
+              assumptions: [],
+              blockers: ["Backend diff rejected the claimed created route."],
+              status: "failed",
+              suggestedChanges: [],
+            },
+          },
+        ],
+        manifestPayload: {
+          ...successResult().manifest,
+          createdFiles: ["src/app/api/demo/route.ts"],
+        },
+        preparedWorkspaceDiffs: [preparedWorkspaceDiff()],
+      }),
+      runner,
+      runRuntimePreflight,
+      timeoutMs: 1_000,
+    });
+
+    const result = await agent.prepare(repoPreparationInput());
+
+    expect(result).toMatchObject({ status: "failed" });
+    expect(runRuntimePreflight).not.toHaveBeenCalled();
+    expect(runner.calls).toHaveLength(2);
+  });
+
+  it("accepts matching backend diff evidence and replaces the agent-authored artifact id", async () => {
+    const backendDiff = preparedWorkspaceDiff({
+      artifactId: "workspace-diff:sha256:backend",
+      createdPaths: ["src/app/api/demo/route.ts"],
+      deletedPaths: ["src/legacy.ts"],
+      modifiedPaths: ["src/App.tsx"],
+    });
+    const manifest = {
+      ...successResult().manifest,
+      createdFiles: ["src/app/api/demo/route.ts"],
+      deletedFiles: ["src/legacy.ts"],
+      diffArtifactId: "agent-authored-diff",
+      modifiedFiles: ["src/App.tsx"],
+    };
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider([], {
+        manifestPayload: manifest,
+        preparedWorkspaceDiffs: [backendDiff],
+      }),
+      timeoutMs: 1_000,
+    });
+
+    const result = await agent.prepare(repoPreparationInput());
+
+    expect(result).toMatchObject({
+      manifest: {
+        createdFiles: ["src/app/api/demo/route.ts"],
+        deletedFiles: ["src/legacy.ts"],
+        diffArtifactId: "workspace-diff:sha256:backend",
+        modifiedFiles: ["src/App.tsx"],
+      },
+      preparedWorkspaceDiff: backendDiff,
+      status: "succeeded",
+    });
+  });
+
+  it("fails as unavailable when the workspace cannot capture an authoritative prepared diff", async () => {
+    const runRuntimePreflight = vi.fn(
+      async () => validationArtifact().runtimePreflight,
+    );
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider([], {
+        omitPreparedWorkspaceDiffCapture: true,
+      }),
+      runRuntimePreflight,
+      timeoutMs: 1_000,
+    });
+
+    const result = await agent.prepare(repoPreparationInput());
+
+    expect(result).toMatchObject({
+      failureKind: "unavailable",
+      status: "failed",
+    });
+    expect(runRuntimePreflight).not.toHaveBeenCalled();
+  });
+
+  it("returns the application baseline, final diff, and same-session browser evidence on success", async () => {
+    const applicationIdentityBaseline = identityBaseline();
+    const backendDiff = preparedWorkspaceDiff();
+    const runtimePreflight = {
+      accessibilitySnapshot: {
+        sha256:
+          "03b7d980f5554f194901de66d8d33d61dcdd328bbf56e612c97f1f5a7f90d480",
+        sizeBytes: 24,
+        text: '- heading "MakeADemo"',
+      },
+      blockedNetworkAttempts: [],
+      logs: ["loaded preview"],
+      screenshot: {
+        mimeType: "image/png" as const,
+        path: "/workspace/.makeademo/capture/preflight.png",
+        sha256:
+          "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460",
+        sizeBytes: 68,
+      },
+      status: "succeeded" as const,
+      warnings: [],
+    };
+    const agent = createRepoPreparationAgent({
+      provider: fakeProvider([], {
+        applicationIdentityBaseline,
+        preparedWorkspaceDiffs: [backendDiff],
+      }),
+      runRuntimePreflight: async () => runtimePreflight,
+      timeoutMs: 1_000,
+    });
+
+    const result = await agent.prepare(repoPreparationInput());
+
+    expect(result).toMatchObject({
+      applicationIdentityBaseline,
+      preparedWorkspaceDiff: backendDiff,
+      runtimePreflight,
+      status: "succeeded",
+    });
   });
 
   it("preserves source-controlled provenance when auto-success crosses prepareRepo", async () => {
@@ -2665,6 +2859,9 @@ function fakeProvider(
           AgentTaskRunResult<RepoPreparationToolHandoff> | Error
         >;
         activeSubmittedRuntimePort?: number;
+        applicationIdentityBaseline?: ApplicationIdentityBaseline;
+        omitPreparedWorkspaceDiffCapture?: boolean;
+        preparedWorkspaceDiffs?: Array<Error | PreparedWorkspaceDiff>;
         preparationResult?: ReturnType<typeof successResult>;
         releaseError?: Error;
         runtimeQuiescenceError?: Error;
@@ -2746,6 +2943,9 @@ function fakeWorkspace(
       AgentTaskRunResult<RepoPreparationToolHandoff> | Error
     >;
     activeSubmittedRuntimePort?: number;
+    applicationIdentityBaseline?: ApplicationIdentityBaseline;
+    omitPreparedWorkspaceDiffCapture?: boolean;
+    preparedWorkspaceDiffs?: Array<Error | PreparedWorkspaceDiff>;
     preparationResult?: ReturnType<typeof successResult>;
     releaseError?: Error;
     runtimeQuiescenceError?: Error;
@@ -2787,8 +2987,22 @@ function fakeWorkspace(
   const toolchainProvisioningErrors = [
     ...(input.toolchainProvisioningErrors ?? []),
   ];
+  const preparedWorkspaceDiffs = [...(input.preparedWorkspaceDiffs ?? [])];
 
   return {
+    async captureApplicationIdentityBaseline() {
+      return input.applicationIdentityBaseline ?? identityBaseline();
+    },
+    ...(input.omitPreparedWorkspaceDiffCapture === true
+      ? {}
+      : {
+          async capturePreparedWorkspaceDiff() {
+            const diff =
+              preparedWorkspaceDiffs.shift() ?? preparedWorkspaceDiff();
+            if (diff instanceof Error) throw diff;
+            return diff;
+          },
+        }),
     async executeAgentCommand(command) {
       events.push({ agentExecute: command });
       if (/\b(?:npm|pnpm|yarn|bun)\b/.test(command)) {
@@ -3195,12 +3409,14 @@ function successResult() {
       demoCommand: "npm run demo:makeademo",
       diffArtifactId: "artifact_diff",
       existingDemoEvidence: [],
-      mockedServices: [],
-      modifiedFiles: [],
-      nativeVisibleInterface: {
-        nativeStartupAttempts: ["npm run demo:makeademo"],
-        sourceControlledUiPaths: ["src/App.tsx", "src/styles.css"],
+      mockingPlan: {
+        boundaries: [],
+        fixturePaths: [],
+        loadedPlaybooks: [],
+        nativeUiRoots: ["src/App.tsx"],
+        plannedPresentationChanges: [],
       },
+      modifiedFiles: [],
       repoUrl: "https://github.com/example/app",
       risks: [],
       scriptGenerationContext: [],
@@ -3210,5 +3426,40 @@ function successResult() {
       workspaceId: "workspace_123",
     },
     status: "succeeded",
+  };
+}
+
+function identityBaseline(): ApplicationIdentityBaseline {
+  return createApplicationIdentityBaseline({
+    pinnedRevision: "0123456789abcdef0123456789abcdef01234567",
+    repoUrl: "https://github.com/example/app",
+    sourceControlledPaths: ["src/App.tsx", "src/styles.css"],
+    sourceTreeObjectId: "2".repeat(40),
+  });
+}
+
+function preparedWorkspaceDiff(
+  overrides: Partial<PreparedWorkspaceDiff> = {},
+): PreparedWorkspaceDiff {
+  return {
+    artifactId: "workspace-diff:sha256:empty",
+    createdPaths: [],
+    deletedPaths: [],
+    modifiedPaths: [],
+    patch: "",
+    patchSha256:
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    sizeBytes: 0,
+    ...overrides,
+  };
+}
+
+function repoPreparationInput() {
+  return {
+    commitSha: "0123456789abcdef0123456789abcdef01234567",
+    normalizedSupportingDocuments: [],
+    repoUrl: "https://github.com/example/app",
+    structuredDemoIntent: { keyProductFeatures: ["validation"] },
+    workspaceId: "workspace_123",
   };
 }

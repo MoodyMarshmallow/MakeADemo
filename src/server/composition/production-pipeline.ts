@@ -1,3 +1,4 @@
+import type { AgentTaskRunner } from "../agent-harness/agent-session-runner.interface";
 import { createBrowserToolControllerProvider } from "../agent-harness/tools/browser/browser-tool-controller-registry";
 import type { FullPipelineRunnerOptions } from "../pipeline/00-orchestration/job/full-pipeline-runner";
 import { createMakeADemoPipeline } from "../pipeline/00-orchestration/job/pipeline-controller";
@@ -5,6 +6,7 @@ import type { PipelineOrchestratorDependencies } from "../pipeline/00-orchestrat
 import { AgenticRepoSecurityReviewer } from "../pipeline/02-repo-security-screen/agent-review/agentic-repo-security-reviewer";
 import type { RepoSecurityAgentReviewer } from "../pipeline/02-repo-security-screen/agent-review/repo-security-agent-reviewer.interface";
 import { screenRepoSecurity } from "../pipeline/02-repo-security-screen/repo-security-screen";
+import { AgenticPreparedApplicationIdentityReviewer } from "../pipeline/03-prepared-application-identity-review/agentic-prepared-application-identity-reviewer";
 import { AgenticRepoPreparation } from "../pipeline/03-repo-preparation/agent-task/agentic-repo-preparation";
 import type { RepoPreparationAgent } from "../pipeline/03-repo-preparation/repo-preparation-agent.interface";
 import type { RepoPreparationPreflightResult } from "../pipeline/03-repo-preparation/repo-preparation-preflight.interface";
@@ -48,6 +50,7 @@ export type ProductionPipelineDependencyOptions = {
   browserValidator?: BrowserValidator;
   capturePathRepairer?: CapturePathRepairer;
   nodeReleaseCatalog: SubmittedCodeNodeReleaseCatalog;
+  preparedApplicationIdentityReviewRunner: AgentTaskRunner;
   repoPreparationAgent: RepoPreparationAgent;
   repoSecurityReviewer: RepoSecurityAgentReviewer;
   sandboxRunner: SandboxRunner;
@@ -78,6 +81,12 @@ export function createProductionPipelineDependencies(
         ? {}
         : { runtimeNetworkPolicy: options.runtimeNetworkPolicy }),
     });
+  const preparedApplicationIdentityReviewer =
+    new AgenticPreparedApplicationIdentityReviewer({
+      hardTimeoutMs: preparedApplicationIdentityReviewTimeouts.hardTimeoutMs,
+      runner: options.preparedApplicationIdentityReviewRunner,
+      timeoutMs: preparedApplicationIdentityReviewTimeouts.inactivityTimeoutMs,
+    });
 
   return {
     generateDemoScript(input) {
@@ -90,6 +99,10 @@ export function createProductionPipelineDependencies(
     prepareRepo(input) {
       return prepareRepo(input, { agent: options.repoPreparationAgent });
     },
+    reviewPreparedApplicationIdentity:
+      preparedApplicationIdentityReviewer.review.bind(
+        preparedApplicationIdentityReviewer,
+      ),
     reviewRepoSecurity: options.repoSecurityReviewer.review.bind(
       options.repoSecurityReviewer,
     ),
@@ -180,6 +193,10 @@ const defaultPostRepairArtifactReadTimeoutMs = 60_000;
 const defaultDraftReviewEvidenceUploadAttemptTimeoutMs = 30_000;
 const defaultDraftReviewEvidenceUploadTimeoutMs = 60_250;
 const defaultDraftReviewEvidenceUploadRetryDelaysMs = [250] as const;
+const preparedApplicationIdentityReviewTimeouts = {
+  hardTimeoutMs: defaultHardTimeoutMs,
+  inactivityTimeoutMs: defaultInactivityTimeoutMs,
+} as const;
 
 /**
  * Assembles the production MakeADemo Pipeline and its Agent Harness adapters
@@ -301,6 +318,8 @@ export function createProductionPipeline(options: ProductionPipelineOptions) {
     pipelineDependencies: createProductionPipelineDependencies({
       capturePathRepairer,
       nodeReleaseCatalog,
+      preparedApplicationIdentityReviewRunner:
+        agentHarness.agentTaskRunners.preparedApplicationIdentityReview,
       repoPreparationAgent,
       repoSecurityReviewer,
       sandboxRunner: sandboxProvider.createSandboxRunner({
@@ -362,10 +381,13 @@ function createDaytonaProductionSandboxProvider(
  * Adapts Capture Path Validation's richer preflight result at production
  * assembly, so Repo Preparation depends only on its own repair-oriented port.
  */
-function toRepoPreparationPreflightResult(
+export function toRepoPreparationPreflightResult(
   result: DemoRuntimePreflightResult,
 ): RepoPreparationPreflightResult {
   return {
+    ...(result.accessibilitySnapshot === undefined
+      ? {}
+      : { accessibilitySnapshot: { ...result.accessibilitySnapshot } }),
     blockedNetworkAttempts: result.blockedNetworkAttempts.map((attempt) => ({
       ...attempt,
     })),

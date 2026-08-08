@@ -2,6 +2,10 @@ import type { AgentSession } from "../../agent-harness/agent-session";
 import type { DemoBrief } from "../01-context-gathering/intake/demo-brief.schema";
 import type { NormalizedSupportingDocument } from "../01-context-gathering/supporting-documents";
 import type { PipelineInfrastructureFailureKind } from "../pipeline-infrastructure-failure";
+import type {
+  ApplicationIdentityBaseline,
+  PreparedWorkspaceDiff,
+} from "./application-identity-evidence.interface";
 import type { PreparationManifest } from "./preparation-manifest";
 import type { PreparationWorkspaceInfrastructureDiagnostic } from "./preparation-workspace-infrastructure.interface";
 import type { PreparationWorkspaceHandle } from "./preparation-workspace-runner";
@@ -9,6 +13,9 @@ import type { PreparationWorkspaceResourceDiagnostics } from "./preparation-work
 import type { RepoPreparationPreflightResult } from "./repo-preparation-preflight.interface";
 
 export type RepoPreparationInput = {
+  /** Backend-owned identity captured before this workspace was mutable. */
+  applicationIdentityBaseline?: ApplicationIdentityBaseline;
+  /** @deprecated Ignored; use applicationIdentityBaseline. */
   baselineSourceControlledPaths?: string[];
   commitSha: string;
   /** Absolute cooperative deadline shared by provisioning, setup, and agent work. */
@@ -32,8 +39,11 @@ type RepoPreparationAgentResult =
        * Backend-captured source-controlled paths from the submitted pinned
        * repository, collected before Repo Preparation can edit the workspace.
        */
-      baselineSourceControlledPaths: string[];
+      applicationIdentityBaseline?: ApplicationIdentityBaseline;
+      /** @deprecated Backend callers ignore this loose path inventory. */
+      baselineSourceControlledPaths?: string[];
       manifest: unknown;
+      preparedWorkspaceDiff?: PreparedWorkspaceDiff;
       agentSession?: AgentSession;
       status: "succeeded";
       runtimePreflight?: RepoPreparationPreflightResult;
@@ -66,10 +76,14 @@ export interface RepoPreparationAgent {
 
 export type RepoPreparationResult =
   | {
+      applicationIdentityBaseline: ApplicationIdentityBaseline;
       manifest: PreparationManifest;
+      preparedWorkspaceDiff: PreparedWorkspaceDiff;
       agentSession?: AgentSession;
       status: "succeeded";
-      runtimePreflight?: RepoPreparationPreflightResult;
+      runtimePreflight: RepoPreparationPreflightResult & {
+        status: "succeeded";
+      };
       workspace?: PreparationWorkspaceHandle;
     }
   | {
@@ -79,3 +93,17 @@ export type RepoPreparationResult =
       resourceDiagnostics?: PreparationWorkspaceResourceDiagnostics;
       status: "failed";
     };
+
+type SuccessfulRepoPreparation = Extract<
+  RepoPreparationResult,
+  { status: "succeeded" }
+>;
+
+/** Exact backend preparation evidence bound to one identity-review outcome. */
+export type PreparedApplicationIdentityEvidenceSource = Pick<
+  SuccessfulRepoPreparation,
+  | "applicationIdentityBaseline"
+  | "manifest"
+  | "preparedWorkspaceDiff"
+  | "runtimePreflight"
+>;

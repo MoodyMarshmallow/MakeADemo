@@ -96,6 +96,13 @@ export function canonicalPreparationManifest(): PreparationManifest {
     demoCommand: "npm run demo:makeademo",
     diffArtifactId: "artifact_diff",
     existingDemoEvidence: [],
+    mockingPlan: {
+      boundaries: [],
+      fixturePaths: [],
+      loadedPlaybooks: [],
+      nativeUiRoots: ["src/App.tsx"],
+      plannedPresentationChanges: [],
+    },
     mockedServices: ["local article API"],
     modifiedFiles: [],
     nativeVisibleInterface: {

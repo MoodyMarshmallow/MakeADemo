@@ -1,5 +1,9 @@
 import { join } from "node:path";
 
+import {
+  PreparedWorkspaceIdentitySealError,
+  verifyPreparedWorkspaceIdentitySeal,
+} from "../../03-prepared-application-identity-review/prepared-workspace-identity-seal";
 import type { RuntimeNetworkPolicy } from "../../05-capture-path-validation/demo-runtime-preflight/network-isolation-policy";
 import type {
   CaptureManifest,
@@ -214,6 +218,22 @@ export async function runDraftCompositeReviewLoop(
           input.options.signal,
           input.options.deadlineAt,
         );
+        const reviewerSeal = await verifyPreparedWorkspaceIdentitySeal({
+          reviewedDiff: preparedDemo.reviewedPreparedWorkspaceDiff,
+          stage: "Draft Composite review",
+          workspace: preparedDemo.preparationWorkspace,
+        });
+        throwIfPipelineDeadlineReached(
+          input.options.signal,
+          input.options.deadlineAt,
+        );
+        if (reviewerSeal.status === "changed") {
+          throw new PreparedWorkspaceIdentitySealError(
+            reviewerSeal.identityReview,
+            preparedDemo.preparationWorkspace.id,
+            preparedDemo.identityEvidenceSource,
+          );
+        }
       } catch (error) {
         await emitDraftStageProgress(input, "footage-capture", "failed");
         await input.log({
@@ -545,6 +565,13 @@ export async function runDraftCompositeReviewLoop(
           input.dependencies,
           input.options,
         );
+        if (repairedPreparedDemo.status === "identity-review-failed") {
+          throw new PreparedWorkspaceIdentitySealError(
+            repairedPreparedDemo.identityReview,
+            preparedDemo.preparationWorkspace.id,
+            repairedPreparedDemo.identityEvidenceSource,
+          );
+        }
         if (repairedPreparedDemo.status !== "succeeded") {
           throw new Error(
             `Workspace repair rerun failed with status ${repairedPreparedDemo.status}`,
@@ -581,6 +608,8 @@ export async function runDraftCompositeReviewLoop(
           onProgress: input.options.onProgress,
           preparationManifest: preparedDemo.preparationManifest,
           preparationWorkspace: preparedDemo.preparationWorkspace,
+          reviewedPreparedWorkspaceDiff:
+            preparedDemo.reviewedPreparedWorkspaceDiff,
           repoUrl: input.input.repoUrl,
           ...(input.options.signal === undefined
             ? {}
@@ -594,6 +623,13 @@ export async function runDraftCompositeReviewLoop(
           operation: repairOperation,
           signal: input.options.signal,
         });
+        if (repairLifecycle.status === "identity-review-failed") {
+          throw new PreparedWorkspaceIdentitySealError(
+            repairLifecycle.identityReview,
+            preparedDemo.preparationWorkspace.id,
+            preparedDemo.identityEvidenceSource,
+          );
+        }
         if (repairLifecycle.status === "failed") {
           throw new Error(
             `Demo Script repair failed Capture Path Validation: ${repairLifecycle.capturePathValidation.failureReason ?? repairLifecycle.capturePathValidation.errorMessage ?? "unknown failure"}`,
@@ -611,6 +647,7 @@ export async function runDraftCompositeReviewLoop(
       }
     } catch (error) {
       if (isPipelineCancellationError(error)) throw error;
+      if (error instanceof PreparedWorkspaceIdentitySealError) throw error;
       if (validDraftCheckpoint === undefined) {
         throw error;
       }

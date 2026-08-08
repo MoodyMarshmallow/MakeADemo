@@ -3,6 +3,7 @@ import type { readPreparationManifest } from "../preparation-manifest";
 import type { PreparationWorkspaceCommandResult } from "../preparation-workspace.interface";
 import type { RepoPreparationInput } from "../repo-preparation-agent.interface";
 import type { RepoPreparationPreflightResult } from "../repo-preparation-preflight.interface";
+import { describeRepoPreparationPlaybookCatalog } from "./playbooks/repo-preparation-playbooks";
 import {
   preparationManifestDirectory,
   preparationManifestPath,
@@ -14,6 +15,17 @@ import {
 } from "./repo-preparation-evidence";
 
 const dependencyInstallOutputTailMaxLength = 1_500;
+const repoPreparationCoreInvariants = [
+  "## Core Preparation Invariants",
+  "- Preserve the submitted repository's native source-controlled visible UI. Do not replace it with a standalone simulation, walkthrough, or newly invented frontend.",
+  "- Keep the smallest preparation change behind the repository's existing runtime boundaries; native routes, components, styles, and assets must remain the visible product.",
+  "- Before mocking an authentication, backend, or database boundary, call `makeademo_load_playbook` for `local-authentication`, `mock-backend-data`, or `seed-local-database` respectively and follow the returned trusted guidance.",
+  "### Trusted Preparation Playbook Catalog",
+  ...describeRepoPreparationPlaybookCatalog(),
+  "- Record the structured `mockingPlan` in the Preparation Manifest, including native UI roots, mocked boundaries, fixture paths, planned presentation changes, and only playbooks actually loaded through `makeademo_load_playbook`.",
+  "- If preserving the native UI or satisfying a required trusted playbook is not possible, submit a failed result with a clear blocker.",
+];
+
 export function createDaytonaRepoPreparationPrompt(
   input: RepoPreparationInput,
   options: {
@@ -39,9 +51,7 @@ export function createDaytonaRepoPreparationPrompt(
     "",
     "## Preparation Strategy",
     "- Prefer the smallest safe change that creates or exposes a deterministic demo path.",
-    "- The visible interface must remain the submitted repository's native source-controlled UI. Do not create a replacement frontend, standalone simulation, walkthrough, or HTML entrypoint.",
-    "- You may add fixtures, mock adapters, configuration, and small glue/demo routes only when the rendered screens import native source-controlled UI components, styles, or assets.",
-    "- If the native visible interface cannot be prepared, submit status failed with a clear blocker instead of substituting a new UI.",
+    ...repoPreparationCoreInvariants,
     options.runtimeNetworkPolicy === "unrestricted-public"
       ? "- Public APIs and assets may be used when the native app requires them; prefer deterministic local fixtures when remote state would make the demo flaky."
       : "- Prefer local mock data, fixture data, or frontend-only demo modes over hosted services.",
@@ -107,6 +117,8 @@ export function createContinueRepoPreparationPrompt(
     "## Goal",
     "Finish preparing `/workspace` for MakeADemo preparation preflight with a deterministic browser-accessible demo that does not require secrets.",
     "",
+    ...repoPreparationCoreInvariants,
+    "",
     "## Dependency Installation",
     "- Do not request another dependency install unless it is strictly required.",
     "- If another install is required, call `makeademo_dependency_request_install` without arguments, then stop; the backend selects the exact immutable command.",
@@ -150,6 +162,8 @@ export function createToolchainRepairPrompt(
     "Repair the submitted package-manager, Node-version, or canonical lockfile metadata in `/workspace`, then request dependency installation again.",
     "Do not run a dependency install command directly.",
     "",
+    ...repoPreparationCoreInvariants,
+    "",
     "## Submission Context",
     "```json",
     JSON.stringify(
@@ -171,6 +185,8 @@ export function createDependencyInstallFailurePrompt(
     "## Current State",
     `Dependency installation failed in the submitted-code sandbox with exit code ${result.exitCode}.`,
     "Use the bounded stdout/stderr tails below to decide whether to request the backend-selected install again or submit a clear preparation blocker.",
+    "",
+    ...repoPreparationCoreInvariants,
     "",
     "## Dependency Install stdout Tail",
     "```text",
@@ -223,11 +239,10 @@ function createPreparationManifestGuidance(
     '- setupSummary: one short paragraph explaining what changed and how the demo runs. Example: "Prepared a frontend-only demo that uses local mock RealWorld API data."',
     '- createdFiles: files newly created for MakeADemo. Example: ["frontend/src/demoApi.js"]. Use [] if none.',
     '- modifiedFiles: existing files changed for MakeADemo. Example: ["package.json", "frontend/src/main.jsx"]. Use [] if none.',
-    "- nativeVisibleInterface: required provenance for the rendered native UI. sourceControlledUiPaths must list submitted-repository UI components, routes, styles, or assets rendered by the demo; nativeStartupAttempts must list the native startup commands or strategies attempted. The backend rejects paths created during preparation.",
     '- demoCommand: command MakeADemo preparation preflight and Capture Path Validation should run from /workspace to start a long-running local server. Example: "npm run demo".',
     '- dependencyInstall: optional install strategy. Use "not-required" only when no further install is needed (for example, a standard-library-only server or dependencies already installed through the backend tool); otherwise use "inferred".',
     '- url: local HTTP URL served by demoCommand. Example: "http://localhost:4173/".',
-    '- mockedServices: external services replaced with local mocks or fixtures. Example: ["RealWorld API", "avatar image service"]. Use [] if none.',
+    "- mockingPlan: required structured local-boundary plan and sole authority for native UI and mocked services. nativeUiRoots lists source-controlled visible UI roots; boundaries lists each mocked authentication/backend/database source and localReplacement; fixturePaths and plannedPresentationChanges may be empty; loadedPlaybooks lists only trusted playbooks loaded with makeademo_load_playbook.",
     '- assumptions: assumptions made while preparing the demo. Example: ["Demo data can be in-memory and reset on reload"]. Use [] if none.',
     '- risks: remaining concerns that could affect later capture. Example: ["Repository tests require undeclared jsdom but the browser demo path does not"]. Use [] if none.',
     '- existingDemoEvidence: evidence that an existing demo was reused or adapted. Example: ["frontend/package.json already had a preview script"]. Use [] if none.',
@@ -241,23 +256,32 @@ function createPreparationManifestGuidance(
     JSON.stringify(
       {
         assumptions: ["Demo data can be in-memory and reset on reload"],
-        createdFiles: ["frontend/src/demoApi.js"],
+        createdFiles: [
+          "frontend/src/demoApi.js",
+          "frontend/src/demo/articles.json",
+        ],
         demoCommand: "npm run demo",
         dependencyInstall: "inferred",
         diffArtifactId: "workspace-diff",
         existingDemoEvidence: [
           "frontend/package.json already had build and preview scripts",
         ],
-        mockedServices: ["RealWorld API", "avatar image service"],
-        modifiedFiles: ["package.json", "frontend/src/main.jsx"],
-        nativeVisibleInterface: {
-          nativeStartupAttempts: ["npm run demo"],
-          sourceControlledUiPaths: [
-            "frontend/src/main.jsx",
-            "frontend/src/App.jsx",
-            "frontend/src/index.css",
+        mockingPlan: {
+          boundaries: [
+            {
+              kind: "backend",
+              localReplacement: "Local fixture-backed article repository",
+              source: "RealWorld API",
+            },
+          ],
+          fixturePaths: ["frontend/src/demo/articles.json"],
+          loadedPlaybooks: ["mock-backend-data"],
+          nativeUiRoots: ["frontend/src/App.jsx", "frontend/src/index.css"],
+          plannedPresentationChanges: [
+            "Show deterministic seeded articles in the native feed",
           ],
         },
+        modifiedFiles: ["package.json", "frontend/src/main.jsx"],
         repoUrl: input.repoUrl,
         risks: [
           "Repository tests require undeclared jsdom but the browser demo path does not",
@@ -295,6 +319,8 @@ export function createValidationFeedbackPrompt(input: {
     "Backend-owned preparation preflight ran against your prepared workspace.",
     "Use this deterministic feedback to repair the repo, then call `makeademo_validate_preparation` again.",
     "Call `makeademo_submit_preparation_result` only after validation passes.",
+    "",
+    ...repoPreparationCoreInvariants,
     "",
     "## Preparation Preflight Result",
     "```json",

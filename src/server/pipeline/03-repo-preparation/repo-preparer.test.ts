@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createAgentSession } from "../../test-support/create-agent-session";
+import { createApplicationIdentityBaseline } from "./application-identity-evidence";
 import type { RepoPreparationAgent } from "./repo-preparation-agent.interface";
 import { prepareRepo } from "./repo-preparer";
 
@@ -9,11 +10,12 @@ describe("prepareRepo", () => {
     const agent: RepoPreparationAgent = {
       async prepare() {
         return {
-          baselineSourceControlledPaths: ["src/App.tsx"],
+          ...successfulEvidence(),
           manifest: {
             assumptions: [],
             demoCommand: "npm run demo:makeademo",
             diffArtifactId: "artifact_diff",
+            mockingPlan: noMockingPlan,
             nativeVisibleInterface: {
               nativeStartupAttempts: ["npm run demo:makeademo"],
               sourceControlledUiPaths: ["src/App.tsx"],
@@ -44,6 +46,15 @@ describe("prepareRepo", () => {
     expect(result.status).toBe("succeeded");
     if (result.status === "succeeded") {
       expect(result.manifest.demoCommand).toBe("npm run demo:makeademo");
+      expect(result).toMatchObject({
+        applicationIdentityBaseline: {
+          pinnedRevision: "0123456789abcdef0123456789abcdef01234567",
+        },
+        preparedWorkspaceDiff: {
+          artifactId: "workspace-diff:sha256:backend",
+        },
+        runtimePreflight: { status: "succeeded" },
+      });
     }
   });
 
@@ -52,11 +63,12 @@ describe("prepareRepo", () => {
     const agent: RepoPreparationAgent = {
       async prepare() {
         return {
-          baselineSourceControlledPaths: ["src/App.tsx"],
+          ...successfulEvidence(),
           manifest: {
             assumptions: [],
             demoCommand: "npm run demo:makeademo",
             diffArtifactId: "artifact_diff",
+            mockingPlan: noMockingPlan,
             nativeVisibleInterface: {
               nativeStartupAttempts: ["npm run demo:makeademo"],
               sourceControlledUiPaths: ["src/App.tsx"],
@@ -125,7 +137,7 @@ describe("prepareRepo", () => {
     const agent: RepoPreparationAgent = {
       async prepare() {
         return {
-          baselineSourceControlledPaths: [],
+          ...successfulEvidence(),
           manifest: {
             demoCommand: "npm run demo",
             repoUrl: "https://github.com/example/app",
@@ -194,7 +206,7 @@ describe("prepareRepo", () => {
     const agent: RepoPreparationAgent = {
       async prepare() {
         return {
-          baselineSourceControlledPaths: ["src/App.tsx"],
+          ...successfulEvidence({ createdPaths: ["demo/index.html"] }),
           manifest: {
             assumptions: [],
             createdFiles: ["demo/index.html"],
@@ -230,3 +242,45 @@ describe("prepareRepo", () => {
     expect(result).toMatchObject({ status: "failed" });
   });
 });
+
+function successfulEvidence(
+  diffOverrides: Partial<{
+    createdPaths: readonly string[];
+    deletedPaths: readonly string[];
+    modifiedPaths: readonly string[];
+  }> = {},
+) {
+  return {
+    applicationIdentityBaseline: createApplicationIdentityBaseline({
+      pinnedRevision: "0123456789abcdef0123456789abcdef01234567",
+      repoUrl: "https://github.com/example/app",
+      sourceControlledPaths: ["src/App.tsx"],
+      sourceTreeObjectId: "2".repeat(40),
+    }),
+    preparedWorkspaceDiff: {
+      artifactId: "workspace-diff:sha256:backend",
+      createdPaths: [],
+      deletedPaths: [],
+      modifiedPaths: [],
+      patch: "",
+      patchSha256:
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      sizeBytes: 0,
+      ...diffOverrides,
+    },
+    runtimePreflight: {
+      blockedNetworkAttempts: [],
+      logs: ["validated"],
+      status: "succeeded" as const,
+      warnings: [],
+    },
+  };
+}
+
+const noMockingPlan = {
+  boundaries: [],
+  fixturePaths: [],
+  loadedPlaybooks: [],
+  nativeUiRoots: ["src/App.tsx"],
+  plannedPresentationChanges: [],
+};

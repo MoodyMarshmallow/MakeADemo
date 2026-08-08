@@ -1,6 +1,8 @@
 import { readPreparationManifest } from "../preparation-manifest";
 import type { PreparationWorkspace } from "../preparation-workspace.interface";
 
+const preparationManifestMaximumBytes = 256 * 1024;
+
 /** Agent-authored state lives in the prepared repo, never a control directory. */
 export const preparationManifestDirectory = "/workspace/.makeademo";
 export const preparationManifestPath = `${preparationManifestDirectory}/preparation-manifest.json`;
@@ -27,6 +29,13 @@ export async function readPreparationManifestFile(
   );
   if (result.exitCode !== 0)
     throw new Error("Preparation manifest file is missing.");
+  if (
+    Buffer.byteLength(result.stdout, "utf8") > preparationManifestMaximumBytes
+  ) {
+    throw new Error(
+      `Preparation manifest file exceeds its ${preparationManifestMaximumBytes} byte bound.`,
+    );
+  }
   const payload = tryParseJson(result.stdout);
   if (payload === undefined)
     throw new Error("Preparation manifest file contains invalid JSON.");
@@ -42,7 +51,7 @@ function tryParseJson(text: string): unknown | undefined {
 }
 
 function readFileCommand(path: string): string {
-  return `if test -f ${shellQuote(path)}; then cat ${shellQuote(path)}; else exit 1; fi`;
+  return `if test -f ${shellQuote(path)}; then /usr/bin/head -c ${preparationManifestMaximumBytes + 1} -- ${shellQuote(path)}; else exit 1; fi`;
 }
 
 function shellQuote(value: string): string {

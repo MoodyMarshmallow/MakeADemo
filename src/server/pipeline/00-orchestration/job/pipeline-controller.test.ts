@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { screenRepoSecurity } from "../../02-repo-security-screen/repo-security-screen";
+import { createApplicationIdentityBaseline } from "../../03-repo-preparation/application-identity-evidence";
 import { formatFullPipelineFailure } from "../cli/full-pipeline-failure-output";
 import { FullPipelineStageFailure } from "./full-pipeline-runner";
 import { PipelineCancellationError } from "./pipeline-cancellation";
@@ -21,7 +22,12 @@ describe("MakeADemo Pipeline controller", () => {
       release,
     });
     const load = vi.fn(async (_input: unknown) => ({
-      baselineSourceControlledPaths: ["package.json"],
+      applicationIdentityBaseline: createApplicationIdentityBaseline({
+        pinnedRevision: "a".repeat(40),
+        repoUrl: "https://github.com/example/controller-seam",
+        sourceControlledPaths: ["package.json"],
+        sourceTreeObjectId: "2".repeat(40),
+      }),
       preparationWorkspace,
       repoSecurity: { scannerReports: [] },
     }));
@@ -232,7 +238,12 @@ describe("MakeADemo Pipeline controller", () => {
         repoSecurityInputLoader: {
           async load() {
             return {
-              baselineSourceControlledPaths: ["package.json"],
+              applicationIdentityBaseline: createApplicationIdentityBaseline({
+                pinnedRevision: "a".repeat(40),
+                repoUrl: "https://github.com/example/cleanup",
+                sourceControlledPaths: ["package.json"],
+                sourceTreeObjectId: "2".repeat(40),
+              }),
               preparationWorkspace,
               repoSecurity: { scannerReports: [] },
             };
@@ -266,6 +277,9 @@ function rejectingPipelineDependencies(): PipelineOrchestratorDependencies {
       throw new Error("Pipeline must stop at Repo Security Screen.");
     },
     async prepareRepo() {
+      throw new Error("Pipeline must stop at Repo Security Screen.");
+    },
+    async reviewPreparedApplicationIdentity() {
       throw new Error("Pipeline must stop at Repo Security Screen.");
     },
     async reviewRepoSecurity() {

@@ -1,5 +1,6 @@
 import { createPreparationFallbackPrompt } from "./preparation-fallback-prompt";
 import {
+  createAuthoritativePreparationManifest,
   readPreparationManifest,
   validateNativeVisibleInterfaceProvenance,
 } from "./preparation-manifest";
@@ -36,12 +37,16 @@ export async function prepareRepo(
     };
   }
 
-  if (result.baselineSourceControlledPaths === undefined) {
+  if (
+    result.applicationIdentityBaseline === undefined ||
+    result.preparedWorkspaceDiff === undefined ||
+    result.runtimePreflight?.status !== "succeeded"
+  ) {
     return {
       fallbackPrompt: createPreparationFallbackPrompt({
         assumptions: [],
         blockers: [
-          "MakeADemo infrastructure contract failure: Repo Preparation agent result omitted baselineSourceControlledPaths, which is required for successful preparation.",
+          "MakeADemo infrastructure contract failure: Repo Preparation agent result omitted required backend identity, diff, or successful preflight evidence.",
         ],
         repoUrl: input.repoUrl,
         suggestedChanges: [
@@ -53,20 +58,26 @@ export async function prepareRepo(
   }
 
   try {
-    const manifest = readPreparationManifest(result.manifest);
+    const manifest = createAuthoritativePreparationManifest(
+      readPreparationManifest(result.manifest),
+      result.preparedWorkspaceDiff,
+    );
     validateNativeVisibleInterfaceProvenance(
       manifest,
-      result.baselineSourceControlledPaths,
+      result.applicationIdentityBaseline,
     );
     return {
+      applicationIdentityBaseline: result.applicationIdentityBaseline,
       manifest,
+      preparedWorkspaceDiff: result.preparedWorkspaceDiff,
       ...(result.agentSession === undefined
         ? {}
         : { agentSession: result.agentSession }),
       status: "succeeded",
-      ...(result.runtimePreflight === undefined
-        ? {}
-        : { runtimePreflight: result.runtimePreflight }),
+      runtimePreflight: {
+        ...result.runtimePreflight,
+        status: "succeeded" as const,
+      },
       ...(result.workspace === undefined
         ? {}
         : { workspace: result.workspace }),

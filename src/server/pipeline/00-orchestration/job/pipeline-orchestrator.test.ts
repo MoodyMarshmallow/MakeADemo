@@ -1,8 +1,16 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
 import { createAgentSession } from "../../../test-support/create-agent-session";
 import type { RepoSecurityInput } from "../../02-repo-security-screen/repo-security-screen";
+import { createApplicationIdentityBaseline } from "../../03-repo-preparation/application-identity-evidence";
+import type { PreparationManifest } from "../../03-repo-preparation/preparation-manifest";
 import type { PreparationWorkspaceHandle } from "../../03-repo-preparation/preparation-workspace-runner";
+import type {
+  RepoPreparationInput,
+  RepoPreparationResult,
+} from "../../03-repo-preparation/repo-preparation-agent.interface";
 import type { CapturePathValidationFailureKind } from "../../05-capture-path-validation/capture-path-validator.interface";
 import { PipelineCancellationError } from "./pipeline-cancellation";
 import type { PipelineJobInput } from "./pipeline-job";
@@ -13,16 +21,50 @@ import {
   runPipelineJob as runPipelineJobWithDependencies,
 } from "./pipeline-orchestrator";
 
+type SuccessfulRepoPreparation = Extract<
+  RepoPreparationResult,
+  { status: "succeeded" }
+>;
+
+type TestRepoPreparationResult =
+  | Exclude<RepoPreparationResult, { status: "succeeded" }>
+  | (Omit<
+      SuccessfulRepoPreparation,
+      | "applicationIdentityBaseline"
+      | "preparedWorkspaceDiff"
+      | "runtimePreflight"
+    > &
+      Partial<
+        Pick<
+          SuccessfulRepoPreparation,
+          | "applicationIdentityBaseline"
+          | "preparedWorkspaceDiff"
+          | "runtimePreflight"
+        >
+      >);
+
+type TestPipelineOrchestratorDependencies = Omit<
+  PipelineOrchestratorDependencies,
+  "prepareRepo" | "reviewPreparedApplicationIdentity" | "reviewRepoSecurity"
+> & {
+  prepareRepo(input: RepoPreparationInput): Promise<TestRepoPreparationResult>;
+} & Partial<
+    Pick<
+      PipelineOrchestratorDependencies,
+      "reviewPreparedApplicationIdentity" | "reviewRepoSecurity"
+    >
+  >;
+
 function runPipelineJob(
   input: Omit<PipelineJobInput, "repoSecurity"> & {
     repoSecurity: Partial<RepoSecurityInput>;
   },
-  dependencies: Omit<PipelineOrchestratorDependencies, "reviewRepoSecurity"> &
-    Partial<Pick<PipelineOrchestratorDependencies, "reviewRepoSecurity">>,
+  dependencies: TestPipelineOrchestratorDependencies,
   options?: PipelineOrchestratorOptions,
 ) {
   const preparationWorkspace =
     input.preparationWorkspace ?? fakeWorkspaceHandle();
+  const prepareRepo = dependencies.prepareRepo;
   return runPipelineJobWithDependencies(
     {
       ...input,
@@ -33,15 +75,24 @@ function runPipelineJob(
       },
     },
     {
-      async reviewRepoSecurity() {
-        return {
+      ...dependencies,
+      async prepareRepo(preparationInput) {
+        const result = await prepareRepo(preparationInput);
+        return result.status === "succeeded"
+          ? withPreparedIdentityEvidence(preparationInput, result)
+          : result;
+      },
+      reviewPreparedApplicationIdentity:
+        dependencies.reviewPreparedApplicationIdentity ??
+        (async () => passingIdentityReview()),
+      reviewRepoSecurity:
+        dependencies.reviewRepoSecurity ??
+        (async () => ({
           concerns: [],
           rationale: "Test fixture approval.",
-          status: "succeeded",
-          verdict: "approved",
-        };
-      },
-      ...dependencies,
+          status: "succeeded" as const,
+          verdict: "approved" as const,
+        })),
     },
     options,
   );
@@ -111,6 +162,18 @@ describe("runPipelineJob", () => {
             verdict: "approved",
           };
         },
+        async reviewPreparedApplicationIdentity(input) {
+          calls.push("prepared-application-identity-review");
+          expect(input.evidenceLedger.commitSha).toBe(commitSha);
+          expect(input.evidenceLedger.evidence.map(({ kind }) => kind)).toEqual(
+            [
+              "prepared-change",
+              "prepared-screenshot",
+              "accessibility-snapshot",
+            ],
+          );
+          return passingIdentityReview();
+        },
         screenRepoSecurity() {
           calls.push("repo-security-screen");
           return {
@@ -152,9 +215,302 @@ describe("runPipelineJob", () => {
       "repo-security-screen",
       "repo-security-agent-review",
       "repo-preparation",
+      "prepared-application-identity-review",
       "script-generation",
       "capture-path-validation",
     ]);
+  });
+
+  it("stops before Script Generation when the prepared runtime replaces Midday with a generic dashboard", async () => {
+    let generated = false;
+    const progress: Array<{
+      reason?: string;
+      stage: string;
+      status: string;
+    }> = [];
+    const result = await runPipelineJob(
+      pipelineJobInput(),
+      successfulPipelineDependencies({
+        async generateDemoScript() {
+          generated = true;
+          throw new Error("must not generate");
+        },
+        async reviewPreparedApplicationIdentity() {
+          return {
+            explanation:
+              "The prepared runtime is a generic analytics dashboard and no longer renders Midday's native workspace.",
+            failureKind: "replacement-detected",
+            mockedBoundaries: [],
+            nativeSurfacesRendered: [],
+            replacementEvidence: ["accessibility-snapshot:sha256:replacement"],
+            sourceCitations: [
+              { endLine: 40, path: "src/App.tsx", startLine: 1 },
+            ],
+            status: "succeeded",
+            verdict: "fail",
+          };
+        },
+      }),
+      { onProgress: (event) => progress.push(event) },
+    );
+
+    expect(result).toMatchObject({
+      identityReview: {
+        failureKind: "replacement-detected",
+        verdict: "fail",
+      },
+      status: "identity-review-failed",
+    });
+    expect(generated).toBe(false);
+    expect(progress.at(-1)).toEqual({
+      reason: "replacement-detected",
+      stage: "prepared-application-identity-review",
+      status: "failed",
+    });
+  });
+
+  it("stops before Script Generation when native application identity is not proven", async () => {
+    let generated = false;
+    const result = await runPipelineJob(
+      pipelineJobInput(),
+      successfulPipelineDependencies({
+        async generateDemoScript() {
+          generated = true;
+          throw new Error("must not generate");
+        },
+        async reviewPreparedApplicationIdentity() {
+          return {
+            explanation:
+              "The retained evidence does not establish which native surface rendered.",
+            failureKind: "identity-not-proven",
+            mockedBoundaries: [],
+            nativeSurfacesRendered: [],
+            replacementEvidence: [],
+            sourceCitations: [],
+            status: "succeeded",
+            verdict: "fail",
+          };
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      identityReview: {
+        explanation: expect.stringContaining("does not establish"),
+        failureKind: "identity-not-proven",
+      },
+      status: "identity-review-failed",
+    });
+    expect(generated).toBe(false);
+  });
+
+  it("accepts native UI with backend mocking declared by the Preparation Manifest", async () => {
+    let reviewedBoundaries: readonly string[] = [];
+    const result = await runPipelineJob(
+      pipelineJobInput(),
+      successfulPipelineDependencies({
+        async prepareRepo() {
+          const preparedManifest = manifest();
+          preparedManifest.mockingPlan.boundaries.push({
+            kind: "backend",
+            localReplacement: "src/demo/api.ts",
+            source: "api.midday.ai",
+          });
+          return {
+            manifest: preparedManifest,
+            status: "succeeded",
+            workspace: fakeWorkspaceHandle(),
+          };
+        },
+        async reviewPreparedApplicationIdentity(input) {
+          reviewedBoundaries = input.evidenceLedger.mockedBoundaries;
+          return {
+            ...passingIdentityReview(),
+            mockedBoundaries: ["0:backend:api.midday.ai"],
+          };
+        },
+      }),
+    );
+
+    expect(result.status).toBe("succeeded");
+    expect(reviewedBoundaries).toEqual(["0:backend:api.midday.ai"]);
+  });
+
+  it("fails identity review when Script Generation changes reviewed source", async () => {
+    let validateCalls = 0;
+    let sourceChanged = false;
+    const workspace = fakeWorkspaceHandle();
+    workspace.workspace.capturePreparedWorkspaceDiff = async () =>
+      sourceChanged
+        ? preparedWorkspaceDiff({
+            modifiedPaths: ["src/App.tsx", "src/native-feed.tsx"],
+            patch:
+              "diff --git a/src/native-feed.tsx b/src/native-feed.tsx\n+replacement shell\n",
+          })
+        : preparedWorkspaceDiff();
+
+    const result = await runPipelineJob(
+      pipelineJobInput(),
+      successfulPipelineDependencies({
+        async generateDemoScript() {
+          sourceChanged = true;
+          return demoScript();
+        },
+        async prepareRepo() {
+          return { manifest: manifest(), status: "succeeded", workspace };
+        },
+        async validateCapturePath() {
+          validateCalls += 1;
+          throw new Error("must not validate changed source");
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      identityReview: {
+        failureKind: "identity-not-proven",
+        verdict: "fail",
+      },
+      status: "identity-review-failed",
+    });
+    expect(validateCalls).toBe(0);
+  });
+
+  it.each(["unavailable", "timeout", "invalid-output"] as const)(
+    "maps prepared application identity reviewer %s to a stage-specific infrastructure failure",
+    async (failureKind) => {
+      let generated = false;
+      const result = await runPipelineJob(
+        pipelineJobInput(),
+        successfulPipelineDependencies({
+          async generateDemoScript() {
+            generated = true;
+            throw new Error("must not generate");
+          },
+          async reviewPreparedApplicationIdentity() {
+            return { failureKind, status: "failed" };
+          },
+        }),
+      );
+
+      expect(result).toMatchObject({
+        failureKind,
+        failureReason: expect.stringContaining(failureKind),
+        stage: "prepared-application-identity-review",
+        status: "infrastructure-failed",
+      });
+      expect(generated).toBe(false);
+    },
+  );
+
+  it("fails closed before identity review when preparation evidence does not match its manifest", async () => {
+    let generated = false;
+    let reviewed = false;
+    const result = await runPipelineJob(
+      pipelineJobInput(),
+      successfulPipelineDependencies({
+        async generateDemoScript() {
+          generated = true;
+          throw new Error("must not generate");
+        },
+        async prepareRepo() {
+          const prepared = withPreparedIdentityEvidence(pipelineJobInput(), {
+            manifest: manifest(),
+            status: "succeeded" as const,
+            workspace: fakeWorkspaceHandle(),
+          });
+          return {
+            ...prepared,
+            preparedWorkspaceDiff: {
+              ...prepared.preparedWorkspaceDiff,
+              artifactId: "different-diff-artifact",
+            },
+          };
+        },
+        async reviewPreparedApplicationIdentity() {
+          reviewed = true;
+          return passingIdentityReview();
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      failureKind: "invalid-output",
+      failureReason: expect.stringContaining("did not match"),
+      stage: "prepared-application-identity-review",
+      status: "infrastructure-failed",
+    });
+    expect({ generated, reviewed }).toEqual({
+      generated: false,
+      reviewed: false,
+    });
+  });
+
+  it("fails closed before review when the pre-mutation UI identity digest is altered", async () => {
+    let reviewed = false;
+    const result = await runPipelineJob(
+      pipelineJobInput(),
+      successfulPipelineDependencies({
+        async prepareRepo() {
+          const prepared = withPreparedIdentityEvidence(pipelineJobInput(), {
+            manifest: manifest(),
+            status: "succeeded" as const,
+            workspace: fakeWorkspaceHandle(),
+          });
+          return {
+            ...prepared,
+            applicationIdentityBaseline: {
+              ...prepared.applicationIdentityBaseline,
+              uiIdentityIndex: {
+                ...prepared.applicationIdentityBaseline.uiIdentityIndex,
+                indexSha256: "0".repeat(64),
+              },
+            },
+          };
+        },
+        async reviewPreparedApplicationIdentity() {
+          reviewed = true;
+          return passingIdentityReview();
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      failureKind: "invalid-output",
+      failureReason: expect.stringContaining("digest or size"),
+      stage: "prepared-application-identity-review",
+      status: "infrastructure-failed",
+    });
+    expect(reviewed).toBe(false);
+  });
+
+  it("propagates cancellation from prepared application identity review", async () => {
+    await expect(
+      runPipelineJob(
+        pipelineJobInput(),
+        successfulPipelineDependencies({
+          async reviewPreparedApplicationIdentity() {
+            throw new PipelineCancellationError("signal");
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({ reason: "signal" });
+  });
+
+  it("keeps signal cancellation primary when identity review settles with another error", async () => {
+    const controller = new AbortController();
+    await expect(
+      runPipelineJob(
+        pipelineJobInput(),
+        successfulPipelineDependencies({
+          async reviewPreparedApplicationIdentity() {
+            controller.abort();
+            throw new Error("review transport closed");
+          },
+        }),
+        { signal: controller.signal },
+      ),
+    ).rejects.toMatchObject({ reason: "signal" });
   });
 
   it("stops before preparation when the read-only agent rejects execution", async () => {
@@ -412,6 +768,8 @@ describe("runPipelineJob", () => {
       "repo-security-screen:succeeded",
       "repo-preparation:started",
       "repo-preparation:succeeded",
+      "prepared-application-identity-review:started",
+      "prepared-application-identity-review:succeeded",
       "script-generation:started",
       "script-generation:succeeded",
       "capture-path-validation:started",
@@ -627,6 +985,36 @@ describe("runPipelineJob", () => {
         riskCount: 1,
         sceneCount: undefined,
         stage: "repo-preparation",
+        status: "succeeded",
+        warningCount: undefined,
+        workspaceId: "workspace_123",
+      },
+      {
+        blockedNetworkAttemptCount: undefined,
+        createdFileCount: undefined,
+        demoRequestId: "demo-request-1",
+        durationMs: undefined,
+        event: "stage.started",
+        mockedServiceCount: undefined,
+        projectId: "project-1",
+        riskCount: undefined,
+        sceneCount: undefined,
+        stage: "prepared-application-identity-review",
+        status: "started",
+        warningCount: undefined,
+        workspaceId: "workspace_123",
+      },
+      {
+        blockedNetworkAttemptCount: undefined,
+        createdFileCount: undefined,
+        demoRequestId: "demo-request-1",
+        durationMs: 0,
+        event: "stage.succeeded",
+        mockedServiceCount: undefined,
+        projectId: "project-1",
+        riskCount: undefined,
+        sceneCount: undefined,
+        stage: "prepared-application-identity-review",
         status: "succeeded",
         warningCount: undefined,
         workspaceId: "workspace_123",
@@ -872,6 +1260,79 @@ describe("runPipelineJob", () => {
     }
   });
 
+  it("fails identity review when Capture Path repair changes reviewed source", async () => {
+    const previousRepairAttempts =
+      process.env.MAKEADEMO_CAPTURE_PATH_REPAIR_ATTEMPTS;
+    process.env.MAKEADEMO_CAPTURE_PATH_REPAIR_ATTEMPTS = "1";
+    let repairChangedSource = false;
+    let validationCalls = 0;
+    const workspace = fakeWorkspaceHandle();
+    workspace.workspace.capturePreparedWorkspaceDiff = async () =>
+      repairChangedSource
+        ? preparedWorkspaceDiff({
+            artifactId: "workspace-diff:sha256:changed-after-repair",
+            createdPaths: ["src/replacement-dashboard.tsx"],
+            patch:
+              "diff --git a/src/replacement-dashboard.tsx b/src/replacement-dashboard.tsx\n+replacement\n",
+          })
+        : preparedWorkspaceDiff({ artifactId: manifest().diffArtifactId });
+
+    try {
+      const result = await runPipelineJob(
+        pipelineJobInput(),
+        successfulPipelineDependencies({
+          async generateDemoScript() {
+            return demoScript({ scriptId: "script_bad" });
+          },
+          async prepareRepo() {
+            return { manifest: manifest(), status: "succeeded", workspace };
+          },
+          async repairCapturePathFailure(input) {
+            repairChangedSource = true;
+            return {
+              demoScript: demoScript({ scriptId: "script_repaired" }),
+              preparationManifest: input.preparationManifest,
+            };
+          },
+          async validateCapturePath(input) {
+            validationCalls += 1;
+            if (input.demoScript.scriptId === "script_bad") {
+              return {
+                blockedNetworkAttempts: [],
+                browserUrl: "https://preview.example.test/",
+                failedSceneId: "scene_validation",
+                failureReason: "Button was not found.",
+                logs: [],
+                status: "failed",
+                warnings: [],
+              };
+            }
+            throw new Error("must not validate source-changing repair");
+          },
+        }),
+      );
+
+      expect(result).toMatchObject({
+        identityReview: {
+          failureKind: "identity-not-proven",
+          verdict: "fail",
+        },
+        status: "identity-review-failed",
+      });
+      expect(validationCalls).toBe(1);
+    } finally {
+      if (previousRepairAttempts === undefined) {
+        Reflect.deleteProperty(
+          process.env,
+          "MAKEADEMO_CAPTURE_PATH_REPAIR_ATTEMPTS",
+        );
+      } else {
+        process.env.MAKEADEMO_CAPTURE_PATH_REPAIR_ATTEMPTS =
+          previousRepairAttempts;
+      }
+    }
+  });
+
   it("preserves the failed validation result when Capture Path repair throws", async () => {
     const result = await runPipelineJob(
       pipelineJobInput(),
@@ -1021,13 +1482,20 @@ describe("runPipelineJob", () => {
   });
 });
 
-function manifest() {
+function manifest(): PreparationManifest {
   return {
     assumptions: [],
     createdFiles: [],
     demoCommand: "npm run demo:makeademo",
     diffArtifactId: "artifact_diff",
     existingDemoEvidence: [],
+    mockingPlan: {
+      boundaries: [],
+      fixturePaths: [],
+      loadedPlaybooks: [],
+      nativeUiRoots: ["src/App.tsx"],
+      plannedPresentationChanges: [],
+    },
     mockedServices: [],
     modifiedFiles: [],
     repoUrl: "https://github.com/example/app",
@@ -1040,6 +1508,84 @@ function manifest() {
   };
 }
 
+function withPreparedIdentityEvidence(
+  input: { commitSha: string; repoUrl: string },
+  result: Extract<TestRepoPreparationResult, { status: "succeeded" }>,
+): SuccessfulRepoPreparation {
+  const accessibilityText = "main: Native article feed\nbutton: Open article";
+  const applicationIdentityBaseline = createApplicationIdentityBaseline({
+    pinnedRevision: input.commitSha,
+    repoUrl: input.repoUrl,
+    sourceControlledPaths: ["src/App.tsx"],
+    sourceTreeObjectId: "1111111111111111111111111111111111111111",
+  });
+  const identityDiff = preparedWorkspaceDiff({
+    artifactId: result.manifest.diffArtifactId,
+  });
+  const runtimePreflight = {
+    accessibilitySnapshot: {
+      sha256: sha256(accessibilityText),
+      sizeBytes: Buffer.byteLength(accessibilityText),
+      text: accessibilityText,
+    },
+    blockedNetworkAttempts: [],
+    logs: [],
+    screenshot: {
+      mimeType: "image/png" as const,
+      path: "/tmp/prepared-app.png",
+      sha256: sha256("prepared-app-screenshot"),
+      sizeBytes: 23,
+    },
+    status: "succeeded" as const,
+    warnings: [],
+  };
+  return {
+    ...result,
+    applicationIdentityBaseline:
+      result.applicationIdentityBaseline ?? applicationIdentityBaseline,
+    preparedWorkspaceDiff: result.preparedWorkspaceDiff ?? identityDiff,
+    runtimePreflight: result.runtimePreflight ?? runtimePreflight,
+  };
+}
+
+function preparedWorkspaceDiff(
+  input: {
+    artifactId?: string;
+    createdPaths?: string[];
+    deletedPaths?: string[];
+    modifiedPaths?: string[];
+    patch?: string;
+  } = {},
+) {
+  const patch = input.patch ?? "diff --git a/src/App.tsx b/src/App.tsx\n";
+  const patchSha256 = sha256(patch);
+  return {
+    artifactId: input.artifactId ?? `workspace-diff:sha256:${patchSha256}`,
+    createdPaths: input.createdPaths ?? [],
+    deletedPaths: input.deletedPaths ?? [],
+    modifiedPaths: input.modifiedPaths ?? ["src/App.tsx"],
+    patch,
+    patchSha256,
+    sizeBytes: Buffer.byteLength(patch),
+  };
+}
+
+function passingIdentityReview() {
+  return {
+    explanation: "The prepared runtime renders the submitted native UI.",
+    mockedBoundaries: [],
+    nativeSurfacesRendered: ["src/App.tsx"],
+    replacementEvidence: [],
+    sourceCitations: [{ endLine: 12, path: "src/App.tsx", startLine: 1 }],
+    status: "succeeded" as const,
+    verdict: "pass" as const,
+  };
+}
+
+function sha256(value: string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 function pipelineJobInput() {
   return {
     commitSha: "0123456789abcdef0123456789abcdef01234567",
@@ -1049,6 +1595,36 @@ function pipelineJobInput() {
     repoSecurity: { scannerReports: [] },
     repoUrl: "https://github.com/example/app",
     workspaceId: "workspace_123",
+  };
+}
+
+function successfulPipelineDependencies(
+  overrides: Partial<TestPipelineOrchestratorDependencies> = {},
+): TestPipelineOrchestratorDependencies {
+  return {
+    async generateDemoScript() {
+      return demoScript();
+    },
+    async prepareRepo() {
+      return {
+        manifest: manifest(),
+        status: "succeeded",
+        workspace: fakeWorkspaceHandle(),
+      };
+    },
+    screenRepoSecurity() {
+      return { rejections: [], status: "passed", warnings: [] };
+    },
+    async validateCapturePath() {
+      return {
+        blockedNetworkAttempts: [],
+        browserUrl: "https://preview.example.test/",
+        logs: [],
+        status: "succeeded",
+        warnings: [],
+      };
+    },
+    ...overrides,
   };
 }
 
@@ -1118,6 +1694,9 @@ function fakeWorkspaceHandle(): PreparationWorkspaceHandle {
     async release() {},
     id: "daytona_workspace",
     workspace: {
+      async capturePreparedWorkspaceDiff() {
+        return preparedWorkspaceDiff({ artifactId: manifest().diffArtifactId });
+      },
       async execute() {
         return { exitCode: 0, stderr: "", stdout: "" };
       },

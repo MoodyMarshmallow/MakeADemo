@@ -1,4 +1,9 @@
 import type { AgentToolDefinition } from "../../../../agent-harness/agent-session-runner.interface";
+import {
+  type RepoPreparationPlaybookId,
+  repoPreparationPlaybookIds,
+} from "../../preparation-mocking-plan.schema";
+import { readRepoPreparationPlaybook } from "../playbooks/repo-preparation-playbooks";
 import { preparationManifestPath } from "../repo-preparation-artifact-handoff";
 import type { RepoPreparationControlState } from "../repo-preparation-control-state";
 import {
@@ -74,6 +79,28 @@ export function createRepoPreparationStageTools(
       state,
     }),
     {
+      acceptance:
+        "Returns only backend-bundled guidance and records the loaded playbook in backend control state.",
+      args: {
+        playbook: {
+          description: "Trusted Repo Preparation playbook to load.",
+          type: "enum",
+          values: repoPreparationPlaybookIds,
+        },
+      },
+      description:
+        "Load trusted MakeADemo guidance for preparing a local runtime boundary.",
+      async execute(args) {
+        const playbook = repoPreparationPlaybookArg(args, "playbook");
+        const content = readRepoPreparationPlaybook(playbook);
+        state.recordLoadedPlaybook(playbook);
+        return content;
+      },
+      name: "makeademo_load_playbook",
+      precondition:
+        "The requested playbook must be one of the Repo Preparation catalog IDs.",
+    },
+    {
       acceptance: repoPreparationToolDefinitions.validatePreparation.acceptance,
       args: validationArgs,
       description:
@@ -120,6 +147,19 @@ export function createRepoPreparationStageTools(
         repoPreparationToolDefinitions.submitPreparationResult.precondition,
     },
   ];
+}
+
+function repoPreparationPlaybookArg(
+  args: Record<string, unknown>,
+  name: string,
+): RepoPreparationPlaybookId {
+  const value = stringArg(args, name);
+  if (!(repoPreparationPlaybookIds as readonly string[]).includes(value)) {
+    throw new Error(
+      `Tool argument ${name} must be a trusted Repo Preparation playbook ID.`,
+    );
+  }
+  return value as RepoPreparationPlaybookId;
 }
 
 function createDependencyInstallTool(input: {

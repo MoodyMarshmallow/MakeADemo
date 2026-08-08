@@ -188,16 +188,21 @@ function canonicalizeGit(args: readonly string[]): string[] {
 }
 
 function canonicalizeGitShow(args: readonly string[]): string[] {
-  if (args.length === 1 && args[0]?.startsWith("HEAD:") === true) {
-    const path = args[0].slice("HEAD:".length);
+  const objectPath = args.length === 1 ? args[0] : undefined;
+  const pinnedObjectPath = /^([a-f0-9]{40,64}):(.*)$/i.exec(objectPath ?? "");
+  if (objectPath?.startsWith("HEAD:") === true || pinnedObjectPath !== null) {
+    const objectId = pinnedObjectPath?.[1] ?? "HEAD";
+    const path =
+      pinnedObjectPath?.[2] ?? objectPath?.slice("HEAD:".length) ?? "";
     assertSafeGitPath(path);
     return [
       "git",
+      "--no-replace-objects",
       "show",
       "--no-ext-diff",
       "--no-textconv",
       "--format=",
-      `HEAD:${path}`,
+      `${objectId}:${path}`,
     ];
   }
   if (sameArgs(args, ["--stat"]) || sameArgs(args, ["--stat", "HEAD"])) {
@@ -212,7 +217,9 @@ function canonicalizeGitShow(args: readonly string[]): string[] {
       "HEAD",
     ];
   }
-  throw new Error("git show only permits HEAD:RELATIVE_PATH or --stat HEAD.");
+  throw new Error(
+    "git show only permits FULL_OBJECT_ID:RELATIVE_PATH, HEAD:RELATIVE_PATH, or --stat HEAD.",
+  );
 }
 
 function canonicalizeGitLog(args: readonly string[]): string[] {

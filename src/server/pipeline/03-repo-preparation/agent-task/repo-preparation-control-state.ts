@@ -1,3 +1,6 @@
+import { isDeepStrictEqual } from "node:util";
+
+import type { RepoPreparationPlaybookId } from "../preparation-mocking-plan.schema";
 import type { RepoPreparationAgent } from "../repo-preparation-agent.interface";
 import type { RepoPreparationPreflightResult } from "../repo-preparation-preflight.interface";
 import type {
@@ -9,6 +12,7 @@ type PreparationResult = Awaited<ReturnType<RepoPreparationAgent["prepare"]>>;
 
 export type RepoPreparationControlState = {
   readSubmittedResult(): PreparationResult | undefined;
+  readLoadedPlaybooks(): RepoPreparationPlaybookId[];
   readValidation():
     | { manifest: unknown; runtimePreflight: RepoPreparationPreflightResult }
     | undefined;
@@ -16,6 +20,7 @@ export type RepoPreparationControlState = {
     manifest: unknown;
     runtimePreflight: RepoPreparationPreflightResult;
   }): void;
+  recordLoadedPlaybook(playbook: RepoPreparationPlaybookId): void;
   requestDependencyInstall(input: DependencyInstallRequest): Promise<void>;
   requestValidation(input: ValidationRequest): Promise<void>;
   submit(input: RepoPreparationSubmission): Promise<void>;
@@ -43,6 +48,7 @@ export function createRepoPreparationControlState(input: {
   readManifest(): Promise<unknown>;
 }): RepoPreparationControlState {
   let dependencyInstallRequest: DependencyInstallRequest | undefined;
+  const loadedPlaybooks = new Set<RepoPreparationPlaybookId>();
   let submittedResult: PreparationResult | undefined;
   let validation:
     | { manifest: unknown; runtimePreflight: RepoPreparationPreflightResult }
@@ -51,9 +57,17 @@ export function createRepoPreparationControlState(input: {
 
   return {
     readSubmittedResult: () => submittedResult,
+    readLoadedPlaybooks: () => [...loadedPlaybooks],
     readValidation: () => validation,
     recordValidation(value) {
       validation = value;
+    },
+    recordLoadedPlaybook(playbook) {
+      const loadedPlaybookCount = loadedPlaybooks.size;
+      loadedPlaybooks.add(playbook);
+      if (loadedPlaybooks.size !== loadedPlaybookCount) {
+        validation = undefined;
+      }
     },
     async requestDependencyInstall(value) {
       dependencyInstallRequest = value;
@@ -78,11 +92,16 @@ export function createRepoPreparationControlState(input: {
       }
 
       const currentManifest = await input.readManifest();
+      if (validation !== latestValidation) {
+        throw new Error(
+          "Run makeademo_validate_preparation and wait for a passing preparation preflight result before submitting.",
+        );
+      }
       if (
         !samePreparationManifest(latestValidation.manifest, currentManifest)
       ) {
         throw new Error(
-          "Preparation manifest file must match the latest passed preflight manifest for demoCommand, url, and workspaceId.",
+          "Preparation manifest file must match the latest passed preflight manifest in full.",
         );
       }
       submittedResult = {
@@ -105,14 +124,5 @@ export function createRepoPreparationControlState(input: {
 }
 
 function samePreparationManifest(left: unknown, right: unknown): boolean {
-  if (!isRecord(left) || !isRecord(right)) return false;
-  return (
-    left.demoCommand === right.demoCommand &&
-    left.url === right.url &&
-    left.workspaceId === right.workspaceId
-  );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return isDeepStrictEqual(left, right);
 }

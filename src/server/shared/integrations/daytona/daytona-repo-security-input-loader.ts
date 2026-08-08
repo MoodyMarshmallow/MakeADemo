@@ -182,6 +182,17 @@ async function loadDaytonaRepoSecurityInputOperation(
       try {
         throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
         await logStatsEvent(options.logger, "started");
+        if (handle.workspace.captureApplicationIdentityBaseline === undefined) {
+          throw new Error(
+            "Preparation workspace cannot capture the Application Identity Baseline.",
+          );
+        }
+        const applicationIdentityBaseline =
+          await handle.workspace.captureApplicationIdentityBaseline({
+            pinnedRevision: input.commitSha,
+            repoUrl: input.repoUrl,
+          });
+
         const scannerReports = await runRepoSecurityScanners(
           {
             executeRepositoryCommand: (command, commandOptions) =>
@@ -195,24 +206,16 @@ async function loadDaytonaRepoSecurityInputOperation(
         );
         throwIfPipelineDeadlineReached(input.signal, input.deadlineAt);
 
-        const baseline = await executeRepositoryCommand(
-          handle.workspace,
-          "git -C /workspace ls-files -z",
-        );
-        if (baseline.exitCode !== 0) {
-          throw new Error(
-            "Failed to inventory source-controlled submitted paths.",
-          );
-        }
-        const baselineSourceControlledPaths = baseline.stdout
-          .split("\0")
-          .filter((path) => path.length > 0);
+        const baselineSourceControlledPaths = [
+          ...applicationIdentityBaseline.sourceControlledPaths,
+        ];
         await logStatsEvent(options.logger, "succeeded", {
           durationMs: Date.now() - statsStartedAt,
           fileCount: baselineSourceControlledPaths.length,
         });
         retained = true;
         return {
+          applicationIdentityBaseline,
           baselineSourceControlledPaths,
           preparationWorkspace: handle,
           repoSecurity: { scannerReports },
