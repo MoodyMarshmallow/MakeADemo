@@ -9,6 +9,11 @@ import type {
   BenchmarkSandboxProvider,
   BenchmarkStatusLevel,
 } from "./benchmark-manifest";
+import {
+  type PreparedApplicationIdentityEvaluationAssessment,
+  type PreparedApplicationIdentityEvaluationCase,
+  assessPreparedApplicationIdentityEvaluation,
+} from "./prepared-application-identity-evaluation-suite";
 
 type BenchmarkTokenUsage = {
   completionTokens: number;
@@ -52,6 +57,7 @@ export type BenchmarkResult = {
     | "process-terminated"
     | "terminal-cleanup-failed"
     | "terminal-result-unavailable";
+  identityEvaluation?: PreparedApplicationIdentityEvaluationAssessment;
   logPath?: string;
   repoId: string;
   repoUrl: string;
@@ -75,6 +81,10 @@ export type BenchmarkTerminalPipelineResult = {
   failure?: {
     blockers?: string[];
     failureKind?: BenchmarkTerminalFailureKind;
+    identityReview?: {
+      failureKind: "identity-not-proven" | "replacement-detected";
+      verdict: "fail";
+    };
     infrastructure?: SandboxInfrastructureDiagnostic;
     resourceDiagnostics?: PreparationWorkspaceResourceDiagnostics;
   };
@@ -87,6 +97,7 @@ export type BenchmarkTerminalPipelineResult = {
     | "cancelled"
     | "security-rejected"
     | "infrastructure-failed"
+    | "identity-review-failed"
     | "succeeded";
 };
 
@@ -103,6 +114,7 @@ export type BenchmarkResultBuildInput = {
     latestStage?: string;
   };
   fullPipelineResult?: BenchmarkTerminalPipelineResult;
+  identityEvaluation?: PreparedApplicationIdentityEvaluationCase;
   lifecycle: {
     exitCode: number | null;
     killed: boolean;
@@ -196,6 +208,16 @@ export function buildBenchmarkResult(
               ? "terminal-result-unavailable"
               : "process-terminated";
   const stageOutcomes = input.fullPipelineLog.stageOutcomes ?? [];
+  const identityEvaluation =
+    input.identityEvaluation === undefined
+      ? undefined
+      : assessPreparedApplicationIdentityEvaluation({
+          evaluation: input.identityEvaluation,
+          ...(terminalResult?.failure?.identityReview === undefined
+            ? {}
+            : { identityReview: terminalResult.failure.identityReview }),
+          stageOutcomes,
+        });
 
   return {
     benchmarkRunId: input.benchmarkRunId,
@@ -214,6 +236,7 @@ export function buildBenchmarkResult(
     ...(infrastructureFailureKind === undefined
       ? {}
       : { infrastructureFailureKind }),
+    ...(identityEvaluation === undefined ? {} : { identityEvaluation }),
     ...(terminalResult?.failure?.resourceDiagnostics === undefined
       ? {}
       : { resourceDiagnostics: terminalResult.failure.resourceDiagnostics }),
@@ -302,6 +325,7 @@ export function readBenchmarkTerminalPipelineResult(input: {
     result.status !== "preparation-failed" &&
     result.status !== "security-rejected" &&
     result.status !== "infrastructure-failed" &&
+    result.status !== "identity-review-failed" &&
     result.status !== "cancelled"
   ) {
     return undefined;
@@ -539,6 +563,7 @@ function isFailureSummary(value: Record<string, unknown>): value is Record<
 function readTerminalFailure(value: {
   blockers: string[];
   failureKind?: unknown;
+  identityReview?: unknown;
   infrastructure?: unknown;
   resourceDiagnostics?: unknown;
 }): {
@@ -556,12 +581,30 @@ function readTerminalFailure(value: {
   const resourceDiagnostics = readBenchmarkResourceDiagnostics(
     value.resourceDiagnostics,
   );
+  const identityReview = readIdentityReviewFailure(value.identityReview);
   return {
     blockers: value.blockers,
     ...(failureKind === undefined ? {} : { failureKind }),
     ...(infrastructure === undefined ? {} : { infrastructure }),
+    ...(identityReview === undefined ? {} : { identityReview }),
     ...(resourceDiagnostics === undefined ? {} : { resourceDiagnostics }),
   };
+}
+
+function readIdentityReviewFailure(value: unknown):
+  | {
+      failureKind: "identity-not-proven" | "replacement-detected";
+      verdict: "fail";
+    }
+  | undefined {
+  if (!isRecord(value) || value.verdict !== "fail") return undefined;
+  if (
+    value.failureKind !== "identity-not-proven" &&
+    value.failureKind !== "replacement-detected"
+  ) {
+    return undefined;
+  }
+  return { failureKind: value.failureKind, verdict: "fail" };
 }
 
 function readBenchmarkResourceDiagnostics(
@@ -674,6 +717,8 @@ function failureStageForTerminalStatus(
       return "capture-path-validation";
     case "preparation-failed":
       return "repo-preparation";
+    case "identity-review-failed":
+      return "prepared-application-identity-review";
     case "security-rejected":
       return "repo-security-screen";
     case "cancelled":

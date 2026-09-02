@@ -1,6 +1,10 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import { createProductionAgentHarness } from "../src/server/composition/production-agent-harness";
+import { resolveProductionAgentModelConfigFromEnv } from "../src/server/composition/production-agent-model-config";
+import { AgenticPreparedApplicationIdentityReviewer } from "../src/server/pipeline/03-prepared-application-identity-review/agentic-prepared-application-identity-reviewer";
+import type { PreparedApplicationIdentityReviewResult } from "../src/server/pipeline/03-prepared-application-identity-review/prepared-application-identity-reviewer.interface";
 import { createBenchmarkAdmissionGate } from "../src/server/shared/benchmark/benchmark-admission-gate";
 import { parseBenchmarkCommandArgs } from "../src/server/shared/benchmark/benchmark-command";
 import { createBenchmarkControlDecisionRecorder } from "../src/server/shared/benchmark/benchmark-control-decisions";
@@ -29,17 +33,58 @@ import {
   buildBenchmarkPipelineArgs,
   selectBenchmarkRepos,
 } from "../src/server/shared/benchmark/benchmark-suite";
+import { createAdversarialPreparedApplicationIdentityReviewInput } from "../src/server/shared/benchmark/prepared-application-identity-evaluation-harness";
+import {
+  type MaterializedPreparedApplicationIdentityEvaluationCase,
+  materializePreparedApplicationIdentityEvaluationCase,
+  preparedApplicationIdentityEvaluationCases,
+  selectPreparedApplicationIdentityEvaluationCases,
+} from "../src/server/shared/benchmark/prepared-application-identity-evaluation-suite";
 
-const { concurrency, repoIds } = parseBenchmarkCommandArgs(
+const { concurrency, identityEvaluation, repoIds } = parseBenchmarkCommandArgs(
   process.argv.slice(2),
 );
-const selectedBenchmarkRepos = selectBenchmarkRepos({
-  repoIds,
-  repos: benchmarkRepos,
-});
+type SelectedBenchmarkRepo = BenchmarkRepo & {
+  identityEvaluation?: MaterializedPreparedApplicationIdentityEvaluationCase;
+};
+const selectedIdentityEvaluationCases = identityEvaluation
+  ? selectPreparedApplicationIdentityEvaluationCases({
+      cases: preparedApplicationIdentityEvaluationCases,
+      repoIds,
+    })
+  : undefined;
+const selectedBenchmarkRepos: SelectedBenchmarkRepo[] =
+  selectedIdentityEvaluationCases === undefined
+    ? selectBenchmarkRepos({ repoIds, repos: benchmarkRepos })
+    : selectedIdentityEvaluationCases.map((evaluation) => {
+        const materialized =
+          materializePreparedApplicationIdentityEvaluationCase(evaluation);
+        return {
+          ...materialized.repo,
+          identityEvaluation: materialized,
+        };
+      });
 const selectedBenchmarkSuite = {
   ...benchmarkSuite,
-  repos: selectedBenchmarkRepos,
+  ...(identityEvaluation
+    ? { mode: "prepared-application-identity-evaluation" as const }
+    : {}),
+  repos: selectedBenchmarkRepos.map(
+    ({ identityEvaluation: materialized, ...repo }) => ({
+      ...repo,
+      ...(materialized === undefined
+        ? {}
+        : {
+            identityEvaluation: {
+              caseId: materialized.evaluation.id,
+              execution: materialized.execution,
+              expectedDecision: materialized.evaluation.expectedDecision,
+              fixture: materialized.evaluation.fixture,
+              materializedInstructions: materialized.materializedInstructions,
+            },
+          }),
+    }),
+  ),
   sandboxProvider: "daytona" as const,
 };
 const benchmarkRunId = createRunId();
@@ -189,13 +234,17 @@ async function runRepoBenchmark(input: {
   benchmarkRunId: string;
   benchmarkTimeoutMs: number;
   outputRoot: string;
-  repo: BenchmarkRepo;
+  repo: SelectedBenchmarkRepo;
   repetitionIndex: number;
   sandboxProvider: "daytona";
   deadlineAt?: number;
   onControlEvent: (event: BenchmarkControlEvent) => void;
   signal: AbortSignal;
 }): Promise<BenchmarkResult> {
+  const identityEvaluation = input.repo.identityEvaluation;
+  if (identityEvaluation?.execution === "standalone-identity-review") {
+    return runStandaloneIdentityReviewBenchmark(input, identityEvaluation);
+  }
   const runName = `${input.repo.id}-r${input.repetitionIndex + 1}`;
   const runDirectory = join(input.outputRoot, runName);
   const stdoutPath = join(runDirectory, "stdout.log");
@@ -267,6 +316,9 @@ async function runRepoBenchmark(input: {
     fullPipelineLog,
     ...(fullPipelineResult === undefined ? {} : { fullPipelineResult }),
     lifecycle,
+    ...(input.repo.identityEvaluation === undefined
+      ? {}
+      : { identityEvaluation: input.repo.identityEvaluation.evaluation }),
     repoId: input.repo.id,
     repoUrl: input.repo.repoUrl,
     runDirectory,
@@ -280,6 +332,180 @@ async function runRepoBenchmark(input: {
     `[${input.repo.id}] ${result.status} ${result.statusLevel} in ${formatDuration(result.durationMs)}\n`,
   );
   return result;
+}
+
+async function runStandaloneIdentityReviewBenchmark(
+  input: {
+    benchmarkRunId: string;
+    benchmarkTimeoutMs: number;
+    outputRoot: string;
+    repo: SelectedBenchmarkRepo;
+    repetitionIndex: number;
+    deadlineAt?: number;
+    signal: AbortSignal;
+  },
+  identityEvaluation: MaterializedPreparedApplicationIdentityEvaluationCase,
+): Promise<BenchmarkResult> {
+  const runName = `${input.repo.id}-r${input.repetitionIndex + 1}`;
+  const runDirectory = join(input.outputRoot, runName);
+  const stdoutPath = join(runDirectory, "stdout.log");
+  const stderrPath = join(runDirectory, "stderr.log");
+  const reviewerLogPath = join(runDirectory, "identity-review-log.jsonl");
+  const reviewerResultPath = join(runDirectory, "identity-review-result.json");
+  const command = [
+    "benchmark:prepared-application-identity-review",
+    identityEvaluation.evaluation.id,
+  ];
+  const startedAt = new Date();
+  let standardOutput = "";
+  let diagnosticOutput = "";
+  await mkdir(runDirectory, { recursive: true });
+  process.stdout.write(
+    `\n[${input.repo.id}] standalone identity review ${input.repetitionIndex + 1}/${input.repo.effectiveRepetitions}\n`,
+  );
+
+  const harness = createProductionAgentHarness({
+    agentModel: resolveProductionAgentModelConfigFromEnv(),
+    onAgentDiagnostic: (chunk) => {
+      diagnosticOutput += chunk;
+    },
+    onAgentStandard: (chunk) => {
+      standardOutput += chunk;
+    },
+  });
+  const reviewer = new AgenticPreparedApplicationIdentityReviewer({
+    hardTimeoutMs: Math.min(input.benchmarkTimeoutMs, 1_800_000),
+    runner: harness.agentTaskRunners.preparedApplicationIdentityReview,
+    timeoutMs: Math.min(input.benchmarkTimeoutMs, 600_000),
+  });
+  const reviewInput =
+    createAdversarialPreparedApplicationIdentityReviewInput(identityEvaluation);
+  let review: PreparedApplicationIdentityReviewResult;
+  try {
+    review = await reviewer.review({
+      ...reviewInput,
+      ...(input.deadlineAt === undefined
+        ? {}
+        : { deadlineAt: input.deadlineAt }),
+      signal: input.signal,
+    });
+  } finally {
+    await Promise.all([
+      harness.disposeAgentSessions(),
+      reviewInput.preparationWorkspace.release(),
+    ]);
+    await Promise.all([
+      writeFile(stdoutPath, redactBenchmarkOutput(standardOutput)),
+      writeFile(stderrPath, redactBenchmarkOutput(diagnosticOutput)),
+    ]);
+  }
+
+  const finalStageStatus =
+    review.status === "succeeded" && review.verdict === "pass"
+      ? "succeeded"
+      : "failed";
+  const stageOutcomes = [
+    { stage: "prepared-application-identity-review", status: "started" },
+    {
+      stage: "prepared-application-identity-review",
+      status: finalStageStatus,
+    },
+  ] as const;
+  await writeFile(
+    reviewerLogPath,
+    `${stageOutcomes
+      .map((outcome) => JSON.stringify({ event: "stage-progress", ...outcome }))
+      .join("\n")}\n`,
+  );
+  await writeFile(
+    reviewerResultPath,
+    `${JSON.stringify(
+      {
+        caseId: identityEvaluation.evaluation.id,
+        materializedInstructions: identityEvaluation.materializedInstructions,
+        mode: "standalone-identity-review",
+        review,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+
+  const fullPipelineResult = readStandaloneIdentityTerminalResult({
+    logPath: reviewerLogPath,
+    resultPath: reviewerResultPath,
+    review,
+  });
+  const endedAt = new Date();
+  const result = buildBenchmarkResult({
+    benchmarkRunId: input.benchmarkRunId,
+    benchmarkTimeoutMs: input.benchmarkTimeoutMs,
+    command,
+    commitSha: input.repo.commitSha,
+    durationMs: endedAt.getTime() - startedAt.getTime(),
+    endedAt: endedAt.toISOString(),
+    expectedLevel: input.repo.expectedLevel,
+    fullPipelineLog: {
+      latestStage: "prepared-application-identity-review",
+      stageOutcomes: [...stageOutcomes],
+      succeededEvents: [],
+    },
+    fullPipelineResult,
+    identityEvaluation: identityEvaluation.evaluation,
+    lifecycle: {
+      exitCode: review.status === "succeeded" ? 0 : 1,
+      killed: false,
+    },
+    repoId: input.repo.id,
+    repoUrl: input.repo.repoUrl,
+    runDirectory,
+    startedAt: startedAt.toISOString(),
+    stderrPath,
+    stdoutPath,
+  });
+  process.stdout.write(
+    `[${input.repo.id}] ${result.identityEvaluation?.assessment ?? "inconclusive"} identity evaluation in ${formatDuration(result.durationMs)}\n`,
+  );
+  return result;
+}
+
+function readStandaloneIdentityTerminalResult(input: {
+  logPath: string;
+  resultPath: string;
+  review: PreparedApplicationIdentityReviewResult;
+}): BenchmarkTerminalPipelineResult {
+  if (input.review.status === "failed") {
+    return {
+      artifacts: { logPath: input.logPath },
+      failure: {
+        blockers: [
+          `Prepared Application Identity reviewer failed: ${input.review.failureKind}.`,
+        ],
+        failureKind: input.review.failureKind,
+      },
+      resultPath: input.resultPath,
+      status: "infrastructure-failed",
+    };
+  }
+  if (input.review.verdict === "fail") {
+    return {
+      artifacts: { logPath: input.logPath },
+      failure: {
+        blockers: [input.review.explanation],
+        identityReview: {
+          failureKind: input.review.failureKind,
+          verdict: "fail",
+        },
+      },
+      resultPath: input.resultPath,
+      status: "identity-review-failed",
+    };
+  }
+  return {
+    artifacts: { logPath: input.logPath },
+    resultPath: input.resultPath,
+    status: "succeeded",
+  };
 }
 
 function readErrorMessage(error: unknown): string {

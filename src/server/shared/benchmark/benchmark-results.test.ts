@@ -8,6 +8,7 @@ import {
   readBenchmarkTerminalPipelineResult,
   summarizeBenchmarkResults,
 } from "./benchmark-results";
+import { preparedApplicationIdentityEvaluationCases } from "./prepared-application-identity-evaluation-suite";
 
 describe("findFullPipelineResultPath", () => {
   it("finds failed full-pipeline result metadata written to stderr", () => {
@@ -89,6 +90,44 @@ describe("readBenchmarkTerminalPipelineResult", () => {
         value: failedTerminalSummary(),
       }),
     ).toMatchObject({ resultPath, status: "preparation-failed" });
+  });
+
+  it("reads the real structured replacement decision from an identity-review terminal result", () => {
+    expect(
+      readBenchmarkTerminalPipelineResult({
+        pipelineOutputRoot,
+        resultPath,
+        value: {
+          artifacts: { logPath: "/runs/pipeline-log.jsonl" },
+          failure: {
+            blockers: ["Prepared Application Identity Review failed."],
+            identityReview: {
+              explanation: "The prepared app is a replacement shell.",
+              failureKind: "replacement-detected",
+              mockedBoundaries: [],
+              nativeSurfacesRendered: [],
+              replacementEvidence: ["prepared:diff"],
+              sourceCitations: [],
+              status: "succeeded",
+              verdict: "fail",
+            },
+            suggestedChanges: [],
+          },
+          runDirectory:
+            "/runs/ghost/pipeline/full-pipeline-2026-07-20T00-00-00-000Z",
+          runId: "full-pipeline-2026-07-20T00-00-00-000Z",
+          status: "identity-review-failed",
+        },
+      }),
+    ).toMatchObject({
+      failure: {
+        identityReview: {
+          failureKind: "replacement-detected",
+          verdict: "fail",
+        },
+      },
+      status: "identity-review-failed",
+    });
   });
 
   it("preserves the sandbox provider attribution emitted by the Pipeline", () => {
@@ -371,6 +410,197 @@ describe("inferBenchmarkStatusLevel", () => {
 });
 
 describe("buildBenchmarkResult", () => {
+  it("passes a native identity evaluation when the real Pipeline stage succeeds before a later failure", () => {
+    const identityEvaluation = preparedApplicationIdentityEvaluationCases[0];
+
+    expect(
+      buildBenchmarkResult({
+        benchmarkRunId: "run-1",
+        benchmarkTimeoutMs: 960_000,
+        command: ["bun", "src/server/composition/full-pipeline-cli.mts"],
+        commitSha: identityEvaluation.repo.commitSha,
+        durationMs: 1_000,
+        endedAt: "2026-07-20T00:00:01.000Z",
+        expectedLevel: "L6",
+        fullPipelineLog: {
+          stageOutcomes: [
+            {
+              stage: "prepared-application-identity-review",
+              status: "succeeded",
+            },
+            { stage: "capture-path-validation", status: "failed" },
+          ],
+          succeededEvents: [],
+        },
+        fullPipelineResult: {
+          resultPath: "/runs/full-pipeline-result.json",
+          status: "capture-path-validation-failed",
+        },
+        identityEvaluation,
+        lifecycle: { exitCode: 1, killed: false },
+        repoId: identityEvaluation.repo.id,
+        repoUrl: identityEvaluation.repo.repoUrl,
+        runDirectory: ".makeademo-benchmark-runs/run-1/directus-r1",
+        startedAt: "2026-07-20T00:00:00.000Z",
+        stderrPath: "stderr.log",
+        stdoutPath: "stdout.log",
+      }),
+    ).toMatchObject({
+      identityEvaluation: {
+        actualDecision: { verdict: "pass" },
+        assessment: "passed",
+        caseId: "directus-rest-native",
+        expectedDecision: { verdict: "pass" },
+      },
+    });
+  });
+
+  it("passes the replacement evaluation only for the real replacement-detected decision", () => {
+    const identityEvaluation = preparedApplicationIdentityEvaluationCases[3];
+    const input = identityEvaluationBenchmarkInput(identityEvaluation);
+
+    const replacementResult = buildBenchmarkResult({
+      ...input,
+      fullPipelineLog: {
+        stageOutcomes: [
+          { stage: "repo-preparation", status: "succeeded" },
+          {
+            stage: "prepared-application-identity-review",
+            status: "failed",
+          },
+        ],
+        succeededEvents: [],
+      },
+      fullPipelineResult: {
+        failure: {
+          blockers: ["Replacement application detected."],
+          identityReview: {
+            failureKind: "replacement-detected",
+            verdict: "fail",
+          },
+        },
+        resultPath: "/runs/full-pipeline-result.json",
+        status: "identity-review-failed",
+      },
+    });
+
+    expect(replacementResult).toMatchObject({
+      identityEvaluation: {
+        actualDecision: {
+          failureKind: "replacement-detected",
+          verdict: "fail",
+        },
+        assessment: "passed",
+        caseId: "midday-local-database-replacement",
+        expectedDecision: {
+          failureKind: "replacement-detected",
+          verdict: "fail",
+        },
+      },
+    });
+    expect(
+      buildBenchmarkResult({
+        ...input,
+        fullPipelineLog: {
+          stageOutcomes: [
+            {
+              stage: "prepared-application-identity-review",
+              status: "failed",
+            },
+          ],
+          succeededEvents: [],
+        },
+        fullPipelineResult: {
+          failure: {
+            blockers: ["Application identity was not proven."],
+            identityReview: {
+              failureKind: "identity-not-proven",
+              verdict: "fail",
+            },
+          },
+          resultPath: "/runs/full-pipeline-result.json",
+          status: "identity-review-failed",
+        },
+      }).identityEvaluation,
+    ).toMatchObject({
+      actualDecision: {
+        failureKind: "identity-not-proven",
+        verdict: "fail",
+      },
+      assessment: "failed",
+    });
+  });
+
+  it("keeps a pre-review infrastructure failure inconclusive in identity evaluation mode", () => {
+    const identityEvaluation = preparedApplicationIdentityEvaluationCases[2];
+    const input = identityEvaluationBenchmarkInput(identityEvaluation);
+
+    expect(
+      buildBenchmarkResult({
+        ...input,
+        fullPipelineLog: {
+          latestStage: "repo-preparation",
+          stageOutcomes: [
+            { stage: "repo-security-screen", status: "succeeded" },
+            { stage: "repo-preparation", status: "failed" },
+          ],
+          succeededEvents: [],
+        },
+        fullPipelineResult: {
+          failure: {
+            blockers: ["Sandbox infrastructure was unavailable."],
+            failureKind: "sandbox-infrastructure-failed",
+          },
+          resultPath: "/runs/full-pipeline-result.json",
+          status: "infrastructure-failed",
+        },
+      }),
+    ).toMatchObject({
+      identityEvaluation: {
+        assessment: "inconclusive",
+        caseId: "mattermost-authentication-native",
+        expectedDecision: { verdict: "pass" },
+      },
+    });
+  });
+
+  it("does not reuse a stale identity pass when the latest reviewer attempt fails as infrastructure", () => {
+    const identityEvaluation = preparedApplicationIdentityEvaluationCases[0];
+    const input = identityEvaluationBenchmarkInput(identityEvaluation);
+
+    expect(
+      buildBenchmarkResult({
+        ...input,
+        fullPipelineLog: {
+          latestStage: "prepared-application-identity-review",
+          stageOutcomes: [
+            {
+              stage: "prepared-application-identity-review",
+              status: "succeeded",
+            },
+            {
+              stage: "prepared-application-identity-review",
+              status: "started",
+            },
+            {
+              stage: "prepared-application-identity-review",
+              status: "failed",
+            },
+          ],
+          succeededEvents: [],
+        },
+        fullPipelineResult: {
+          failure: {
+            blockers: ["Prepared Application Identity reviewer timed out."],
+            failureKind: "timeout",
+          },
+          resultPath: "/runs/full-pipeline-result.json",
+          status: "infrastructure-failed",
+        },
+      }).identityEvaluation,
+    ).toMatchObject({ assessment: "inconclusive" });
+  });
+
   it("keeps a durable succeeded result inconclusive when CLI cleanup exits nonzero", () => {
     expect(
       buildBenchmarkResult({
@@ -882,6 +1112,29 @@ function infrastructureBenchmarkInput(input: {
     ...(input.sandboxProvider === undefined
       ? {}
       : { sandboxProvider: input.sandboxProvider }),
+    startedAt: "2026-07-20T00:00:00.000Z",
+    stderrPath: "stderr.log",
+    stdoutPath: "stdout.log",
+  };
+}
+
+function identityEvaluationBenchmarkInput(
+  identityEvaluation: (typeof preparedApplicationIdentityEvaluationCases)[number],
+): BenchmarkResultBuildInput {
+  return {
+    benchmarkRunId: "run-1",
+    benchmarkTimeoutMs: 960_000,
+    command: ["bun", "src/server/composition/full-pipeline-cli.mts"],
+    commitSha: identityEvaluation.repo.commitSha,
+    durationMs: 1_000,
+    endedAt: "2026-07-20T00:00:01.000Z",
+    expectedLevel: "L6",
+    fullPipelineLog: { stageOutcomes: [], succeededEvents: [] },
+    identityEvaluation,
+    lifecycle: { exitCode: 1, killed: false },
+    repoId: identityEvaluation.repo.id,
+    repoUrl: identityEvaluation.repo.repoUrl,
+    runDirectory: `.makeademo-benchmark-runs/run-1/${identityEvaluation.repo.id}-r1`,
     startedAt: "2026-07-20T00:00:00.000Z",
     stderrPath: "stderr.log",
     stdoutPath: "stdout.log",

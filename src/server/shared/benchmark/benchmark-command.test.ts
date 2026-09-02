@@ -9,6 +9,15 @@ describe("parseBenchmarkCommandArgs", () => {
     });
   });
 
+  it("selects the executable Prepared Application Identity evaluation mode", () => {
+    expect(
+      parseBenchmarkCommandArgs(["--identity-evaluation", "midday"]),
+    ).toEqual({
+      identityEvaluation: true,
+      repoIds: ["midday"],
+    });
+  });
+
   it("parses a positive integer concurrency limit before the runner starts", () => {
     expect(
       parseBenchmarkCommandArgs(["midday", "--concurrency", "5", "excalidraw"]),

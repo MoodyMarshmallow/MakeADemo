@@ -1,5 +1,6 @@
 export type BenchmarkCommandArgs = {
   concurrency?: number;
+  identityEvaluation?: true;
   repoIds: string[];
 };
 
@@ -14,6 +15,7 @@ export function parseBenchmarkCommandArgs(
   const repoIds: string[] = [];
   let concurrency: number | undefined;
   let concurrencyFlagSeen = false;
+  let identityEvaluation = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -42,11 +44,21 @@ export function parseBenchmarkCommandArgs(
       index += 1;
       continue;
     }
+    if (argument === "--identity-evaluation") {
+      if (identityEvaluation) {
+        throw new Error(
+          "Duplicate --identity-evaluation flag. Specify it at most once.",
+        );
+      }
+      identityEvaluation = true;
+      continue;
+    }
     repoIds.push(argument as string);
   }
 
   return {
     ...(concurrency === undefined ? {} : { concurrency }),
+    ...(identityEvaluation ? { identityEvaluation: true as const } : {}),
     repoIds,
   };
 }
