@@ -5,6 +5,8 @@ import { join } from "node:path";
 
 import type {
   AgentToolDefinition,
+  AgentToolInputSchema,
+  AgentToolProtocol,
   AgentToolResult,
 } from "../../agent-harness/agent-session-runner.interface";
 import type { PreparationWorkspace } from "../03-repo-preparation/preparation-workspace.interface";
@@ -12,6 +14,11 @@ import type {
   PreparedApplicationIdentityEvidence,
   PreparedApplicationIdentityEvidenceLedger,
 } from "./prepared-application-identity-evidence";
+import {
+  preparedApplicationIdentityDecisionLimits,
+  readPreparedApplicationIdentityDecision,
+} from "./prepared-application-identity-review.schema";
+import type { PreparedApplicationIdentityDecision } from "./prepared-application-identity-reviewer.interface";
 
 const maxSourceCharacters = 16 * 1024;
 const maxPathSearchResults = 40;
@@ -30,8 +37,183 @@ export type PreparedApplicationIdentityInspection =
     }
   | { endLine: number; kind: "source"; path: string; startLine: number };
 
-/** Creates the identity review's complete read-only Stage Agent Tool surface. */
-export function createPreparedApplicationIdentityStageTools(input: {
+const preparedApplicationIdentityReviewHandoffBrand: unique symbol = Symbol(
+  "PreparedApplicationIdentityReviewHandoff",
+);
+
+/** Opaque capability proving that the backend accepted a review submission. */
+export type PreparedApplicationIdentityReviewToolHandoff = {
+  readonly [preparedApplicationIdentityReviewHandoffBrand]: true;
+};
+
+export type PreparedApplicationIdentityReviewTools = {
+  /** Returns the first provenance-valid decision or rejects before submission. */
+  readAcceptedDecision: (
+    handoff: PreparedApplicationIdentityReviewToolHandoff,
+  ) => PreparedApplicationIdentityDecision;
+  toolProtocol: AgentToolProtocol<PreparedApplicationIdentityReviewToolHandoff>;
+  tools: readonly AgentToolDefinition<AgentToolResult>[];
+};
+
+/**
+ * Creates the complete identity-review tool boundary. The closure owns all
+ * successful inspections and freezes the first provenance-valid submission.
+ */
+export function createPreparedApplicationIdentityReviewTools(input: {
+  evidenceLedger: PreparedApplicationIdentityEvidenceLedger;
+  workspace: PreparationWorkspace;
+}): PreparedApplicationIdentityReviewTools {
+  const inspections: PreparedApplicationIdentityInspection[] = [];
+  let acceptedDecision: PreparedApplicationIdentityDecision | undefined;
+  let acceptedHandoff: PreparedApplicationIdentityReviewToolHandoff | undefined;
+  const evidenceTools = createPreparedApplicationIdentityEvidenceTools({
+    evidenceLedger: input.evidenceLedger,
+    onInspection: (inspection) => inspections.push(inspection),
+    workspace: input.workspace,
+  });
+  const submitTool: AgentToolDefinition = {
+    args: {},
+    description:
+      "Submit the final Prepared Application Identity Review verdict for backend validation.",
+    async execute(args) {
+      if (acceptedDecision !== undefined) {
+        throw new Error(
+          "An identity review decision has already been accepted.",
+        );
+      }
+      const decision = freezeDecision(
+        readPreparedApplicationIdentityDecision(
+          args,
+          input.evidenceLedger,
+          inspections,
+        ),
+      );
+      const handoff = Object.freeze({
+        [preparedApplicationIdentityReviewHandoffBrand]: true as const,
+      });
+      acceptedDecision = decision;
+      acceptedHandoff = handoff;
+      return "Identity review decision accepted.";
+    },
+    inputSchema: preparedApplicationIdentityDecisionInputSchema,
+    name: "makeademo_submit_identity_review",
+  };
+  const toolProtocol: AgentToolProtocol<PreparedApplicationIdentityReviewToolHandoff> =
+    {
+      decode(call) {
+        if (call.name !== submitTool.name) return { status: "ignored" };
+        if (acceptedDecision === undefined || acceptedHandoff === undefined) {
+          return {
+            reason:
+              "Identity review submission completed without an accepted backend decision.",
+            status: "invalid",
+          };
+        }
+        return {
+          handoff: acceptedHandoff,
+          status: "accepted",
+        };
+      },
+      interruptOnCompletedHandoff: true,
+      trackedNames: [submitTool.name],
+    };
+  return {
+    readAcceptedDecision(handoff) {
+      if (acceptedDecision === undefined || acceptedHandoff === undefined) {
+        throw new Error("An identity review decision has not been accepted.");
+      }
+      if (handoff !== acceptedHandoff) {
+        throw new Error("Identity review handoff capability is invalid.");
+      }
+      return acceptedDecision;
+    },
+    toolProtocol,
+    tools: [...evidenceTools, submitTool],
+  };
+}
+
+const boundedString: AgentToolInputSchema = {
+  maxLength: preparedApplicationIdentityDecisionLimits.string,
+  minLength: 1,
+  type: "string",
+};
+const boundedStringArray: AgentToolInputSchema = {
+  items: boundedString,
+  maxItems: preparedApplicationIdentityDecisionLimits.array,
+  type: "array",
+};
+const sourceCitationArray: AgentToolInputSchema = {
+  items: {
+    additionalProperties: false,
+    properties: {
+      endLine: { minimum: 1, type: "integer" },
+      path: boundedString,
+      startLine: { minimum: 1, type: "integer" },
+    },
+    required: ["endLine", "path", "startLine"],
+    type: "object",
+  },
+  maxItems: preparedApplicationIdentityDecisionLimits.array,
+  type: "array",
+};
+const commonDecisionProperties = {
+  explanation: {
+    maxLength: preparedApplicationIdentityDecisionLimits.explanation,
+    minLength: 1,
+    type: "string",
+  },
+  mockedBoundaries: boundedStringArray,
+  nativeSurfacesRendered: boundedStringArray,
+  replacementEvidence: boundedStringArray,
+  sourceCitations: sourceCitationArray,
+} as const satisfies Readonly<Record<string, AgentToolInputSchema>>;
+const commonDecisionRequired = [
+  "explanation",
+  "mockedBoundaries",
+  "nativeSurfacesRendered",
+  "replacementEvidence",
+  "sourceCitations",
+] as const;
+const preparedApplicationIdentityDecisionInputSchema: AgentToolInputSchema = {
+  oneOf: [
+    {
+      additionalProperties: false,
+      properties: {
+        ...commonDecisionProperties,
+        verdict: { const: "pass", type: "literal" },
+      },
+      required: [...commonDecisionRequired, "verdict"],
+      type: "object",
+    },
+    {
+      additionalProperties: false,
+      properties: {
+        ...commonDecisionProperties,
+        failureKind: {
+          type: "enum",
+          values: ["replacement-detected", "identity-not-proven"],
+        },
+        verdict: { const: "fail", type: "literal" },
+      },
+      required: [...commonDecisionRequired, "failureKind", "verdict"],
+      type: "object",
+    },
+  ],
+  type: "oneOf",
+};
+
+function freezeDecision(
+  decision: PreparedApplicationIdentityDecision,
+): PreparedApplicationIdentityDecision {
+  for (const citation of decision.sourceCitations) Object.freeze(citation);
+  Object.freeze(decision.mockedBoundaries);
+  Object.freeze(decision.nativeSurfacesRendered);
+  Object.freeze(decision.replacementEvidence);
+  Object.freeze(decision.sourceCitations);
+  return Object.freeze(decision);
+}
+
+function createPreparedApplicationIdentityEvidenceTools(input: {
   evidenceLedger: PreparedApplicationIdentityEvidenceLedger;
   onInspection?: (inspection: PreparedApplicationIdentityInspection) => void;
   workspace: PreparationWorkspace;

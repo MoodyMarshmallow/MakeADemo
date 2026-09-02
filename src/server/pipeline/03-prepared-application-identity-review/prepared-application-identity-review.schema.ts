@@ -5,7 +5,7 @@ import type {
 } from "./prepared-application-identity-reviewer.interface";
 import type { PreparedApplicationIdentityInspection } from "./prepared-application-identity-stage-tools";
 
-const limits = {
+export const preparedApplicationIdentityDecisionLimits = {
   array: 64,
   explanation: 4_000,
   string: 1_000,
@@ -40,7 +40,7 @@ export function readPreparedApplicationIdentityDecision(
   const explanation = readString(
     record.explanation,
     "explanation",
-    limits.explanation,
+    preparedApplicationIdentityDecisionLimits.explanation,
   );
   const mockedBoundaries = readStringArray(
     record.mockedBoundaries,
@@ -200,18 +200,28 @@ function readRecord(value: unknown): Record<string, unknown> {
 }
 
 function readStringArray(value: unknown, field: string): string[] {
-  if (!Array.isArray(value) || value.length > limits.array) {
+  if (
+    !Array.isArray(value) ||
+    value.length > preparedApplicationIdentityDecisionLimits.array
+  ) {
     throw new Error(`${field} must be a bounded array.`);
   }
   return value.map((item, index) =>
-    readString(item, `${field}[${index}]`, limits.string),
+    readString(
+      item,
+      `${field}[${index}]`,
+      preparedApplicationIdentityDecisionLimits.string,
+    ),
   );
 }
 
 function readSourceCitations(
   value: unknown,
 ): PreparedApplicationIdentitySourceCitation[] {
-  if (!Array.isArray(value) || value.length > limits.array) {
+  if (
+    !Array.isArray(value) ||
+    value.length > preparedApplicationIdentityDecisionLimits.array
+  ) {
     throw new Error("sourceCitations must be a bounded array.");
   }
   return value.map((item, index) => {
@@ -235,7 +245,7 @@ function readSourceCitations(
       path: readString(
         citation.path,
         `sourceCitations[${index}].path`,
-        limits.string,
+        preparedApplicationIdentityDecisionLimits.string,
       ),
       startLine,
     };

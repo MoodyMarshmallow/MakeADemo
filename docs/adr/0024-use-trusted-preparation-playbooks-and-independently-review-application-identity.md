@@ -38,7 +38,13 @@ interface. The reviewer runs in a fresh, non-retained
 general shell, repository skill discovery, or retained preparation session.
 Its complete tool surface consists of bounded reads from source-controlled
 files at the backend-pinned commit and bounded pages from the backend-owned
-identity evidence ledger.
+identity evidence ledger, plus one closed-schema
+`makeademo_submit_identity_review` tool. The backend validates the submitted
+verdict against the evidence and inspection ledger, freezes the first valid
+decision, and uses its typed tool handoff as the only accepted review output.
+Assistant-text structured output is ignored. Invalid tool submissions may be
+corrected before acceptance, while the first accepted submission interrupts
+the transient turn and cannot be replaced.
 
 Deterministic code validates only evidence structure, bounds, hashes, pinned
 Git provenance, allowed source paths, evidence IDs, mocked-boundary citations,

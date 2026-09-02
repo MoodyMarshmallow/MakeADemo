@@ -20,26 +20,23 @@ describe("AgenticPreparedApplicationIdentityReviewer", () => {
   it("rejects a replacement dashboard that renders only a native leaf surface", async () => {
     const reviewer = new AgenticPreparedApplicationIdentityReviewer({
       hardTimeoutMs: 10_000,
-      runner: new StaticAgentTaskRunner({
-        exitCode: 0,
-        structuredOutput: {
-          explanation:
-            "The new static dashboard replaces Midday's source-controlled application shell, routes, and data flows.",
-          failureKind: "replacement-detected",
-          mockedBoundaries: ["auth", "database"],
-          nativeSurfacesRendered: [
-            "apps/dashboard/src/components/charts/cash-flow-chart.tsx",
-          ],
-          replacementEvidence: ["change:demo-route", "prepared:accessibility"],
-          sourceCitations: [
-            {
-              endLine: 105,
-              path: "apps/dashboard/src/components/charts/cash-flow-chart.tsx",
-              startLine: 70,
-            },
-          ],
-          verdict: "fail",
-        },
+      runner: new SubmittingAgentTaskRunner({
+        explanation:
+          "The new static dashboard replaces Midday's source-controlled application shell, routes, and data flows.",
+        failureKind: "replacement-detected",
+        mockedBoundaries: ["auth", "database"],
+        nativeSurfacesRendered: [
+          "apps/dashboard/src/components/charts/cash-flow-chart.tsx",
+        ],
+        replacementEvidence: ["change:demo-route", "prepared:accessibility"],
+        sourceCitations: [
+          {
+            endLine: 105,
+            path: "apps/dashboard/src/components/charts/cash-flow-chart.tsx",
+            startLine: 70,
+          },
+        ],
+        verdict: "fail",
       }),
       timeoutMs: 5_000,
     });
@@ -102,7 +99,7 @@ describe("AgenticPreparedApplicationIdentityReviewer", () => {
     });
   });
 
-  it("fails closed when a pass decision was returned without inspecting the transient evidence tools", async () => {
+  it("ignores structured output and fails closed without a submission-tool handoff", async () => {
     const reviewer = new AgenticPreparedApplicationIdentityReviewer({
       hardTimeoutMs: 10_000,
       runner: new StaticAgentTaskRunner({
@@ -127,6 +124,66 @@ describe("AgenticPreparedApplicationIdentityReviewer", () => {
     });
   });
 
+  it("rejects a structurally identical handoff that did not come from the tool protocol", async () => {
+    const reviewer = new AgenticPreparedApplicationIdentityReviewer({
+      hardTimeoutMs: 10_000,
+      runner: new SubmittingAgentTaskRunner(
+        {
+          explanation:
+            "The inspected native application retains its source-controlled UI.",
+          mockedBoundaries: ["auth", "api"],
+          nativeSurfacesRendered: ["src/app/layout.tsx"],
+          replacementEvidence: [],
+          sourceCitations: [
+            { endLine: 80, path: "src/app/layout.tsx", startLine: 12 },
+          ],
+          verdict: "pass",
+        },
+        undefined,
+        { forgeHandoff: true },
+      ),
+      timeoutMs: 5_000,
+    });
+
+    await expect(reviewer.review(nativeApplicationInput())).resolves.toEqual({
+      failureKind: "invalid-output",
+      status: "failed",
+    });
+  });
+
+  it("uses the accepted tool verdict when assistant structured output contradicts it", async () => {
+    const toolDecision = {
+      explanation: "The bounded evidence cannot establish native identity.",
+      failureKind: "identity-not-proven",
+      mockedBoundaries: [],
+      nativeSurfacesRendered: [],
+      replacementEvidence: [],
+      sourceCitations: [],
+      verdict: "fail",
+    } as const;
+    const reviewer = new AgenticPreparedApplicationIdentityReviewer({
+      hardTimeoutMs: 10_000,
+      runner: new SubmittingAgentTaskRunner(toolDecision, undefined, {
+        structuredOutput: {
+          explanation: "Contradictory assistant JSON claims pass.",
+          mockedBoundaries: ["auth", "api"],
+          nativeSurfacesRendered: ["src/app/layout.tsx"],
+          replacementEvidence: [],
+          sourceCitations: [
+            { endLine: 80, path: "src/app/layout.tsx", startLine: 12 },
+          ],
+          verdict: "pass",
+        },
+      }),
+      timeoutMs: 5_000,
+    });
+
+    await expect(reviewer.review(nativeApplicationInput())).resolves.toEqual({
+      ...toolDecision,
+      status: "succeeded",
+    });
+  });
+
   it.each([
     "source",
     "prepared-screenshot",
@@ -147,8 +204,8 @@ describe("AgenticPreparedApplicationIdentityReviewer", () => {
       };
       const reviewer = new AgenticPreparedApplicationIdentityReviewer({
         hardTimeoutMs: 10_000,
-        runner: new InspectingAgentTaskRunner(
-          { exitCode: 0, structuredOutput },
+        runner: new SubmittingAgentTaskRunner(
+          structuredOutput,
           skippedInspection,
         ),
         timeoutMs: 5_000,
@@ -276,20 +333,17 @@ describe("AgenticPreparedApplicationIdentityReviewer", () => {
     );
   });
 
-  it("uses a fresh transient session with only pinned-source and prepared-evidence tools", async () => {
-    const runner = new StaticAgentTaskRunner({
-      exitCode: 0,
-      structuredOutput: {
-        explanation:
-          "The prepared application retains the source-controlled application route.",
-        mockedBoundaries: ["auth", "api"],
-        nativeSurfacesRendered: ["src/app/layout.tsx"],
-        replacementEvidence: [],
-        sourceCitations: [
-          { endLine: 80, path: "src/app/layout.tsx", startLine: 12 },
-        ],
-        verdict: "pass",
-      },
+  it("uses a fresh transient session with only identity evidence and submission tools", async () => {
+    const runner = new SubmittingAgentTaskRunner({
+      explanation:
+        "The prepared application retains the source-controlled application route.",
+      mockedBoundaries: ["auth", "api"],
+      nativeSurfacesRendered: ["src/app/layout.tsx"],
+      replacementEvidence: [],
+      sourceCitations: [
+        { endLine: 80, path: "src/app/layout.tsx", startLine: 12 },
+      ],
+      verdict: "pass",
     });
     const reviewer = new AgenticPreparedApplicationIdentityReviewer({
       hardTimeoutMs: 10_000,
@@ -313,7 +367,12 @@ describe("AgenticPreparedApplicationIdentityReviewer", () => {
       "search_pinned_source_paths",
       "search_pinned_ui_identity",
       "read_prepared_identity_evidence",
+      "makeademo_submit_identity_review",
     ]);
+    expect(runner.calls[0]?.toolProtocol).toMatchObject({
+      interruptOnCompletedHandoff: true,
+      trackedNames: ["makeademo_submit_identity_review"],
+    });
   });
 
   it.each([
@@ -366,29 +425,31 @@ class StaticAgentTaskRunner implements AgentTaskRunner {
   }
 }
 
-class InspectingAgentTaskRunner extends StaticAgentTaskRunner {
+class SubmittingAgentTaskRunner implements AgentTaskRunner {
+  readonly calls: AgentTaskRunInput<unknown>[] = [];
+
   constructor(
-    result: AgentTaskRunResult,
+    private readonly decision: Record<string, unknown>,
     private readonly skippedInspection?:
       | "accessibility-snapshot"
       | "prepared-change"
       | "prepared-screenshot"
       | "source",
-  ) {
-    super(result);
-  }
+    private readonly resultOptions: {
+      forgeHandoff?: boolean;
+      structuredOutput?: unknown;
+    } = {},
+  ) {}
 
-  override async run(input: AgentTaskRunInput): Promise<AgentTaskRunResult> {
-    const result = await super.run(input);
-    const output = result.structuredOutput as
-      | {
-          sourceCitations?: Array<{
-            endLine: number;
-            path: string;
-            startLine: number;
-          }>;
-        }
-      | undefined;
+  async run<T>(input: AgentTaskRunInput<T>): Promise<AgentTaskRunResult<T>> {
+    this.calls.push(input);
+    const output = this.decision as {
+      sourceCitations?: Array<{
+        endLine: number;
+        path: string;
+        startLine: number;
+      }>;
+    };
     const inspectSource = input.tools?.find(
       (tool) => tool.name === "inspect_pinned_source",
     );
@@ -415,7 +476,34 @@ class InspectingAgentTaskRunner extends StaticAgentTaskRunner {
       if (kind === this.skippedInspection) continue;
       await readEvidence?.execute({ evidenceId });
     }
-    return result;
+    const submit = input.tools?.find(
+      (tool) => tool.name === "makeademo_submit_identity_review",
+    );
+    try {
+      await submit?.execute(this.decision);
+    } catch {
+      return { exitCode: 0 };
+    }
+    if (this.resultOptions.forgeHandoff === true) {
+      return {
+        exitCode: 0,
+        handoff: { toolName: "makeademo_submit_identity_review" } as T,
+      };
+    }
+    const decoded = input.toolProtocol?.decode({
+      input: this.decision,
+      name: "makeademo_submit_identity_review",
+      status: "completed",
+    });
+    return decoded?.status === "accepted"
+      ? {
+          exitCode: 0,
+          handoff: decoded.handoff,
+          structuredOutput: this.resultOptions.structuredOutput ?? {
+            ignored: true,
+          },
+        }
+      : { exitCode: 0 };
   }
 }
 
@@ -506,7 +594,9 @@ function middayReplacementInput() {
 function reviewerReturning(structuredOutput: unknown) {
   return new AgenticPreparedApplicationIdentityReviewer({
     hardTimeoutMs: 10_000,
-    runner: new InspectingAgentTaskRunner({ exitCode: 0, structuredOutput }),
+    runner: new SubmittingAgentTaskRunner(
+      structuredOutput as Record<string, unknown>,
+    ),
     timeoutMs: 5_000,
   });
 }

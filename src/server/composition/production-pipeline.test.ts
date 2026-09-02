@@ -96,22 +96,14 @@ describe("production Pipeline assembly", () => {
           stage: input.stage,
           toolNames: input.tools?.map((tool) => tool.name) ?? [],
         });
-        await inspectPreparedApplicationIdentityEvidence(input);
+        const handoff =
+          await submitPassingPreparedApplicationIdentityReview(input);
         return {
           exitCode: 0,
+          handoff,
           stderr: "",
           stdout: "",
-          structuredOutput: {
-            explanation:
-              "The prepared application retains its pinned native surface.",
-            mockedBoundaries: [],
-            nativeSurfacesRendered: ["src/App.tsx"],
-            replacementEvidence: [],
-            sourceCitations: [
-              { endLine: 20, path: "src/App.tsx", startLine: 1 },
-            ],
-            verdict: "pass",
-          },
+          structuredOutput: { ignored: true },
         };
       },
     };
@@ -155,6 +147,7 @@ describe("production Pipeline assembly", () => {
           "search_pinned_source_paths",
           "search_pinned_ui_identity",
           "read_prepared_identity_evidence",
+          "makeademo_submit_identity_review",
         ],
       },
     ]);
@@ -432,18 +425,12 @@ function succeededRepoPreparationPreflight() {
 function passingPreparedApplicationIdentityReviewRunner(): AgentTaskRunner {
   return {
     async run(input) {
-      await inspectPreparedApplicationIdentityEvidence(input);
+      const handoff =
+        await submitPassingPreparedApplicationIdentityReview(input);
       return {
         exitCode: 0,
-        structuredOutput: {
-          explanation:
-            "The prepared application retains its pinned native surface.",
-          mockedBoundaries: [],
-          nativeSurfacesRendered: ["src/App.tsx"],
-          replacementEvidence: [],
-          sourceCitations: [{ endLine: 20, path: "src/App.tsx", startLine: 1 }],
-          verdict: "pass",
-        },
+        handoff,
+        structuredOutput: { ignored: true },
       };
     },
   };
@@ -563,6 +550,36 @@ async function inspectPreparedApplicationIdentityEvidence(
   for (const evidenceId of evidenceTool.args.evidenceId?.values ?? []) {
     await evidenceTool.execute({ evidenceId });
   }
+}
+
+async function submitPassingPreparedApplicationIdentityReview<T>(
+  input: Pick<AgentSessionRunInput<T>, "toolProtocol" | "tools">,
+): Promise<T> {
+  await inspectPreparedApplicationIdentityEvidence(input);
+  const decision = {
+    explanation: "The prepared application retains its pinned native surface.",
+    mockedBoundaries: [],
+    nativeSurfacesRendered: ["src/App.tsx"],
+    replacementEvidence: [],
+    sourceCitations: [{ endLine: 20, path: "src/App.tsx", startLine: 1 }],
+    verdict: "pass",
+  };
+  const submitTool = input.tools?.find(
+    ({ name }) => name === "makeademo_submit_identity_review",
+  );
+  if (submitTool === undefined || input.toolProtocol === undefined) {
+    throw new Error("Identity review submission protocol was not supplied.");
+  }
+  await submitTool.execute(decision);
+  const decoded = input.toolProtocol.decode({
+    input: decision,
+    name: submitTool.name,
+    status: "completed",
+  });
+  if (decoded.status !== "accepted") {
+    throw new Error("Identity review submission was not accepted.");
+  }
+  return decoded.handoff;
 }
 
 function succeededPreparedDemo(

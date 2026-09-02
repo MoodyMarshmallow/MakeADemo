@@ -13,11 +13,117 @@ import {
   createPreparedWorkspaceDiff,
 } from "../03-repo-preparation/application-identity-evidence";
 import { createPreparedApplicationIdentityEvidenceLedger } from "./prepared-application-identity-evidence";
-import { createPreparedApplicationIdentityStageTools } from "./prepared-application-identity-stage-tools";
+import { createPreparedApplicationIdentityReviewTools } from "./prepared-application-identity-stage-tools";
 
 const execFileAsync = promisify(execFile);
 
 describe("Prepared Application Identity stage tools", () => {
+  it("accepts one provenance-valid review submission and freezes that decision", async () => {
+    const reviewTools = createPreparedApplicationIdentityReviewTools({
+      evidenceLedger: ledgerWithEvidence(),
+      workspace: identityReviewWorkspace(),
+    });
+    const inspectSource = reviewTools.tools.find(
+      (tool) => tool.name === "inspect_pinned_source",
+    );
+    const readEvidence = reviewTools.tools.find(
+      (tool) => tool.name === "read_prepared_identity_evidence",
+    );
+    const submit = reviewTools.tools.find(
+      (tool) => tool.name === "makeademo_submit_identity_review",
+    );
+    if (
+      inspectSource === undefined ||
+      readEvidence === undefined ||
+      submit === undefined
+    ) {
+      throw new Error("expected complete identity review tool surface");
+    }
+
+    await inspectSource.execute({
+      endLine: "1",
+      path: "src/app/page.tsx",
+      startLine: "1",
+    });
+    for (const evidenceId of readEvidence.args.evidenceId?.values ?? []) {
+      await readEvidence.execute({ evidenceId });
+    }
+    const decision = {
+      explanation: "The prepared app retains its native page.",
+      mockedBoundaries: [],
+      nativeSurfacesRendered: ["src/app/page.tsx"],
+      replacementEvidence: [],
+      sourceCitations: [{ endLine: 1, path: "src/app/page.tsx", startLine: 1 }],
+      verdict: "pass",
+    } as const;
+
+    await expect(submit.execute(decision)).resolves.toContain("accepted");
+    const decoded = reviewTools.toolProtocol.decode({
+      input: decision,
+      name: "makeademo_submit_identity_review",
+      status: "completed",
+    });
+    expect(decoded.status).toBe("accepted");
+    if (decoded.status !== "accepted") throw new Error("expected handoff");
+    expect(reviewTools.readAcceptedDecision(decoded.handoff)).toEqual(decision);
+    expect(() =>
+      reviewTools.readAcceptedDecision(Object.freeze({}) as never),
+    ).toThrow("capability is invalid");
+    await expect(submit.execute(decision)).rejects.toThrow(
+      "already been accepted",
+    );
+  });
+
+  it("allows an invalid review submission to be corrected before acceptance", async () => {
+    const reviewTools = createPreparedApplicationIdentityReviewTools({
+      evidenceLedger: ledgerWithEvidence(),
+      workspace: {
+        async execute() {
+          throw new Error("general execution must remain unavailable");
+        },
+        async uploadFiles() {},
+      },
+    });
+    const submit = reviewTools.tools.find(
+      (tool) => tool.name === "makeademo_submit_identity_review",
+    );
+    if (submit === undefined) throw new Error("expected submission tool");
+
+    await expect(
+      submit.execute({
+        explanation: "Invalid evidence claim.",
+        failureKind: "replacement-detected",
+        mockedBoundaries: [],
+        nativeSurfacesRendered: [],
+        replacementEvidence: ["not-in-ledger"],
+        sourceCitations: [],
+        verdict: "fail",
+      }),
+    ).rejects.toThrow("outside the evidence ledger");
+    expect(() => reviewTools.readAcceptedDecision(undefined as never)).toThrow(
+      "has not been accepted",
+    );
+
+    const corrected = {
+      explanation: "The available evidence cannot prove native identity.",
+      failureKind: "identity-not-proven",
+      mockedBoundaries: [],
+      nativeSurfacesRendered: [],
+      replacementEvidence: [],
+      sourceCitations: [],
+      verdict: "fail",
+    } as const;
+    await expect(submit.execute(corrected)).resolves.toContain("accepted");
+    const decoded = reviewTools.toolProtocol.decode({
+      input: corrected,
+      name: "makeademo_submit_identity_review",
+      status: "completed",
+    });
+    if (decoded.status !== "accepted") throw new Error("expected handoff");
+    expect(reviewTools.readAcceptedDecision(decoded.handoff)).toEqual(
+      corrected,
+    );
+  });
   it("accepts the complete 8 MiB backend diff and exposes bounded pages", async () => {
     const patch = "x".repeat(8 * 1024 * 1024);
     const diff = createPreparedWorkspaceDiff({
@@ -411,6 +517,12 @@ async function readTextResult(
   return value;
 }
 
+function createPreparedApplicationIdentityStageTools(
+  input: Parameters<typeof createPreparedApplicationIdentityReviewTools>[0],
+) {
+  return createPreparedApplicationIdentityReviewTools(input).tools;
+}
+
 function ledgerWithEvidence(
   input: { png?: Buffer; screenshotPath?: string } = {},
 ) {
@@ -469,4 +581,25 @@ async function runGit(repository: string, ...args: string[]): Promise<string> {
     encoding: "utf8",
   });
   return result.stdout.trim();
+}
+
+function identityReviewWorkspace() {
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.from("pixels"),
+  ]);
+  return {
+    async downloadFiles(files: Array<{ destinationPath: string }>) {
+      const destinationPath = files[0]?.destinationPath;
+      if (destinationPath === undefined) throw new Error("missing destination");
+      await writeFile(destinationPath, png);
+    },
+    async execute() {
+      throw new Error("general execution must remain unavailable");
+    },
+    async executeReadOnlyCommand() {
+      return { exitCode: 0, stderr: "", stdout: "native page\n" };
+    },
+    async uploadFiles() {},
+  };
 }
