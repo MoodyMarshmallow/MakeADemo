@@ -1030,7 +1030,10 @@ async function settleInterruption(interruption: Promise<void>): Promise<void> {
 }
 
 function isIntentionalAbortStateError(message: string): boolean {
-  const normalized = message.trim().toLowerCase();
+  const normalized = message
+    .trim()
+    .toLowerCase()
+    .replace(/[.!]+$/, "");
   return [
     "aborted",
     "agent aborted",

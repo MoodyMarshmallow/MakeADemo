@@ -1374,7 +1374,7 @@ describe("PiAgentSession", () => {
     });
     const session = sessions[0];
     if (session === undefined) throw new Error("Expected Pi session.");
-    session.state.errorMessage = "Request was aborted";
+    session.state.errorMessage = "Request was aborted.";
 
     const result = await resultPromise;
     expect(result.exitCode).toBe(0);
