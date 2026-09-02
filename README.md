@@ -6,7 +6,9 @@ https://github.com/user-attachments/assets/09ed5cd3-548a-4124-9e75-0343e6b148e5
 
 *We learned a lot about what it takes to build performant harnesses for long-horizon tasks. However, I (Milo) decided that MakeADemo was trying to solve too many difficult problems simultaneously. It makes more sense to build several smaller projects that address those problems independently before attempting this again.*
 
-MakeADemo turns a runnable web application, its source code, and a product brief into a short demo video.
+---
+
+MakeADemo turns any TS/JS GitHub repo into a demo video of the application.
 
 ## Tech stack
 
