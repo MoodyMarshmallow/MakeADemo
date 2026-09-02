@@ -60,4 +60,80 @@ describe("Pi stage tool adapter", () => {
       details: undefined,
     });
   });
+
+  it("adapts a closed recursive Pipeline input schema for structured tool submissions", () => {
+    const [tool] = createPiStageToolDefinitions([
+      {
+        args: {},
+        description: "Submit a decision",
+        execute: vi.fn(async () => "submitted"),
+        inputSchema: {
+          oneOf: [
+            {
+              additionalProperties: false,
+              properties: {
+                citations: {
+                  items: {
+                    additionalProperties: false,
+                    properties: {
+                      endLine: { maximum: 400, minimum: 1, type: "integer" },
+                      path: { maxLength: 1_000, minLength: 1, type: "string" },
+                    },
+                    required: ["path", "endLine"],
+                    type: "object",
+                  },
+                  maxItems: 64,
+                  type: "array",
+                },
+                verdict: { const: "pass", type: "literal" },
+              },
+              required: ["citations", "verdict"],
+              type: "object",
+            },
+            {
+              additionalProperties: false,
+              properties: {
+                failureKind: {
+                  type: "enum",
+                  values: ["replacement-detected", "identity-not-proven"],
+                },
+                verdict: { const: "fail", type: "literal" },
+              },
+              required: ["failureKind", "verdict"],
+              type: "object",
+            },
+          ],
+          type: "oneOf",
+        },
+        name: "submit_decision",
+      },
+    ]);
+    if (tool === undefined) throw new Error("Expected a stage tool.");
+
+    expect(
+      Value.Check(tool.parameters, {
+        citations: [{ endLine: 12, path: "src/app.tsx" }],
+        verdict: "pass",
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(tool.parameters, {
+        citations: [],
+        extra: true,
+        verdict: "pass",
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(tool.parameters, {
+        failureKind: "replacement-detected",
+        verdict: "fail",
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(tool.parameters, {
+        failureKind: "unexpected",
+        verdict: "fail",
+      }),
+    ).toBe(false);
+  });
 });

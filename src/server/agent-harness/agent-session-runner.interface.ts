@@ -52,6 +52,50 @@ type AgentToolResultContent =
  */
 export type AgentToolResult = string | readonly AgentToolResultContent[];
 
+/** Provider-neutral recursive JSON Schema subset for structured Stage Tools. */
+export type AgentToolInputSchema =
+  | {
+      description?: string;
+      maxLength?: number;
+      minLength?: number;
+      type: "string";
+    }
+  | {
+      description?: string;
+      maximum?: number;
+      minimum?: number;
+      type: "integer";
+    }
+  | {
+      description?: string;
+      type: "literal";
+      const: string;
+    }
+  | {
+      description?: string;
+      type: "enum";
+      values: readonly string[];
+    }
+  | {
+      description?: string;
+      items: AgentToolInputSchema;
+      maxItems?: number;
+      minItems?: number;
+      type: "array";
+    }
+  | {
+      additionalProperties: false;
+      description?: string;
+      properties: Readonly<Record<string, AgentToolInputSchema>>;
+      required: readonly string[];
+      type: "object";
+    }
+  | {
+      description?: string;
+      oneOf: readonly AgentToolInputSchema[];
+      type: "oneOf";
+    };
+
 /** Provider-neutral schema and execution contract for a Pipeline Stage tool. */
 export type AgentToolDefinition<TResult extends AgentToolResult = string> = {
   args: Readonly<
@@ -67,6 +111,8 @@ export type AgentToolDefinition<TResult extends AgentToolResult = string> = {
   >;
   description: string;
   execute: (args: Record<string, unknown>) => Promise<TResult>;
+  /** Structured input contract; when omitted, the legacy flat `args` apply. */
+  inputSchema?: AgentToolInputSchema;
   name: string;
 };
 
