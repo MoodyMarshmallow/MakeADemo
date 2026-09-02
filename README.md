@@ -1,6 +1,8 @@
 # MakeADemo
 
-<video src="./assets/makeademo-demo.mp4" controls width="100%"></video>
+[![Watch the MakeADemo demo video](./assets/makeademo-demo-preview.jpg)](./assets/makeademo-demo.mp4)
+
+[▶ Watch the demo video](./assets/makeademo-demo.mp4)
 
 **This project has been sunset.**
 
