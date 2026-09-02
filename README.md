@@ -1,8 +1,6 @@
 # MakeADemo
 
-[![Watch the MakeADemo demo video](./assets/makeademo-demo-preview.jpg)](./assets/makeademo-demo.mp4)
-
-[▶ Watch the demo video](./assets/makeademo-demo.mp4)
+https://github.com/user-attachments/assets/09ed5cd3-548a-4124-9e75-0343e6b148e5
 
 **This project has been sunset.**
 
