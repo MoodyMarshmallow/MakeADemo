@@ -5,6 +5,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rename,
   rm,
   writeFile,
@@ -551,6 +552,101 @@ describe("DaytonaSdkPreparationWorkspaceProvider", () => {
         sizeBytes: 89,
       },
     });
+  });
+
+  it("captures the baseline even when TMPDIR does not exist", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "makeademo-baseline-"));
+    const calls: unknown[] = [];
+    let baselineScript: string | undefined;
+    try {
+      await execFileAsync("git", ["init", "-q", workspace]);
+      await execFileAsync("git", [
+        "-C",
+        workspace,
+        "config",
+        "user.email",
+        "test@example.com",
+      ]);
+      await execFileAsync("git", [
+        "-C",
+        workspace,
+        "config",
+        "user.name",
+        "Test",
+      ]);
+      await writeFile(join(workspace, "package.json"), "{}\n");
+      await execFileAsync("git", ["-C", workspace, "add", "package.json"]);
+      await execFileAsync("git", [
+        "-C",
+        workspace,
+        "commit",
+        "-qm",
+        "baseline",
+      ]);
+      const { stdout: revisionOutput } = await execFileAsync("git", [
+        "-C",
+        workspace,
+        "rev-parse",
+        "HEAD",
+      ]);
+      const pinnedRevision = revisionOutput.trim();
+      const { stdout: treeOutput } = await execFileAsync("git", [
+        "-C",
+        workspace,
+        "rev-parse",
+        "HEAD^{tree}",
+      ]);
+      const sourceTreeObjectId = treeOutput.trim();
+      const provider = new DaytonaSdkPreparationWorkspaceProvider({
+        client: fakeClient(calls, {
+          ptyCommandResponse(script) {
+            baselineScript = script;
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: `${pinnedRevision}\0${sourceTreeObjectId}\0package.json\0`,
+            };
+          },
+        }),
+      });
+      const handle = await provider.create();
+
+      await handle.workspace.captureApplicationIdentityBaseline?.({
+        pinnedRevision,
+        repoUrl: "https://github.com/example/app",
+      });
+
+      const baselineEncoded =
+        baselineScript?.match(/[A-Za-z0-9+/=]{100,}/)?.[0];
+      expect(baselineEncoded).toBeDefined();
+      const decodedBaselineCommand = Buffer.from(
+        baselineEncoded as string,
+        "base64",
+      ).toString();
+      expect(decodedBaselineCommand).toContain(
+        "/usr/bin/mktemp -p /workspace .makeademo-identity-baseline.XXXXXXXXXX",
+      );
+      const baselineCommand = decodedBaselineCommand.replaceAll(
+        "/workspace",
+        workspace,
+      );
+      const missingTmpDir = join(workspace, "missing-tmp");
+      const result = await execFileAsync("/bin/bash", ["-c", baselineCommand], {
+        cwd: workspace,
+        env: { PATH: process.env.PATH, TMPDIR: missingTmpDir },
+      });
+
+      expect(result.stdout).toContain(
+        `${pinnedRevision}\0${sourceTreeObjectId}\0package.json\0`,
+      );
+      expect(
+        (await readdir(workspace)).filter((path) =>
+          path.startsWith(".makeademo-identity-baseline."),
+        ),
+      ).toEqual([]);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
   });
 
   it("captures the prepared workspace diff against its bound pinned revision", async () => {

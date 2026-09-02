@@ -3096,7 +3096,7 @@ function createApplicationIdentityBaselineCommand(
     "makeademo_revision=$(/usr/bin/git -C /workspace rev-parse --verify HEAD)",
     `test "$makeademo_revision" = ${revision}`,
     `makeademo_tree=$(/usr/bin/git -C /workspace rev-parse --verify ${revision}^{tree})`,
-    "makeademo_paths=$(/usr/bin/mktemp)",
+    "makeademo_paths=$(/usr/bin/mktemp -p /workspace .makeademo-identity-baseline.XXXXXXXXXX)",
     "trap '/bin/rm -f -- \"$makeademo_paths\"' EXIT",
     `/usr/bin/git -C /workspace ls-tree -r -z --name-only ${revision} > "$makeademo_paths"`,
     `test "$(/usr/bin/wc -c < \"$makeademo_paths\")" -le ${pathBytes}`,
